@@ -1,0 +1,12 @@
+// Zweck:    Grundlagen des Feldbuchs: Pfade, Dateispeicher, Protokoll, Formatierung, XML und JSON-Hilfen
+// Hardware: keine (reine Software, Windows-Desktop)
+// Autor:    Johann Gerner
+
+pub mod datei_speicher;
+pub mod fehler_log;
+pub mod format;
+pub mod kommunikationslog;
+pub mod pfade;
+pub mod protokoll;
+pub mod serde_hilfen;
+pub mod xml_einfach;

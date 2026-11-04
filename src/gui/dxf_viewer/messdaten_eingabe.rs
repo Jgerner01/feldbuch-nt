@@ -1,0 +1,318 @@
+// Zweck:    Dialog „Messdaten eingeben" für einen im Viewer gewählten Anschlusspunkt: Koordinaten aus dem Snap,
+//           Messwerte (Hz, V, Strecke, Zielhöhe, Code) manuell oder per Tachymeter, Übernahme in die Anschlusspunktdatei
+// Hardware: Tachymeter über gui::geraet (GeoCOM / GSI Online)
+// Autor:    Johann Gerner
+
+use eframe::egui::{self, Align2, Color32, RichText, Vec2};
+
+use super::{Dialog, DxfViewer};
+use crate::daten::modelle::StationierungsPunkt;
+use crate::daten::projekt::Projekt;
+use crate::grundlagen::datei_speicher;
+use crate::grundlagen::format::{f, parse_zahl};
+use crate::gui::geraet::Geraet;
+use crate::tachymeter::messablauf::MessErgebnis;
+use crate::tachymeter::messung::TachymeterMessung;
+
+/// Standardcode, wenn noch keiner verwendet wurde.
+pub const STANDARD_CODE: &str = "030";
+/// Zielhöhe, wenn noch keine verwendet wurde.
+pub const STANDARD_ZIELHOEHE: &str = "1.700";
+/// Kopfzeile der Anschlusspunktdatei.
+const KOPFZEILE: &str = "PunktNr,R,H,Hoehe,HZ,V,Strecke,Zielhoehe";
+/// Farben der Meldungen.
+const FARBE_OK: Color32 = Color32::from_rgb(40, 150, 60);
+const FARBE_WARNUNG: Color32 = Color32::from_rgb(200, 130, 40);
+const FARBE_FEHLER: Color32 = Color32::from_rgb(200, 60, 40);
+
+/// Zustand des Dialogs.
+#[derive(Clone, Debug)]
+pub(super) struct MessdatenEingabe {
+    pub r: f64,
+    pub h: f64,
+    pub punkt_nr: String,
+    pub hoehe: String,
+    pub hz: String,
+    pub v: String,
+    pub strecke: String,
+    pub zielhoehe: String,
+    pub code: String,
+    /// Die Messwertfelder gelten als gefüllt (Messung oder Tastatureingabe).
+    pub aktiv: bool,
+    /// Eine Messung wurde gestartet und das Ergebnis steht noch aus.
+    pub wartet: bool,
+    pub info: String,
+    pub info_farbe: Option<Color32>,
+}
+
+impl MessdatenEingabe {
+    pub fn neu(r: f64, h: f64, punkt_nr: &str, hoehe: f64, code: &str, zielhoehe: &str) -> Self {
+        Self {
+            r,
+            h,
+            punkt_nr: punkt_nr.to_string(),
+            hoehe: if hoehe != 0.0 { f(hoehe, 3) } else { f(0.0, 3) },
+            hz: String::new(),
+            v: String::new(),
+            strecke: String::new(),
+            zielhoehe: zielhoehe.to_string(),
+            code: if code.is_empty() { STANDARD_CODE.to_string() } else { code.to_string() },
+            aktiv: false,
+            wartet: false,
+            info: String::new(),
+            info_farbe: None,
+        }
+    }
+
+    /// Übernehmen ist erlaubt, wenn Messwerte vorliegen und die Strecke positiv ist.
+    pub fn kann_uebernehmen(&self) -> bool {
+        self.aktiv && parse_zahl(&self.strecke).is_some_and(|s| s > 0.0)
+    }
+
+    /// Trägt eine vollständige Messung in die Felder ein.
+    pub fn uebernimm_messung(&mut self, m: &TachymeterMessung) {
+        match (m.hz_gon, m.v_gon, m.schraegstrecke_m) {
+            (Some(hz), Some(v), Some(s)) => {
+                self.aktiv = true;
+                self.hz = f(hz, 4);
+                self.v = f(v, 4);
+                self.strecke = f(s, 3);
+                self.info = format!("Hz={} gon   V={} gon   D={} m", f(hz, 4), f(v, 4), f(s, 3));
+                self.info_farbe = Some(FARBE_OK);
+            }
+            _ => {
+                self.info = "Unvollständige Messung (Hz/V/D fehlen).".to_string();
+                self.info_farbe = Some(FARBE_WARNUNG);
+            }
+        }
+    }
+
+    /// Der Punkt für die Anschlusspunktdatei; `None` mit Fehlertext bei ungültigen Eingaben.
+    pub fn ergebnis(&self) -> Result<StationierungsPunkt, String> {
+        if self.punkt_nr.trim().is_empty() {
+            return Err("Bitte eine Punktnummer eingeben.".to_string());
+        }
+        let strecke = parse_zahl(&self.strecke).unwrap_or(0.0);
+        if strecke <= 0.0 {
+            return Err("Strecke muss größer als 0 sein.\nBitte Messdaten eingeben oder Messen auslösen.".to_string());
+        }
+        Ok(StationierungsPunkt {
+            punkt_nr: self.punkt_nr.trim().to_string(),
+            r: self.r,
+            h: self.h,
+            hoehe: parse_zahl(&self.hoehe).unwrap_or(0.0),
+            hz: parse_zahl(&self.hz).unwrap_or(0.0),
+            v: parse_zahl(&self.v).unwrap_or(0.0),
+            strecke,
+            zielhoehe: parse_zahl(&self.zielhoehe).unwrap_or(0.0),
+        })
+    }
+}
+
+/// Zeile der Anschlusspunktdatei.
+pub(super) fn anschluss_zeile(p: &StationierungsPunkt) -> String {
+    [p.punkt_nr.clone(), f(p.r, 3), f(p.h, 3), f(p.hoehe, 3), f(p.hz, 4), f(p.v, 4), f(p.strecke, 3), f(p.zielhoehe, 3)].join(",")
+}
+
+/// Hängt eine Messung an die Anschlusspunktdatei an (gleiche Nummer bleibt als Mehrfachmessung erhalten).
+pub(super) fn schreibe_anschlusspunkt(projekt: &Projekt, p: &StationierungsPunkt) -> std::io::Result<()> {
+    let pfad = projekt.anschlusspunkte_pfad();
+    let mut zeilen: Vec<String> = vec![KOPFZEILE.to_string()];
+    if let Ok(text) = std::fs::read_to_string(&pfad) {
+        zeilen.extend(text.lines().skip(1).filter(|z| !z.trim().is_empty()).map(str::to_string));
+    }
+    zeilen.push(anschluss_zeile(p));
+    datei_speicher::schreibe_zeilen(&pfad, zeilen)
+}
+
+impl DxfViewer {
+    /// Öffnet den Dialog für einen gewählten Punkt.
+    pub(super) fn oeffne_messdaten_dialog(&mut self, projekt: &Projekt, r: f64, h: f64, nr: &str, hoehe: f64) {
+        let reflektorlos = projekt.einstellungen.mess_modus_name != "Prisma";
+        let zielhoehe = if reflektorlos { f(0.0, 3) } else { self.letzte_zielhoehe.clone() };
+        self.dialog = Some(Dialog::Messdaten(Box::new(MessdatenEingabe::neu(r, h, nr, hoehe, &self.letzter_code, &zielhoehe))));
+    }
+
+    /// Reicht ein Messergebnis an den offenen Dialog weiter, wenn dieser auf eines wartet.
+    pub(super) fn messergebnis_fuer_dialog(&mut self, ergebnis: MessErgebnis) -> Option<MessErgebnis> {
+        match &mut self.dialog {
+            Some(Dialog::Messdaten(d)) if d.wartet => {
+                d.wartet = false;
+                match &ergebnis {
+                    MessErgebnis::Messung(m) => d.uebernimm_messung(m),
+                    MessErgebnis::Fehler(text) => {
+                        d.info = format!("Messfehler: {text}");
+                        d.info_farbe = Some(FARBE_FEHLER);
+                    }
+                }
+                None
+            }
+            _ => Some(ergebnis),
+        }
+    }
+
+    pub(super) fn zeichne_messdaten_dialog(&mut self, ctx: &egui::Context, projekt: &Projekt, geraet: &mut Geraet, mut d: Box<MessdatenEingabe>) {
+        let mut aktion: Option<bool> = None;
+        let mut messen = false;
+        let mut umschalten = false;
+        let verbunden = geraet.ist_verbunden();
+        let beschaeftigt = geraet.beschaeftigt();
+        if d.wartet {
+            if let Some(text) = geraet.messung_status() {
+                d.info = text.to_string();
+                d.info_farbe = Some(FARBE_WARNUNG);
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        egui::Window::new("Messdaten eingeben").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            ui.label(RichText::new(format!("R (Rechtswert):   {} m", f(d.r, 3))).monospace());
+            ui.label(RichText::new(format!("H (Hochwert):     {} m", f(d.h, 3))).monospace());
+            ui.add_space(4.0);
+            egui::Grid::new("messdaten_felder").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
+                let mut manuell = false;
+                let mut feld = |ui: &mut egui::Ui, titel: &str, text: &mut String, einheit: &str, messwert: bool| {
+                    ui.label(titel);
+                    let antwort = ui.add(egui::TextEdit::singleline(text).desired_width(110.0).font(egui::TextStyle::Monospace));
+                    if messwert && antwort.changed() {
+                        manuell = true;
+                    }
+                    ui.label(einheit);
+                    ui.end_row();
+                };
+                feld(ui, "Punktnummer:", &mut d.punkt_nr, "", false);
+                feld(ui, "Höhe:", &mut d.hoehe, "m", false);
+                feld(ui, "Hz:", &mut d.hz, "gon", true);
+                feld(ui, "V:", &mut d.v, "gon", true);
+                feld(ui, "Strecke:", &mut d.strecke, "m", true);
+                feld(ui, "Zielhöhe:", &mut d.zielhoehe, "m", true);
+                feld(ui, "Code:", &mut d.code, "", true);
+                if manuell {
+                    d.aktiv = true;
+                }
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let (name, fill) = if geraet.reflektorlos { ("Reflektorlos", Color32::from_rgb(130, 80, 20)) } else { ("Prisma", Color32::from_rgb(38, 100, 58)) };
+                if ui.add_enabled(verbunden && !beschaeftigt, egui::Button::new(RichText::new(name).color(Color32::WHITE)).fill(fill)).clicked() {
+                    umschalten = true;
+                }
+                let messen_knopf = egui::Button::new(RichText::new("► Messen").strong().color(Color32::WHITE)).fill(Color32::from_rgb(160, 60, 20));
+                if ui.add_enabled(verbunden && !beschaeftigt && !d.wartet, messen_knopf).clicked() {
+                    messen = true;
+                }
+            });
+            if !verbunden && d.info.is_empty() {
+                ui.colored_label(FARBE_WARNUNG, "Kein Tachymeter verbunden – Messwerte können von Hand eingegeben werden.");
+            }
+            if !d.info.is_empty() {
+                ui.colored_label(d.info_farbe.unwrap_or(ui.visuals().text_color()), &d.info);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.add_enabled(d.kann_uebernehmen(), egui::Button::new(RichText::new("Übernehmen").strong())).clicked() {
+                    aktion = Some(true);
+                }
+                if ui.button("Abbrechen").clicked() {
+                    aktion = Some(false);
+                }
+            });
+        });
+
+        if umschalten {
+            if let Err(fehler) = geraet.starte_ziel_umschaltung() {
+                d.info = fehler;
+                d.info_farbe = Some(FARBE_FEHLER);
+            }
+        }
+        if messen {
+            let zielhoehe = parse_zahl(&d.zielhoehe).unwrap_or(0.0);
+            match geraet.starte_messung(zielhoehe) {
+                Ok(()) => {
+                    d.wartet = true;
+                    d.info = "Messung startet …".to_string();
+                    d.info_farbe = Some(FARBE_WARNUNG);
+                }
+                Err(fehler) => {
+                    d.info = fehler;
+                    d.info_farbe = Some(FARBE_FEHLER);
+                }
+            }
+        }
+        match aktion {
+            Some(false) => {
+                if d.wartet {
+                    // Eine laufende Messung wird weiter abgearbeitet; das Ergebnis geht dann ins Leere
+                    d.wartet = false;
+                }
+            }
+            Some(true) => match d.ergebnis() {
+                Ok(p) => {
+                    self.letzter_code = d.code.trim().to_string();
+                    if projekt.einstellungen.mess_modus_name == "Prisma" {
+                        self.letzte_zielhoehe.clone_from(&d.zielhoehe);
+                    }
+                    match schreibe_anschlusspunkt(projekt, &p) {
+                        Ok(()) => self.status = format!("Punkt '{}' gespeichert  |  R: {}   H: {}", p.punkt_nr, f(p.r, 3), f(p.h, 3)),
+                        Err(fehler) => {
+                            self.dialog = Some(Dialog::Hinweis { titel: "Fehler".into(), text: format!("Punkt konnte nicht geschrieben werden:\n{fehler}") });
+                        }
+                    }
+                }
+                Err(text) => {
+                    d.info = text;
+                    d.info_farbe = Some(FARBE_FEHLER);
+                    self.dialog = Some(Dialog::Messdaten(d));
+                }
+            },
+            None => self.dialog = Some(Dialog::Messdaten(d)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tachymeter::messung::TachymeterMessung;
+
+    fn voll() -> TachymeterMessung {
+        let mut m = TachymeterMessung::neu("GeoCOM", "");
+        m.hz_gon = Some(12.34567);
+        m.v_gon = Some(98.7654321);
+        m.schraegstrecke_m = Some(25.12345);
+        m
+    }
+
+    #[test]
+    fn messung_wird_eingetragen_und_freigegeben() {
+        let mut d = MessdatenEingabe::neu(100.0, 200.0, "A1", 0.0, "", STANDARD_ZIELHOEHE);
+        assert_eq!(d.code, STANDARD_CODE);
+        assert!(!d.kann_uebernehmen());
+        d.uebernimm_messung(&voll());
+        assert_eq!((d.hz.as_str(), d.v.as_str(), d.strecke.as_str()), ("12.3457", "98.7654", "25.123"));
+        assert!(d.kann_uebernehmen());
+        let p = d.ergebnis().unwrap();
+        assert_eq!((p.punkt_nr.as_str(), p.r, p.h, p.strecke, p.zielhoehe), ("A1", 100.0, 200.0, 25.123, 1.7));
+    }
+
+    #[test]
+    fn unvollstaendige_messung_und_eingabefehler() {
+        let mut d = MessdatenEingabe::neu(1.0, 2.0, "", 5.0, "X", "0.000");
+        let mut halb = voll();
+        halb.schraegstrecke_m = None;
+        d.uebernimm_messung(&halb);
+        assert!(!d.aktiv && d.info.contains("Unvollständig"));
+        assert!(d.ergebnis().unwrap_err().contains("Punktnummer"));
+        d.punkt_nr = "7".into();
+        assert!(d.ergebnis().unwrap_err().contains("Strecke"));
+        d.strecke = "0".into();
+        d.aktiv = true;
+        assert!(!d.kann_uebernehmen());
+        assert_eq!(d.hoehe, "5.000");
+    }
+
+    #[test]
+    fn anschlusszeile_und_datei() {
+        let p = StationierungsPunkt { punkt_nr: "A1".into(), r: 1.5, h: 2.25, hoehe: 3.0, hz: 4.0, v: 99.5, strecke: 10.0, zielhoehe: 1.7 };
+        assert_eq!(anschluss_zeile(&p), "A1,1.500,2.250,3.000,4.0000,99.5000,10.000,1.700");
+    }
+}
