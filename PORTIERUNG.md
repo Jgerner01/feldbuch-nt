@@ -115,8 +115,12 @@ Messen im Viewer und Zielrichtung noch ungetestet.
   Gerät.** Abweichungen: Das Bearbeiten von X/Y/Z rechnet Strecke, Hz und V neu (im Original blieben sie veraltet, obwohl
   das Anfahren sie benutzt); „-0.0000“ wird als „0.0000“ geschrieben; der Aufnahmetest ist eine Ansicht im Hauptfenster
   statt eines eigenen Fensters. Einen NMEA-Parser gibt es auch im Original nicht, nur das Datenmodell.
-- Info-Seite ist voll portiert (Icon, Version, Autor, Hilfetext; das Programm-Icon steht auch in der Titelleiste).
-  Das Icon der EXE-Datei im Explorer fehlt noch (braucht eine Windows-Ressource im Build).
+- Info-Seite ist voll portiert (Icon, Version, Autor, Hilfetext).
+- Programm-Icon: neues Icon (blaue Kachel, Zielkreuz mit orangen Marken, „NT“) statt „FB“. `tools\Icon-Erzeugen.ps1`
+  erzeugt `icons\app_icon.png` (Fenster, Info-Seite) und `icons\app.ico` (16 bis 256 px; die kleinen Größen sind
+  vereinfacht gezeichnet). `build.rs` bettet die ICO samt Produktname und Version als Windows-Ressource in die EXE ein
+  (braucht den Ressourcen-Compiler rc.exe aus dem Windows SDK; fehlt er, entsteht die EXE ohne Icon und der Build
+  warnt).
 - Update-Dienst ist portiert (`update.rs`, `gui/update_dialog.rs`, `tools/Release-Paket.ps1`, 315 Tests insgesamt): Beim Start
   (nur in veröffentlichten Versionen, nie in `target\`) und auf Knopfdruck in der Info-Seite sucht er in den GitHub-Releases
   von `Jgerner01/feldbuch-nt` nach einer neueren Version. Ein Release braucht `Feldbuch-NT-v<Version>-win-x64.zip` und
