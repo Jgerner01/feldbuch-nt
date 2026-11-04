@@ -65,7 +65,6 @@ Messen im Viewer und Zielrichtung noch ungetestet.
 
 ## Noch nicht portiert
 
-- Rechner: Absteckung (Punkt-, Achsabsteckung, Schnurgerüst; die Auswahl „Absteckung" im Hauptmenü ist da)
 - Polarpunkte sind portiert (`gui/polarpunkte.rs`, `daten/polar_messdaten.rs`, `daten/kor_csv.rs`, 181 Tests): Lesen der
   Messdatei (alt/neu), Orientierung aus gespeicherter Stationierung oder neu aus den Anschlusspunkten, Ein-Ziel-Fall,
   lokales System, Ampel mit schaltbaren Beobachtungen, Exzentrizitäten je Punkt (Rückschreiben in die dat.csv),
@@ -108,7 +107,44 @@ Messen im Viewer und Zielrichtung noch ungetestet.
   (mit Lageplan als PNG, ohne Beschriftung) und Polarpunkte. Die Schnitte schreiben beim Verlassen automatisch, wie im
   Original; die anderen Formulare haben einen Knopf „Protokoll" (Polarpunkte schreiben beim Speichern).
   Die Dateien landen im Projektverzeichnis und nur bei eingeschalteter Protokollierung.
-- Tachymeter: Fenster „Aufnahmetest" und „Anfahren" (einen NMEA-Parser gibt es auch im Original nicht, nur das
-  Datenmodell)
-- Formulare: Update-Dienst, Info (voll)
-- Protokolle der noch fehlenden Absteckungsmodule (Punkt-, Achs-, Raster-, Profilabsteckung, Schnurgerüst)
+- Aufnahmetest mit Anfahren ist portiert (`gui/aufnahmetest.rs`, `daten/aufnahmetest.rs`, `tachymeter/anfahren.rs`,
+  290 Tests insgesamt): Messen ins lokale System (Instrument = Ursprung), bearbeitbare Tabelle (`aufnahmetest.json`, Format
+  der C#-Version), motorisches Anfahren (GeoCOM: Ist-Winkel → relative Bewegung 6007 → Ist-Winkel, Bewegung höchstens 30 s,
+  Stopp-Knopf), Export als KOR und DAT. Geöffnet wird er im DXF-Viewer (Knopf ⊙ oder Rechtsklick „Anfahren: Nr“ auf einen
+  Importpunkt, der in der Tabelle des Aufnahmetests vorkommen muss). **Nicht mit Hardware geprüft; das Anfahren bewegt das
+  Gerät.** Abweichungen: Das Bearbeiten von X/Y/Z rechnet Strecke, Hz und V neu (im Original blieben sie veraltet, obwohl
+  das Anfahren sie benutzt); „-0.0000“ wird als „0.0000“ geschrieben; der Aufnahmetest ist eine Ansicht im Hauptfenster
+  statt eines eigenen Fensters. Einen NMEA-Parser gibt es auch im Original nicht, nur das Datenmodell.
+- Info-Seite ist voll portiert (Icon, Version, Autor, Hilfetext; das Programm-Icon steht auch in der Titelleiste).
+  Das Icon der EXE-Datei im Explorer fehlt noch (braucht eine Windows-Ressource im Build).
+- Update-Dienst ist portiert (`update.rs`, `gui/update_dialog.rs`, `tools/Release-Paket.ps1`, 315 Tests insgesamt): Beim Start
+  (nur in veröffentlichten Versionen, nie in `target\`) und auf Knopfdruck in der Info-Seite sucht er in den GitHub-Releases
+  von `Jgerner01/feldbuch-nt` nach einer neueren Version. Ein Release braucht `Feldbuch-NT-v<Version>-win-x64.zip` und
+  `…zip.sha256` (erzeugt von `tools\Release-Paket.ps1`, das nichts veröffentlicht). Das Fenster „Update verfügbar“ lädt mit
+  Fortschritt und Abbruch, prüft Größe und SHA-256, entpackt (Pfade außerhalb des Ordners werden abgelehnt) und startet die
+  neue EXE mit `--update-installieren <pid> <neuer Ordner> <Zielordner>`; sie wartet auf das Ende der alten Version, ersetzt nur
+  Paketdateien, sichert das Alte in `_vorherige_Version`, rollt bei Fehlern zurück und startet neu. Installiert wird nur, wenn
+  kein DXF-Viewer und kein anderes Modul als Hauptmenü/Info offen ist und der Programmordner beschreibbar ist.
+  Getestet: Versionsvergleich, Release-Auswertung (inkl. Host- und Größenprüfung), Download/Prüfsumme/Entpacken gegen einen
+  lokalen Server, Austausch mit Rollback und der Installationsmodus mit der echten EXE. **Nicht getestet: ein echtes Release
+  auf GitHub** (es gibt noch keines; die API meldet 404, das gilt wie im Original als „kein Update“). Abweichungen: Die
+  Schnittstelle trägt die Namen von Feldbuch-NT (Repository, `feldbuch-nt.exe`, Paketname), die Prüfsumme ist wie im Original
+  keine Signatur.
+- Absteckung ist portiert (`rechnen/absteckung.rs`, `gui/absteckung/`, `protokolle/absteckung.rs`, 271 Tests insgesamt):
+  Punkt-, Achs-, Raster-, Profilabsteckung und Schnurgerüst mit Lageplan (eigene Zeichenfläche statt DXF-Karte),
+  Einweiser (Zielscheibe mit Hz-/s-Abweichung, Handeingabe wie im Original), RTF-Protokollen (beim Verlassen und per
+  Knopf; mit Lageplan-PNG außer bei der Profilabsteckung). **Noch nicht in der Oberfläche geprüft** (nur Tests und Start).
+  Abweichungen vom Original:
+  - Der Lageplan ist nicht die DXF-Karte: Statt Punkte aus dem DXF zu fangen, zeigt er die bekannten Projektpunkte
+    (Import-, Feldbuch-, Anschlusspunkte) als Hintergrund; ein Klick darauf füllt die nächste freie Zeile (Punktabsteckung,
+    Schnurgerüst vor dem Fixieren) bzw. Anfang/Ende der Achse. Mausrad zoomt, Ziehen verschiebt, Doppelklick setzt zurück.
+    Ein Doppelklick auf freie Fläche fügt keine Polygonpunkte ein; Punkte aus der DXF-Datei selbst lassen sich nicht fangen.
+    Außerdem: „Anschlusspunkte laden“, Klick auf Sollpunkte und Gebäudeseiten und bei der Achsabsteckung eine Punktauswahl.
+  - Statuswerte „abgesteckt“ bleiben bei Neuberechnung erhalten, solange Nummer und Koordinaten gleich sind.
+  - Profilabsteckung: Eine geänderte Planhöhe aktualisiert ΔH sofort (im Original blieb sie veraltet); ΔH wird im Text
+    statt im Zellhintergrund gefärbt.
+  - Schnurgerüst: Das Vorzeichen des Abstands zur Gebäudeseite war im Original vertauscht (außen galt als „innen“) und
+    ist korrigiert. Die Messung kommt vom Tachymeter (Messen-Knopf, ungetestet) oder von Hand (Hz und s).
+  - Im Protokoll der Punkt- und Achsabsteckung steht der Lageplanhinweis immer (im Original blieb er leer, weil die
+    Prüfung vor dem Schreiben des Bildes lief).
+  - Der Lageplan im PNG hat keine Beschriftung (wie bei der Flächenteilung).

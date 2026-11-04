@@ -299,10 +299,7 @@ impl DxfViewer {
                     farben((40, 70, 110), (180, 210, 255), (25, 50, 85)),
                     "Aufnahmetest: Koordinaten messen & Punkt anfahren (motorisiert)",
                 ) {
-                    self.dialog = Some(Dialog::Hinweis {
-                        titel: "Aufnahmetest".into(),
-                        text: "Der Aufnahmetest benötigt die Tachymeter-Anbindung und ist noch nicht umgesetzt.".into(),
-                    });
+                    self.wunsch = Some(Wunsch::Aufnahmetest);
                 }
                 ui.add_space(6.0);
                 if seitenknopf(ui, Inhalt::Text("⊕F", 11.0), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Freie Stationierung") {
@@ -753,14 +750,24 @@ impl DxfViewer {
             Art::Import { nr, .. } => Some(nr.clone()),
             _ => None,
         });
+        let mut anfahren_wunsch = None;
         antwort.context_menu(|ui| {
             if let Some(nr) = &import_nr {
-                ui.add_enabled(false, egui::Button::new(format!("Anfahren: {nr}")))
-                    .on_disabled_hover_text("Aufnahmetest-Fenster muss geöffnet sein");
+                if ui
+                    .button(format!("Anfahren: {nr}"))
+                    .on_hover_text("Öffnet den Aufnahmetest und fährt den Punkt gleichen Namens aus dessen Tabelle motorisch an")
+                    .clicked()
+                {
+                    anfahren_wunsch = Some(nr.clone());
+                    ui.close();
+                }
                 ui.separator();
             }
             ui.add_enabled(false, egui::Button::new(format!("R={}  H={}", de(kx, 3), de(ky, 3))));
         });
+        if let Some(nr) = anfahren_wunsch {
+            self.wunsch = Some(Wunsch::Anfahren(nr));
+        }
     }
 
     /// Wird aufgerufen, wenn ein Punkt per Klick gewählt wurde (PointPicked mit isClick).

@@ -2,6 +2,7 @@
 // Hardware: keine
 // Autor:    Johann Gerner
 
+pub mod absteckung;
 pub mod berechnungen;
 pub mod fl_teilung;
 pub mod polar;
@@ -29,6 +30,11 @@ pub const VORLAGE_HOCHPUNKT: &str = include_str!("../../vorlagen/Hochpunktherabl
 pub const VORLAGE_TRANSFORMATION: &str = include_str!("../../vorlagen/KoordTransformation_Protokoll.xml");
 pub const VORLAGE_FLAECHENTEILUNG: &str = include_str!("../../vorlagen/Flaechenteilung_Protokoll.xml");
 pub const VORLAGE_POLARPUNKTE: &str = include_str!("../../vorlagen/Polarpunkte_Protokoll.xml");
+pub const VORLAGE_PUNKTABSTECKUNG: &str = include_str!("../../vorlagen/Punktabsteckung_Protokoll.xml");
+pub const VORLAGE_ACHSABSTECKUNG: &str = include_str!("../../vorlagen/Achsabsteckung_Protokoll.xml");
+pub const VORLAGE_RASTERABSTECKUNG: &str = include_str!("../../vorlagen/Rasterabsteckung_Protokoll.xml");
+pub const VORLAGE_PROFILABSTECKUNG: &str = include_str!("../../vorlagen/Profilabsteckung_Protokoll.xml");
+pub const VORLAGE_SCHNURGERUEST: &str = include_str!("../../vorlagen/Schnurgeruest_Protokoll.xml");
 
 /// Format des Zeitpunkts im Protokollkopf.
 const ZEITPUNKT_FORMAT: &str = "%d.%m.%Y    %H:%M:%S";
@@ -233,6 +239,11 @@ mod tests {
             VORLAGE_TRANSFORMATION,
             VORLAGE_FLAECHENTEILUNG,
             VORLAGE_POLARPUNKTE,
+            VORLAGE_PUNKTABSTECKUNG,
+            VORLAGE_ACHSABSTECKUNG,
+            VORLAGE_RASTERABSTECKUNG,
+            VORLAGE_PROFILABSTECKUNG,
+            VORLAGE_SCHNURGERUEST,
         ] {
             assert!(rtf::erzeuge(v, &Felder::new(), &Tabellen::new()).is_ok());
         }

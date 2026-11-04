@@ -10,7 +10,9 @@ mod dxf_viewer;
 mod konvertierung;
 mod koord_transformation;
 mod polarpunkte;
+mod aufnahmetest;
 mod testmessungen;
+mod update_dialog;
 mod freie_stationierung;
 mod geraet;
 mod hauptfenster;
@@ -24,6 +26,7 @@ use eframe::egui;
 
 use crate::daten::projekt::Projekt;
 use crate::grundlagen::{datei_speicher, protokoll};
+use crate::update;
 
 /// Aktuell angezeigtes Modul.
 enum Ansicht {
@@ -39,6 +42,7 @@ enum Ansicht {
     Datenmanager(Box<daten_editor::DatenEditorAnsicht>),
     Konvertierung(Box<konvertierung::KonvertierungAnsicht>),
     Testmessungen(Box<testmessungen::TestmessungenAnsicht>),
+    Aufnahmetest(Box<aufnahmetest::AufnahmetestAnsicht>),
     Info,
     NochNichtPortiert(&'static str),
 }
@@ -51,6 +55,11 @@ pub struct FeldbuchApp {
     /// Der DXF-Viewer läuft als eigenes Fenster (wie das Dialogfenster der Originalversion).
     dxf_viewer: Option<Box<dxf_viewer::DxfViewer>>,
     meldungen: Vec<String>,
+    /// Laufende Suche nach Updates (Ergebnisempfänger, vom Benutzer ausgelöst).
+    update_suche: Option<(std::sync::mpsc::Receiver<update_dialog::SuchErgebnis>, bool)>,
+    update_dialog: Option<update_dialog::UpdateDialog>,
+    /// Die Info-Seite wünscht eine Suche.
+    update_pruefen_wunsch: bool,
 }
 
 impl FeldbuchApp {
@@ -79,7 +88,21 @@ impl FeldbuchApp {
                 ));
             }
         }
-        Self { projekt, geraet, ansicht: Ansicht::Start, dxf_viewer: None, meldungen }
+        // Beim Start still nach Updates suchen (nur in veröffentlichten Versionen); Reste früherer Updates aufräumen
+        let update_suche = update::ist_veroeffentlicht().then(|| {
+            update::raeume_auf(&update::update_ordner());
+            (update_dialog::starte_suche(), false)
+        });
+        Self {
+            projekt,
+            geraet,
+            ansicht: Ansicht::Start,
+            dxf_viewer: None,
+            meldungen,
+            update_suche,
+            update_dialog: None,
+            update_pruefen_wunsch: false,
+        }
     }
 
     /// Fenstertitel passend zum Projekt.
@@ -88,6 +111,92 @@ impl FeldbuchApp {
             format!("Feldbuch  –  {}", self.projekt.einstellungen.projekt_name)
         } else {
             "Feldbuch".to_string()
+        }
+    }
+
+    /// Öffnet den Aufnahmetest (oder bleibt in ihm) und fährt auf Wunsch den Punkt mit dieser Nummer an.
+    fn oeffne_aufnahmetest(&mut self, anfahren_nach: Option<&str>) {
+        if !matches!(self.ansicht, Ansicht::Aufnahmetest(_)) {
+            self.ansicht = Ansicht::Aufnahmetest(Box::new(aufnahmetest::AufnahmetestAnsicht::neu(&self.projekt)));
+        }
+        if let (Ansicht::Aufnahmetest(a), Some(nr)) = (&mut self.ansicht, anfahren_nach) {
+            a.anfahren_nach(nr, &mut self.geraet);
+        }
+    }
+
+    /// Läuft gerade etwas, das ein Update nicht unterbrechen darf (DXF-Viewer oder ein anderes Modul als Hauptmenü/Info)?
+    fn update_blockiert(&self) -> bool {
+        self.dxf_viewer.is_some() || !matches!(self.ansicht, Ansicht::Start | Ansicht::Info)
+    }
+
+    /// Wertet das Ergebnis einer Update-Suche aus. Beim Start bleibt alles still, bei manueller Suche gibt es immer eine Rückmeldung.
+    fn update_suche_fertig(&mut self, ergebnis: update_dialog::SuchErgebnis, manuell: bool) {
+        match ergebnis {
+            Ok(Some(info)) => {
+                let basis = crate::grundlagen::pfade::basis();
+                if !update::ist_ordner_schreibbar(&basis) {
+                    if manuell {
+                        self.meldungen.push(format!(
+                            "Version {} ist verfügbar, aber der Programmordner ist nicht beschreibbar:\n{}\n\nBitte die neue Version von der GitHub-Release-Seite herunterladen:\n{}",
+                            info.version,
+                            basis.display(),
+                            update::RELEASE_SEITE
+                        ));
+                    }
+                    return;
+                }
+                // Beim Start nur fragen, solange nichts anderes offen ist, damit keine laufende Arbeit gestört wird
+                if (manuell || !self.update_blockiert()) && self.update_dialog.is_none() {
+                    self.update_dialog = Some(update_dialog::UpdateDialog::neu(info));
+                }
+            }
+            Ok(None) => {
+                if manuell {
+                    self.meldungen.push(format!("Version {} ist aktuell.", update::Version::aktuell()));
+                }
+            }
+            Err(fehler) => {
+                crate::grundlagen::fehler_log::log("Update-Prüfung", &fehler);
+                if manuell {
+                    self.meldungen.push("Die Suche nach Updates ist fehlgeschlagen. Bitte die Internetverbindung prüfen.".to_string());
+                }
+            }
+        }
+    }
+
+    /// Treibt Suche und Update-Fenster voran.
+    fn bearbeite_update(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.update_pruefen_wunsch) && self.update_suche.is_none() {
+            if update::ist_veroeffentlicht() {
+                self.update_suche = Some((update_dialog::starte_suche(), true));
+            } else {
+                self.meldungen.push("Updates sind nur in der veröffentlichten Programmversion möglich.".to_string());
+            }
+        }
+        if let Some((empfaenger, manuell)) = self.update_suche.take() {
+            match empfaenger.try_recv() {
+                Ok(ergebnis) => self.update_suche_fertig(ergebnis, manuell),
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    self.update_suche = Some((empfaenger, manuell));
+                    ctx.request_repaint_after(std::time::Duration::from_millis(200));
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+            }
+        }
+        let blockiert = self.update_blockiert();
+        let Some(dialog) = self.update_dialog.as_mut() else {
+            return;
+        };
+        match dialog.zeige(ctx, blockiert) {
+            update_dialog::Aktion::Weiter => {}
+            update_dialog::Aktion::Schliessen => self.update_dialog = None,
+            update_dialog::Aktion::Neustart(ordner) => {
+                self.update_dialog = None;
+                match update::starte_installation(&ordner, &crate::grundlagen::pfade::basis()) {
+                    Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+                    Err(fehler) => self.meldungen.push(format!("Das Update konnte nicht gestartet werden:\n{fehler}")),
+                }
+            }
         }
     }
 
@@ -133,6 +242,7 @@ impl eframe::App for FeldbuchApp {
         }
         self.zeige_meldungen(&ctx);
         hauptfenster::zeichne(self, ui);
+        self.bearbeite_update(&ctx);
 
         // DXF-Viewer als eigenes Fenster
         let mut wunsch = None;
@@ -146,8 +256,11 @@ impl eframe::App for FeldbuchApp {
         if self.dxf_viewer.is_none() {
             self.geraet.live_hz_aktiv = false;
         }
-        if let Some(dxf_viewer::Wunsch::FreieStationierung) = wunsch {
-            self.ansicht = Ansicht::FreieStationierung(Box::default());
+        match wunsch {
+            Some(dxf_viewer::Wunsch::FreieStationierung) => self.ansicht = Ansicht::FreieStationierung(Box::default()),
+            Some(dxf_viewer::Wunsch::Aufnahmetest) => self.oeffne_aufnahmetest(None),
+            Some(dxf_viewer::Wunsch::Anfahren(nr)) => self.oeffne_aufnahmetest(Some(&nr)),
+            None => {}
         }
     }
 

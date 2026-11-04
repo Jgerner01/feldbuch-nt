@@ -2,6 +2,7 @@
 // Hardware: keine
 // Autor:    Johann Gerner
 
+pub mod aufnahmetest;
 pub mod csv_datei;
 pub mod einstellungen;
 pub mod json_speicher;

@@ -137,9 +137,13 @@ struct LoeschZiele {
 }
 
 /// Wunsch des Viewers an das Hauptfenster.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wunsch {
     FreieStationierung,
+    /// Aufnahmetest öffnen.
+    Aufnahmetest,
+    /// Aufnahmetest öffnen und den Punkt mit dieser Nummer anfahren.
+    Anfahren(String),
 }
 
 /// Der DXF-Viewer.

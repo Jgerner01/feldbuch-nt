@@ -9,6 +9,7 @@ use std::time::Instant;
 
 use crate::daten::einstellungen::Einstellungen;
 use crate::grundlagen::{kommunikationslog, protokoll};
+use crate::tachymeter::anfahren::{AnfahrErgebnis, Anfahren};
 use crate::tachymeter::befehle::{Befehlsgeber, DatenParser, Protokoll};
 use crate::tachymeter::geocom;
 use crate::tachymeter::gsi;
@@ -74,6 +75,10 @@ pub struct Geraet {
     live_wartet: bool,
     live_gesendet: Instant,
     live_naechste: Instant,
+    /// Laufendes motorisches Anfahren.
+    pub anfahren: Option<Anfahren>,
+    /// Ergebnis des letzten Anfahrens, bis die Oberfläche es abholt.
+    anfahren_ergebnis: Option<AnfahrErgebnis>,
     /// Zuletzt aus einer Antwortzeile gelesene Messung (für das Testfenster).
     pub letzte_messung: Option<crate::tachymeter::messung::TachymeterMessung>,
     /// Zähler, der bei jeder neu gelesenen Messung steigt.
@@ -112,6 +117,8 @@ impl Geraet {
             live_wartet: false,
             live_gesendet: Instant::now(),
             live_naechste: Instant::now(),
+            anfahren: None,
+            anfahren_ergebnis: None,
             letzte_messung: None,
             messung_nr: 0,
             empfaenger,
@@ -191,7 +198,11 @@ impl Geraet {
 
     /// Läuft gerade eine Testmessung, ein Schaltvorgang oder eine Punktmessung?
     pub fn beschaeftigt(&self) -> bool {
-        self.test.is_some() || self.schalter.is_some() || self.messung.is_some() || self.messung_ausstehend.is_some()
+        self.test.is_some()
+            || self.schalter.is_some()
+            || self.messung.is_some()
+            || self.messung_ausstehend.is_some()
+            || self.anfahren.is_some()
     }
 
     /// Startet eine Punktmessung (im Viewer). Beginnt nach einer offenen Hz-Abfrage, damit keine Antworten vermischt werden.
@@ -205,6 +216,39 @@ impl Geraet {
         self.messung_ergebnis = None;
         self.messung_ausstehend = Some(zielhoehe);
         Ok(())
+    }
+
+    /// Startet das motorische Anfahren der Richtung (Hz, V) in gon.
+    pub fn starte_anfahren(&mut self, hz_gon: f64, v_gon: f64) -> Result<(), String> {
+        if !self.ist_verbunden() {
+            return Err("Kein Tachymeter verbunden.".to_string());
+        }
+        if self.beschaeftigt() {
+            return Err("Es läuft noch ein anderer Vorgang.".to_string());
+        }
+        self.anfahren_ergebnis = None;
+        self.live_wartet = false;
+        LiveWinkelSperre::anfrage_beendet();
+        self.schreibe(format!("— Anfahren: Hz={hz_gon:.4} gon  V={v_gon:.4} gon —"));
+        self.anfahren = Some(Anfahren::neu(self.protokoll(), hz_gon, v_gon, Instant::now()));
+        Ok(())
+    }
+
+    /// Bricht das Anfahren in der Oberfläche ab (das Gerät fährt ggf. noch weiter).
+    pub fn stoppe_anfahren(&mut self) {
+        if self.anfahren.take().is_some() {
+            self.schreibe("— Anfahren abgebrochen (Gerät fährt ggf. noch) —".to_string());
+        }
+    }
+
+    /// Statustext des laufenden Anfahrens.
+    pub fn anfahren_status(&self) -> Option<&str> {
+        self.anfahren.as_ref().map(Anfahren::status)
+    }
+
+    /// Holt das Ergebnis des Anfahrens ab.
+    pub fn nimm_anfahr_ergebnis(&mut self) -> Option<AnfahrErgebnis> {
+        self.anfahren_ergebnis.take()
     }
 
     /// Text zum laufenden Messvorgang für die Statuszeile.
@@ -377,6 +421,9 @@ impl Geraet {
                     if let Some(m) = self.messung.as_mut() {
                         m.zeile(&zeile, jetzt);
                     }
+                    if let Some(a) = self.anfahren.as_mut() {
+                        a.zeile(&zeile, jetzt);
+                    }
                 }
                 Ereignis::Getrennt => {
                     self.schreibe("Verbindung getrennt.".to_string());
@@ -386,6 +433,9 @@ impl Geraet {
                     LiveWinkelSperre::anfrage_beendet();
                     if self.messung.take().is_some() || self.messung_ausstehend.take().is_some() {
                         self.messung_ergebnis = Some(MessErgebnis::Fehler("Verbindung während der Messung getrennt.".to_string()));
+                    }
+                    if self.anfahren.take().is_some() {
+                        self.anfahren_ergebnis = Some(AnfahrErgebnis { ok: false, text: "Verbindung während des Anfahrens getrennt.".into() });
                     }
                     if self.test.take().is_some() {
                         self.test_ergebnis = Some(TestErgebnis { ok: false, text: "Verbindung während der Testmessung getrennt.".into() });
@@ -413,7 +463,33 @@ impl Geraet {
         self.treibe_testmessung(jetzt);
         self.treibe_schalter(jetzt);
         self.treibe_messung(jetzt);
+        self.treibe_anfahren(jetzt);
         self.treibe_live(jetzt);
+    }
+
+    /// Sendet anstehende Befehle des Anfahrens und übernimmt das Ergebnis.
+    fn treibe_anfahren(&mut self, jetzt: Instant) {
+        let Some(mut a) = self.anfahren.take() else {
+            return;
+        };
+        a.pruefe_zeit(jetzt);
+        if let Some((befehl, rpc)) = a.naechster_befehl() {
+            self.parser.setze_letzten_rpc(rpc);
+            match self.verbindung.senden(&befehl) {
+                Ok(()) => self.schreibe(format!(">> {befehl}")),
+                Err(e) => {
+                    self.anfahren_ergebnis = Some(AnfahrErgebnis { ok: false, text: format!("Senden fehlgeschlagen: {e}") });
+                    return;
+                }
+            }
+        }
+        match a.ergebnis() {
+            Some(e) => {
+                self.schreibe(format!("— {} —", e.text));
+                self.anfahren_ergebnis = Some(e.clone());
+            }
+            None => self.anfahren = Some(a),
+        }
     }
 
     /// Horizontalrichtung aus einer Antwortzeile der Live-Abfrage.

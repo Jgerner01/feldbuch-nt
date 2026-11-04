@@ -27,6 +27,11 @@ pub fn f(wert: f64, stellen: usize) -> String {
     format!("{wert:.stellen$}")
 }
 
+/// Wert mit Vorzeichen, Null mit Pluszeichen (wie .NET „+0.0000;-0.0000“).
+pub fn plus_minus(wert: f64, stellen: usize) -> String {
+    if wert < 0.0 { f(wert, stellen) } else { format!("+{}", f(wert, stellen)) }
+}
+
 /// Formatiert mit Dezimalkomma für die Anzeige.
 pub fn de(wert: f64, stellen: usize) -> String {
     f(wert, stellen).replace('.', ",")
@@ -49,6 +54,13 @@ pub fn parse_zahl_oder(text: &str, ersatz: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plus_minus_zeigt_immer_ein_vorzeichen() {
+        assert_eq!(plus_minus(1.5, 2), "+1.50");
+        assert_eq!(plus_minus(-1.5, 2), "-1.50");
+        assert_eq!(plus_minus(0.0, 1), "+0.0");
+    }
 
     #[test]
     fn rundet_exakte_mitten_wie_dotnet() {

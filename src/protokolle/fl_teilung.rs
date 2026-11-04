@@ -73,8 +73,8 @@ pub fn schreibe(polygon: &[Punkt], erg: &Ergebnis, bearbeiter: &str, jetzt: Naiv
 }
 
 /// Mischt eine Farbe mit Alpha über den Hintergrund.
-fn mische(bild: &mut RgbaImage, x: i64, y: i64, farbe: Rgba<u8>) {
-    if x < 0 || y < 0 || x >= i64::from(BREITE) || y >= i64::from(HOEHE) {
+pub(super) fn mische(bild: &mut RgbaImage, x: i64, y: i64, farbe: Rgba<u8>) {
+    if x < 0 || y < 0 || x >= i64::from(bild.width()) || y >= i64::from(bild.height()) {
         return;
     }
     let (x, y) = (x as u32, y as u32);
@@ -85,11 +85,11 @@ fn mische(bild: &mut RgbaImage, x: i64, y: i64, farbe: Rgba<u8>) {
 }
 
 /// Füllt ein Polygon (gerade-ungerade-Regel, Scanline).
-fn fuelle(bild: &mut RgbaImage, punkte: &[(f64, f64)], farbe: Rgba<u8>) {
+pub(super) fn fuelle(bild: &mut RgbaImage, punkte: &[(f64, f64)], farbe: Rgba<u8>) {
     if punkte.len() < 3 {
         return;
     }
-    for y in 0..HOEHE {
+    for y in 0..bild.height() {
         let yc = f64::from(y) + 0.5;
         let mut xs: Vec<f64> = Vec::new();
         for i in 0..punkte.len() {
@@ -108,7 +108,7 @@ fn fuelle(bild: &mut RgbaImage, punkte: &[(f64, f64)], farbe: Rgba<u8>) {
 }
 
 /// Zeichnet eine Linie der Stärke 2 px; mit `gestrichelt` abwechselnd Strich und Lücke.
-fn linie(bild: &mut RgbaImage, a: (f64, f64), b: (f64, f64), farbe: Rgba<u8>, gestrichelt: bool) {
+pub(super) fn linie(bild: &mut RgbaImage, a: (f64, f64), b: (f64, f64), farbe: Rgba<u8>, gestrichelt: bool) {
     let laenge = (b.0 - a.0).hypot(b.1 - a.1);
     let schritte = laenge.ceil().max(1.0) as usize;
     for i in 0..=schritte {
@@ -126,7 +126,7 @@ fn linie(bild: &mut RgbaImage, a: (f64, f64), b: (f64, f64), farbe: Rgba<u8>, ge
     }
 }
 
-fn kreis(bild: &mut RgbaImage, m: (f64, f64), radius: f64, fuellung: Rgba<u8>, rand: Rgba<u8>) {
+pub(super) fn kreis(bild: &mut RgbaImage, m: (f64, f64), radius: f64, fuellung: Rgba<u8>, rand: Rgba<u8>) {
     let r = radius.ceil() as i64 + 1;
     for dy in -r..=r {
         for dx in -r..=r {

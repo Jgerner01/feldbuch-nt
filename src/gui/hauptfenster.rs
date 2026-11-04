@@ -38,7 +38,7 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
                 zurueck = ansicht.zeichne(ui, &mut app.projekt, &mut app.geraet);
             }
             Ansicht::Berechnungen(ansicht) => ansicht.zeichne(ui, &mut app.projekt),
-            Ansicht::Absteckung(ansicht) => ansicht.zeichne(ui, &app.projekt),
+            Ansicht::Absteckung(ansicht) => ansicht.zeichne(ui, &app.projekt, &mut app.geraet),
             Ansicht::Datenmanager(ansicht) => ansicht.zeichne(ui, &app.projekt),
             Ansicht::Testmessungen(ansicht) => {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.projekt, &mut app.geraet));
@@ -49,7 +49,14 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
             Ansicht::Polarpunkte(ansicht) => {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.projekt));
             }
-            Ansicht::Info => zeichne_info(ui),
+            Ansicht::Aufnahmetest(ansicht) => {
+                egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.geraet));
+            }
+            Ansicht::Info => {
+                if zeichne_info(ui, app.update_suche.is_some()) {
+                    app.update_pruefen_wunsch = true;
+                }
+            }
             Ansicht::NochNichtPortiert(name) => {
                 ui.heading(*name);
                 ui.label("Dieses Modul ist in Feldbuch-NT noch nicht umgesetzt.");
@@ -147,11 +154,35 @@ fn zeichne_start(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
     });
 }
 
-fn zeichne_info(ui: &mut egui::Ui) {
-    ui.heading("Feldbuch-NT");
-    ui.label(format!("Version {VERSION}"));
-    ui.label("Geodätisches Feldbuch mit Tachymeteranbindung und DXF-Viewer");
-    ui.label("Rust-Neuimplementierung (egui)");
+/// Hilfehinweise der Info-Seite (wie im Original).
+const HILFE: [&str; 4] = [
+    "• Bluetooth-Gerät zuerst über die Windows-Einstellungen koppeln, dann unter Tachymeter-Kommunikation den COM-Port wählen.",
+    "• DXF-Datei über den DXF-Viewer öffnen.",
+    "• Freie Stationierung benötigt mindestens 2 bekannte Punkte im DXF.",
+    "• Das Protokollieren (Hauptmenü) schreibt RTF-Protokolle der Berechnungen ins Projektverzeichnis.",
+];
+
+/// Zeichnet die Info-Seite; liefert `true`, wenn „Nach Updates suchen“ geklickt wurde.
+fn zeichne_info(ui: &mut egui::Ui, sucht: bool) -> bool {
+    ui.horizontal(|ui| {
+        ui.add(egui::Image::new(egui::include_image!("../../icons/app_icon.png")).fit_to_exact_size(egui::Vec2::splat(52.0)));
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new("Feldbuch-NT").size(26.0).strong().color(egui::Color32::from_rgb(30, 60, 110)));
+            ui.label(egui::RichText::new(format!("Version {VERSION}")).size(15.0).color(egui::Color32::from_gray(90)));
+        });
+    });
+    ui.separator();
+    ui.label("Geodätisches Feldbuch mit Freier Stationierung, Tachymeteranbindung und DXF-Viewer.");
+    ui.label("Rust-Neuimplementierung (egui) des C#-Programms Feldbuch.");
     ui.add_space(8.0);
-    ui.label("© 2026 Johann Gerner");
+    ui.label("Autor:   Johann Gerner");
+    ui.label(egui::RichText::new("© 2026 Johann Gerner").color(egui::Color32::from_gray(110)));
+    ui.separator();
+    ui.label(egui::RichText::new("Hilfe").strong());
+    for zeile in HILFE {
+        ui.label(zeile);
+    }
+    ui.separator();
+    let text = if sucht { "Suche läuft …" } else { "Nach Updates suchen" };
+    ui.add_enabled(!sucht, egui::Button::new(text)).clicked()
 }
