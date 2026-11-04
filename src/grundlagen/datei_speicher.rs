@@ -126,6 +126,11 @@ pub fn pruefe_schreibzugriff(pfad: &Path) -> io::Result<()> {
 
 /// Schreibt Text atomar (temporäre Datei, Flush, Ersetzen).
 pub fn schreibe_text(pfad: &Path, text: &str) -> io::Result<()> {
+    schreibe_bytes(pfad, text.as_bytes())
+}
+
+/// Schreibt Binärdaten mit demselben atomaren Ersetzungs- und Sicherungsschutz wie Text.
+pub fn schreibe_bytes(pfad: &Path, bytes: &[u8]) -> io::Result<()> {
     pruefe_schreibzugriff(pfad)?;
     let ziel = std::path::absolute(pfad)?;
     let verzeichnis = ziel
@@ -138,7 +143,7 @@ pub fn schreibe_text(pfad: &Path, text: &str) -> io::Result<()> {
         .unwrap_or_default();
     let temp = verzeichnis.join(format!(".{dateiname}.{}.tmp", eindeutige_kennung()));
 
-    let ergebnis = schreibe_und_ersetze(&temp, &ziel, &verzeichnis, &dateiname, text);
+    let ergebnis = schreibe_und_ersetze(&temp, &ziel, &verzeichnis, &dateiname, bytes);
     if temp.exists() {
         if let Err(e) = fs::remove_file(&temp) {
             fehler_log::log(&format!("Temporäre Datei: {}", temp.display()), &e.to_string());
@@ -158,11 +163,11 @@ fn schreibe_und_ersetze(
     ziel: &Path,
     verzeichnis: &Path,
     dateiname: &str,
-    text: &str,
+    bytes: &[u8],
 ) -> io::Result<()> {
     {
         let mut datei = File::options().write(true).create_new(true).open(temp)?;
-        datei.write_all(text.as_bytes())?;
+        datei.write_all(bytes)?;
         datei.sync_all()?;
     }
     if ziel.exists() && AUTO_BACKUP.load(Ordering::Relaxed) {

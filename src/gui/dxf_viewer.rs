@@ -8,7 +8,7 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Pos2, Rect, Sense, Stroke, Vec2};
+use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
 use crate::daten::modelle::{NeupunktErgebnis, StationierungsErgebnis, TYP_STANDPUNKT};
 use crate::daten::projekt::Projekt;
@@ -81,6 +81,7 @@ const S0_BEDINGT_MM: f64 = 5.0;
 const S0_SCHWACH_MM: f64 = 15.0;
 
 mod export;
+mod pdf_export;
 mod messdaten_eingabe;
 mod messen;
 mod zeichnen;
@@ -120,6 +121,7 @@ struct FestpunktZeile {
 /// Offener Dialog.
 enum Dialog {
     Hinweis { titel: String, text: String },
+    Fehler { titel: String, text: String },
     DxfLeeren,
     IndexReset,
     Loeschen { text: String, anzahl: usize, ziele: LoeschZiele },
@@ -178,6 +180,9 @@ pub struct DxfViewer {
     canvas_rect: Rect,
     fit_ausstehend: bool,
     lokal_zeigen_ausstehend: bool,
+    pdf_mitte: Option<[f64; 2]>,
+    pdf_ziehen: bool,
+    pdf_vorschau: std::cell::RefCell<pdf_export::Vorschau>,
     // Formular
     dxf_pfad: String,
     status: String,
@@ -240,6 +245,9 @@ impl Default for DxfViewer {
             canvas_rect: Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0)),
             fit_ausstehend: false,
             lokal_zeigen_ausstehend: false,
+            pdf_mitte: None,
+            pdf_ziehen: false,
+            pdf_vorschau: std::cell::RefCell::new(pdf_export::Vorschau::default()),
             dxf_pfad: String::new(),
             status: "DXF-Datei öffnen …".to_string(),
             lokales_system: false,
@@ -774,6 +782,7 @@ impl DxfViewer {
     }
 
     fn beim_schliessen(&mut self, projekt: &mut Projekt) {
+        if let Err(e)=projekt.rechenparameter.speichern() {self.status=format!("PDF-Vorgaben konnten nicht gespeichert werden: {e}");}
         projekt.einstellungen.letzter_modus_neupunkt = self.neupunkt_modus;
         let _ = projekt.einstellungen.speichern();
         if !self.dxf_pfad.is_empty() {
@@ -800,6 +809,10 @@ impl DxfViewer {
             .exact_size(SEITE_BREITE)
             .frame(egui::Frame::new().fill(SEITE_FARBE))
             .show(ui, |ui| self.zeichne_seitenleiste(ui, projekt));
+
+        if self.pdf_mitte.is_some() {
+            egui::Panel::top("dxf_pdf").show(ui, |ui| self.pdf_leiste(ui, projekt));
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(HINTERGRUND))
@@ -858,7 +871,7 @@ impl DxfViewer {
             ui.add_space(6.0);
             trenner(ui);
 
-            // Links (feste Positionen): Prisma, EDM, Laser
+            // Links (feste Positionen): Prisma, EDM, Laser, PDF
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_space(4.0);
                 let prisma = egui::Button::image(egui::Image::new(egui::include_image!("../../icons/toolbar_prisma.png")).fit_to_exact_size(Vec2::splat(24.0)))
@@ -895,6 +908,20 @@ impl DxfViewer {
                     if let Err(fehler) = geraet.starte_laser_umschaltung() {
                         self.status = fehler;
                     }
+                }
+                let pdf_aktiv = self.pdf_mitte.is_some();
+                let (pdf_fill, pdf_rand, pdf_tip) = if pdf_aktiv {
+                    (Color32::from_rgb(180, 85, 20), Color32::from_rgb(240, 140, 50), "PDF-Ausschnitt AN – Klick zum Ausschalten")
+                } else {
+                    (TOOLBAR_KNOPF, TOOLBAR_KNOPF_RAND, "PDF-Ausschnitt AUS – Klick zum Einschalten")
+                };
+                let pdf = egui::Button::new(RichText::new("PDF").strong().size(11.0).color(Color32::WHITE))
+                    .fill(pdf_fill)
+                    .stroke(Stroke::new(1.0, pdf_rand))
+                    .min_size(Vec2::splat(KNOPF_GROESSE));
+                if ui.add(pdf).on_hover_text(pdf_tip).clicked() {
+                    self.pdf_mitte = if pdf_aktiv { None } else { Some(self.mitte) };
+                    self.pdf_ziehen = false;
                 }
             });
         });

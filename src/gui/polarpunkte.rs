@@ -84,6 +84,21 @@ pub struct PolarpunkteAnsicht {
     frage: Option<Frage>,
 }
 
+/// Eigene Fläche für jede Tabelle; breite Inhalte bleiben im Scrollbereich.
+fn tabellen_bereich<R>(ui: &mut egui::Ui, titel: &str, hintergrund: Color32, akzent: Color32, inhalt: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new()
+        .fill(hintergrund)
+        .stroke(egui::Stroke::new(1.0, akzent))
+        .corner_radius(5.0)
+        .inner_margin(8.0)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(RichText::new(titel).strong().color(akzent));
+            ui.add_space(4.0);
+            inhalt(ui)
+        }).inner
+}
+
 fn ist_gruen(betrag: f64, grenze: f64) -> bool {
     betrag <= grenze - AMPEL_GRUEN_ABZUG
 }
@@ -815,11 +830,9 @@ impl PolarpunkteAnsicht {
         }
         ui.add_space(6.0);
 
-        ui.label(RichText::new("Anschlusspunkte").strong());
-        let geaendert_ap = self.zeichne_anschluss(ui, projekt);
-        ui.add_space(6.0);
-        ui.label(RichText::new("Polarpunkte").strong());
-        let geaendert_np = self.zeichne_polar(ui);
+        let geaendert_ap = tabellen_bereich(ui, "Anschlusspunkte", Color32::from_rgb(232, 241, 252), Color32::from_rgb(65, 105, 155), |ui| self.zeichne_anschluss(ui, projekt));
+        ui.add_space(10.0);
+        let geaendert_np = tabellen_bereich(ui, "Polarpunkte", Color32::from_rgb(232, 246, 237), Color32::from_rgb(55, 120, 80), |ui| self.zeichne_polar(ui));
         if neu_rechnen || geaendert_ap || geaendert_np {
             self.neuberechnen(projekt);
         }
@@ -831,6 +844,7 @@ impl PolarpunkteAnsicht {
     fn zeichne_anschluss(&mut self, ui: &mut egui::Ui, projekt: &Projekt) -> bool {
         let par = &projekt.rechenparameter.params;
         let raster = Raster::neu(&BREITEN_ANSCHLUSS).mit_zeilenkopf(ZEILENKOPF_BREITE);
+        egui::ScrollArea::horizontal().id_salt("polar_ap_horizontal").auto_shrink([false, true]).show(ui, |ui| {
         raster.kopf(ui, &["PunktNr", "s [m]", "vHz [cc]", "vQuer [mm]", "vLängs [mm]", "vHöhe [mm]", "Gewicht", "Hz", "Str", "Höhe"]);
         let mut geaendert = false;
         egui::ScrollArea::vertical().id_salt("polar_ap").max_height(180.0).show(ui, |ui| {
@@ -855,10 +869,12 @@ impl PolarpunkteAnsicht {
             }
         });
         geaendert
+        }).inner
     }
 
     fn zeichne_polar(&mut self, ui: &mut egui::Ui) -> bool {
         let raster = Raster::neu(&BREITEN_POLAR).mit_zeilenkopf(ZEILENKOPF_BREITE);
+        egui::ScrollArea::horizontal().id_salt("polar_np_horizontal").auto_shrink([false, true]).show(ui, |ui| {
         raster.kopf(ui, &["Berechnen", "PunktNr", "Hz [gon]", "V [gon]", "Strecke [m]", "ZH [m]", "eL [m]", "eQ [m]", "R [m]", "H [m]", "Höhe [m]", "Code", "Zeit"]);
         let mut geaendert = false;
         egui::ScrollArea::vertical().id_salt("polar_np").max_height(260.0).show(ui, |ui| {
@@ -899,6 +915,7 @@ impl PolarpunkteAnsicht {
             }
         });
         geaendert
+        }).inner
     }
 
     fn zeichne_frage(&mut self, ctx: &egui::Context, projekt: &mut Projekt) {

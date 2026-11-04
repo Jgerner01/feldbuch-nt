@@ -9,6 +9,7 @@ use crate::grundlagen::protokoll;
 
 /// Programmversion aus Cargo.toml.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const BUILDNUMMER: &str = env!("FELDBUCH_BUILD_NUMMER");
 /// Breite der Modulknöpfe.
 const KNOPF_BREITE: f32 = 260.0;
 /// Höhe der Modulknöpfe.
@@ -47,7 +48,7 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &app.projekt));
             }
             Ansicht::Polarpunkte(ansicht) => {
-                egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.projekt));
+                egui::ScrollArea::vertical().show(ui, |ui| ansicht.zeichne(ui, &mut app.projekt));
             }
             Ansicht::Aufnahmetest(ansicht) => {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.geraet));
@@ -71,7 +72,7 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
 fn zeichne_start(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {
         ui.heading("Feldbuch");
-        ui.label(format!("Version {VERSION}"));
+        ui.label(format!("Version {VERSION} · Build {BUILDNUMMER}"));
     });
     ui.separator();
 
@@ -168,7 +169,7 @@ fn zeichne_info(ui: &mut egui::Ui, sucht: bool) -> bool {
         ui.add(egui::Image::new(egui::include_image!("../../icons/app_icon.png")).fit_to_exact_size(egui::Vec2::splat(52.0)));
         ui.vertical(|ui| {
             ui.label(egui::RichText::new("Feldbuch-NT").size(26.0).strong().color(egui::Color32::from_rgb(30, 60, 110)));
-            ui.label(egui::RichText::new(format!("Version {VERSION}")).size(15.0).color(egui::Color32::from_gray(90)));
+            ui.label(egui::RichText::new(format!("Version {VERSION} · Build {BUILDNUMMER}")).size(15.0).color(egui::Color32::from_gray(90)));
         });
     });
     ui.separator();

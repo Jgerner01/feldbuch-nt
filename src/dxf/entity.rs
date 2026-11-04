@@ -168,7 +168,7 @@ impl DxfEntity {
     }
 
     /// Mittelpunkt bzw. Bezugspunkt für Overlays mit einem Punkt.
-    fn bezugspunkt(&self) -> Option<(f64, f64)> {
+    pub(crate) fn bezugspunkt(&self) -> Option<(f64, f64)> {
         match &self.art {
             Art::Standpunkt(p) | Art::Neupunkt(p) => Some((p.r, p.h)),
             Art::Import { wx, wy, .. } | Art::Residual { wx, wy, .. } | Art::Marker { wx, wy, .. } => Some((*wx, *wy)),
@@ -385,7 +385,16 @@ impl DxfEntity {
             }
             Art::Text { x, y, hoehe, text } => {
                 let px = 6.0_f32.max((hoehe * a.scale) as f32);
-                maler.text(ts(*x, *y), Align2::LEFT_TOP, text, FontId::proportional(px), farbe);
+                let anker = ts(*x, *y);
+                let layout_px = px.min(128.0);
+                let galley = maler.layout_no_wrap(text.clone(), FontId::proportional(layout_px), farbe);
+                let mut shape = Shape::Text(eframe::egui::epaint::TextShape::new(anker, galley, farbe));
+                let faktor = px / layout_px;
+                shape.transform(eframe::egui::emath::TSTransform {
+                    scaling: faktor,
+                    translation: anker.to_vec2() * (1.0 - faktor),
+                });
+                maler.add(shape);
             }
             Art::Insert { x, y, .. } => zeichne_insert(maler, ts(*x, *y), self.punkt_typ(), stift),
             Art::Standpunkt(p) => zeichne_standpunkt(maler, ts(p.r, p.h), p),

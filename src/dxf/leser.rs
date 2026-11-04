@@ -22,13 +22,23 @@ pub fn lese(pfad: &Path) -> Result<Vec<DxfEntity>, String> {
     Ok(parse_entities(&lese_gruppen(&text)))
 }
 
-/// Erkennt die Kodierung: UTF-8 (mit/ohne BOM) oder UTF-16 LE; ungültige Bytes werden ersetzt.
+/// Erkennt UTF-8, UTF-16 LE sowie die deklarierte Windows-1252-Kodierung älterer DXFs.
 fn dekodiere(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xFF, 0xFE]) {
         let einheiten: Vec<u16> = bytes[2..].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
         return String::from_utf16_lossy(&einheiten);
     }
     let ohne_bom = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    if let Ok(text) = std::str::from_utf8(ohne_bom) {
+        return text.to_owned();
+    }
+    if ohne_bom.windows(b"ANSI_1252".len()).any(|w| w.eq_ignore_ascii_case(b"ANSI_1252")) {
+        const C1: [char;32] = [
+            '€','\u{81}','‚','ƒ','„','…','†','‡','ˆ','‰','Š','‹','Œ','\u{8d}','Ž','\u{8f}',
+            '\u{90}','‘','’','“','”','•','–','—','˜','™','š','›','œ','\u{9d}','ž','Ÿ',
+        ];
+        return ohne_bom.iter().map(|b| if (0x80..=0x9f).contains(b) {C1[usize::from(*b-0x80)]} else {char::from(*b)}).collect();
+    }
     String::from_utf8_lossy(ohne_bom).into_owned()
 }
 
@@ -215,5 +225,18 @@ mod tests {
             bytes.extend(u.to_le_bytes());
         }
         assert_eq!(dekodiere(&bytes), "0\nEOF\n");
+    }
+
+    #[test]
+    fn deklarierte_windows1252_dxf_behaelt_umlaute_und_sonderzeichen() {
+        let bytes = b"0\nSECTION\n2\nHEADER\n9\n$DWGCODEPAGE\n3\nANSI_1252\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n0\nTEXT\n8\n0\n10\n0\n20\n0\n40\n2\n1\nH\xf6he Stra\xdfe \x80\n0\nENDSEC\n0\nEOF\n";
+        let text = dekodiere(bytes);
+        assert!(!text.contains('\u{fffd}'));
+        let e = parse_entities(&lese_gruppen(&text));
+        assert!(matches!(&e[0].art, Art::Text{text,..} if text=="Höhe Straße €"));
+        let refs=e.iter().map(|e|(e,Color32::BLACK)).collect::<Vec<_>>();
+        let scene=crate::dxf::pdf::erzeuge(&eframe::egui::Context::default(),&crate::daten::rechenparameter::PdfParameter::default(),[0.0,0.0],&refs,"",None);
+        assert!(crate::dxf::pdf::pdf(&scene).is_ok(),"Die korrekt dekodierten Beschriftungen müssen als PDF exportierbar sein");
+        assert_eq!(dekodiere("ANSI_1252\nHöhe Straße €".as_bytes()),"ANSI_1252\nHöhe Straße €");
     }
 }

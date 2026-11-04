@@ -21,12 +21,16 @@ impl RechenparameterAnsicht {
         ui.heading("Rechenparameter");
         let p = &mut projekt.rechenparameter.params;
 
-        egui::Grid::new("rechenparameter").num_columns(2).spacing([12.0, 8.0]).show(ui, |ui| {
+        let hoehe = (ui.available_height() - 72.0).max(80.0);
+        egui::ScrollArea::vertical().id_salt("rechenparameter_bereiche").max_height(hoehe).show(ui, |ui| {
+        bereich(ui, "Fehlergrenzen und Qualitätsprüfung", egui::Color32::from_rgb(65, 105, 155), |ui| {
             zahl(ui, "Fehlergrenze Winkel [cc]", &mut p.fehlergrenze_cc_winkel);
             zahl(ui, "Fehlergrenze Strecke [mm]", &mut p.fehlergrenze_mm_strecke);
             zahl(ui, "Fehlergrenze Höhe [mm]", &mut p.fehlergrenze_mm_hoehe);
             zahl(ui, "s0-Grenze Auto-Match [mm]", &mut p.fehlergrenze_mm_s0_auto_match);
+        });
 
+        bereich(ui, "Stationierung und Standardabweichung", egui::Color32::from_rgb(55, 120, 80), |ui| {
             ui.label("Freier Maßstab");
             ui.checkbox(&mut p.freier_massstab, "");
             ui.end_row();
@@ -45,6 +49,8 @@ impl RechenparameterAnsicht {
                 });
             ui.end_row();
 
+        });
+        bereich(ui, "Polarpunkte – Maßstab", egui::Color32::from_rgb(135, 85, 155), |ui| {
             ui.label("Polar: Maßstab");
             egui::ComboBox::from_id_salt("massstab")
                 .selected_text(p.polar_massstab_modus.name())
@@ -60,12 +66,41 @@ impl RechenparameterAnsicht {
             ui.label("Polar: Quelle des Maßstabs");
             ui.text_edit_singleline(&mut p.polar_massstab_quelle);
             ui.end_row();
+        });
 
+        bereich(ui, "Gewichtung und Zentrierfehler", egui::Color32::from_rgb(155, 105, 35), |ui| {
             ui.label("Gewichtung naher Ziele");
             ui.checkbox(&mut p.gewichtung_nahe_ziele, "");
             ui.end_row();
             zahl(ui, "Zentrierfehler Ziel [mm]", &mut p.zentrierfehler_ziel_mm);
             zahl(ui, "Zentrierfehler Standpunkt [mm]", &mut p.zentrierfehler_standpunkt_mm);
+        });
+
+        bereich(ui, "DXF-Viewer – Vektor-PDF", egui::Color32::from_rgb(40, 120, 135), |ui| {
+            ui.label("Papierformat");
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut p.pdf.querformat, false, "A4 Hochformat");
+                ui.radio_value(&mut p.pdf.querformat, true, "A4 Querformat");
+            });
+            ui.end_row();
+            ui.label("Ausgabemaßstab 1 :");
+            ui.add(egui::DragValue::new(&mut p.pdf.massstab).range(1.0..=1_000_000.0).speed(1.0).fixed_decimals(0));
+            ui.end_row();
+            ui.label("Unterer Seitenrand [mm]");
+            ui.add(egui::DragValue::new(&mut p.pdf.rand_mm).range(0.0..=50.0).speed(0.5).fixed_decimals(1));
+            ui.end_row();
+            ui.label("Mindestlinienbreite [mm]");
+            ui.add(egui::DragValue::new(&mut p.pdf.linie_min_mm).range(0.25..=10.0).speed(0.05).fixed_decimals(2));
+            ui.end_row();
+            ui.label("Mindestgröße Punktsymbole [mm]");
+            ui.add(egui::DragValue::new(&mut p.pdf.symbol_min_mm).range(2.0..=20.0).speed(0.1).fixed_decimals(1))
+                .on_hover_text("Äußere Gesamtgröße, bei Kreissymbolen der Durchmesser.");
+            ui.end_row();
+            ui.label("Maßstabsleiste");
+            ui.label("Wird immer mit ausgegeben");
+            ui.end_row();
+        });
+        ui.label("PDF-Ausschnitt im DXF-Viewer einschalten. Mindestgrößen gelten auf dem Papier.");
         });
 
         ui.add_space(8.0);
@@ -79,6 +114,25 @@ impl RechenparameterAnsicht {
             ui.label(&self.status);
         }
     }
+}
+
+fn bereich(ui: &mut egui::Ui, titel: &str, farbe: egui::Color32, inhalt: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(egui::Color32::from_rgb(
+            230 + farbe.r() / 12,
+            230 + farbe.g() / 12,
+            230 + farbe.b() / 12,
+        ))
+        .stroke(egui::Stroke::new(1.0, farbe))
+        .corner_radius(5.0)
+        .inner_margin(8.0)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(egui::RichText::new(titel).strong().color(farbe));
+            ui.add_space(4.0);
+            egui::Grid::new(titel).num_columns(2).spacing([12.0, 6.0]).show(ui, inhalt);
+        });
+    ui.add_space(8.0);
 }
 
 fn zahl(ui: &mut egui::Ui, bezeichnung: &str, wert: &mut f64) {

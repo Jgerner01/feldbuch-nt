@@ -528,7 +528,9 @@ impl DxfViewer {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
 
-        self.verarbeite_eingabe(ui, &antwort, projekt, ursprung);
+        if !self.verarbeite_pdf_anker(ui, projekt) {
+            self.verarbeite_eingabe(ui, &antwort, projekt, ursprung);
+        }
 
         let maler = maler.with_clip_rect(rect);
         let a = self.ansicht(ursprung);
@@ -537,6 +539,10 @@ impl DxfViewer {
             || !self.import_layer.is_empty()
             || !self.neupunkte.is_empty();
         if !hat_daten {
+            if self.pdf_mitte.is_some() {
+                self.zeichne_pdf_maske(&maler, projekt);
+                return;
+            }
             maler.text(
                 Pos2::new(rect.center().x - 90.0, rect.center().y - 10.0),
                 Align2::LEFT_TOP,
@@ -555,45 +561,16 @@ impl DxfViewer {
             }
         };
 
-        if self.dxf_sichtbar {
-            for (i, e) in self.entities.iter().enumerate().filter(|(_, e)| !e.ist_insert()) {
-                let farbe = layer_farbe(&e.layer).or(e.farbe).unwrap_or(STANDARD_LINIE);
-                zeichne(e, farbe, 1.0, self.auswahl == Some(Auswahl::Zeichnung(i)));
-            }
-            if self.punkte_sichtbar {
-                for (i, e) in self.entities.iter().enumerate().filter(|(_, e)| e.ist_insert()) {
-                    zeichne(e, STANDARD_LINIE, 1.0, self.auswahl == Some(Auswahl::Zeichnung(i)));
-                }
-            }
+        for (e, farbe, auswahl) in self.sichtbare_entities() {
+            zeichne(e, farbe, 1.0, auswahl.is_some() && self.auswahl == auswahl);
         }
-        for (l, layer) in self.import_layer.iter().enumerate().filter(|(_, l)| l.sichtbar) {
-            for (i, e) in layer.entities.iter().enumerate() {
-                zeichne(e, STANDARD_LINIE, 1.0, self.auswahl == Some(Auswahl::Import(l, i)));
-            }
+        if self.residuen_sichtbar && !self.ellipsen.is_empty() {
+            self.zeichne_ellipsen_massstab(&maler, rect);
         }
-        for (i, e) in self.overlay.iter().enumerate() {
-            zeichne(e, STANDARD_LINIE, 1.0, self.auswahl == Some(Auswahl::Overlay(i)));
-        }
-        if self.neupunkte_sichtbar {
-            for (i, e) in self.neupunkte.iter().enumerate() {
-                zeichne(e, STANDARD_LINIE, 1.0, self.auswahl == Some(Auswahl::Neupunkt(i)));
-            }
-        }
-        if self.residuen_sichtbar {
-            for e in &self.residuen {
-                zeichne(e, STANDARD_LINIE, 1.0, false);
-            }
-            for e in &self.ellipsen {
-                zeichne(e, STANDARD_LINIE, 1.0, false);
-            }
-            if !self.ellipsen.is_empty() {
-                self.zeichne_ellipsen_massstab(&maler, rect);
-            }
-        }
-        if self.marker_sichtbar {
-            for (i, m) in self.marker.iter().enumerate() {
-                zeichne(m, STANDARD_LINIE, 1.0, self.auswahl == Some(Auswahl::Marker(i)));
-            }
+
+        if self.pdf_mitte.is_some() {
+            self.zeichne_pdf_maske(&maler, projekt);
+            return;
         }
 
         self.zeichne_zielrichtung(&maler, &a, projekt);
@@ -652,6 +629,26 @@ impl DxfViewer {
     }
 
     fn verarbeite_eingabe(&mut self, ui: &mut egui::Ui, antwort: &egui::Response, projekt: &mut Projekt, ursprung: Pos2) {
+        if self.pdf_mitte.is_some() {
+            let a=self.ansicht(ursprung);
+            if antwort.drag_started() {
+                self.pdf_ziehen=ui.input(|i|i.pointer.press_origin()).is_some_and(|pos| {
+                    self.pdf_rahmen(projekt).is_some_and(|(seite,karte,_)| seite.expand(8.0).contains(pos)&&!karte.shrink(8.0).contains(pos))
+                });
+            }
+            if antwort.dragged_by(egui::PointerButton::Primary) {
+                let d=antwort.drag_delta();
+                if self.pdf_ziehen {
+                    if let Some(m)=&mut self.pdf_mitte {m[0]+=f64::from(d.x)/a.scale;m[1]-=f64::from(d.y)/a.scale;}
+                } else {self.mitte[0]-=f64::from(d.x)/a.scale;self.mitte[1]+=f64::from(d.y)/a.scale;}
+            }
+            if antwort.drag_stopped() {self.pdf_ziehen=false;}
+            if antwort.hovered() {
+                let scroll=ui.input(|i|i.raw.events.iter().filter_map(|e|if let egui::Event::MouseWheel{delta,..}=e {Some(delta.y)} else {None}).sum::<f32>());
+                if scroll!=0.0 {if let Some(pos)=antwort.hover_pos() {self.zoom(if scroll>0.0 {ZOOM_RAD_FAKTOR}else{1.0/ZOOM_RAD_FAKTOR},pos,ursprung);}}
+            }
+            return;
+        }
         // Löschfenster aufziehen
         if self.loesch_modus {
             if antwort.drag_started() {
@@ -955,6 +952,10 @@ impl DxfViewer {
         let Some(dialog) = self.dialog.take() else {
             return;
         };
+        let dialog = match dialog {
+            Dialog::Hinweis {titel,text} if titel.to_lowercase().contains("fehler") => Dialog::Fehler {titel,text},
+            anderer => anderer,
+        };
         let fenster = |titel: &str| {
             egui::Window::new(titel.to_string())
                 .collapsible(false)
@@ -962,6 +963,31 @@ impl DxfViewer {
                 .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
         };
         match dialog {
+            Dialog::Fehler { titel, text } => {
+                let mut offen = true;
+                let mut schliessen = false;
+                egui::Window::new(&titel)
+                    .id(egui::Id::unique("dxf_fehlerfenster"))
+                    .open(&mut offen)
+                    .collapsible(false)
+                    .resizable(true)
+                    .default_width(640.0)
+                    .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+                    .frame(egui::Frame::window(&ctx.style_of(egui::Theme::Light)).fill(Color32::from_rgb(255, 247, 247)))
+                    .show(&ctx, |ui| {
+                        ui.label(RichText::new("Der Vorgang konnte nicht abgeschlossen werden.").strong().size(17.0).color(Color32::from_rgb(160,30,30)));
+                        ui.add_space(8.0);
+                        egui::ScrollArea::vertical().id_salt("dxf_fehlertext").max_height(360.0).show(ui, |ui| {
+                            ui.add(egui::Label::new(RichText::new(&text).size(15.0).color(Color32::from_rgb(25,25,25))).wrap());
+                        });
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if ui.button("Fehlermeldung kopieren").clicked() {ui.ctx().copy_text(format!("{titel}\n\n{text}"));}
+                            if ui.button("Schließen").clicked() {schliessen=true;}
+                        });
+                    });
+                if offen && !schliessen {self.dialog=Some(Dialog::Fehler{titel,text});}
+            }
             Dialog::Hinweis { titel, text } => {
                 let mut offen = true;
                 fenster(&titel).show(&ctx, |ui| {

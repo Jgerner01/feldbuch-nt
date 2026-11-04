@@ -53,7 +53,8 @@ impl Raster {
         let mut x = rect.left() + self.zeilenkopf.unwrap_or(0.0);
         for (i, breite) in self.spalten.iter().enumerate() {
             let text = titel.get(i).copied().unwrap_or("");
-            ui.painter().text(
+            let zelle = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*breite, rect.height()));
+            ui.painter().with_clip_rect(ui.clip_rect().intersect(zelle)).text(
                 Pos2::new(x + ZELLEN_RAND, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 text,
@@ -90,7 +91,7 @@ impl Raster {
         if let Some(breite) = self.zeilenkopf {
             let kopf = Rect::from_min_size(rect.min, Vec2::new(breite, rect.height()));
             ui.painter().rect_filled(kopf, 0.0, KOPF_FARBE);
-            ui.painter().text(
+            ui.painter().with_clip_rect(ui.clip_rect().intersect(kopf)).text(
                 kopf.center(),
                 egui::Align2::CENTER_CENTER,
                 zeilenkopf_text,
@@ -138,6 +139,47 @@ pub struct Zellen<'a> {
     x: f32,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tabelleninhalte_bleiben_beim_scrollen_im_sichtbereich() {
+        for versatz in [Vec2::ZERO, Vec2::new(-45.0, -30.0), Vec2::new(30.0, 65.0)] {
+            let ctx = egui::Context::default();
+            let sichtbereich = Rect::from_min_size(Pos2::new(50.0, 50.0), Vec2::new(120.0, 70.0));
+            let mut ausgabe = ctx.run_ui(egui::RawInput::default(), |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
+                    let mut tabelle = ui.new_child(UiBuilder::new().max_rect(sichtbereich.translate(versatz)));
+                    tabelle.set_clip_rect(sichtbereich);
+                    let raster = Raster::neu(&[60.0, 60.0]).mit_zeilenkopf(30.0);
+                    raster.kopf(&mut tabelle, &["Sehr lange Überschrift", "Zweite Spalte"]);
+                    for i in 0..5 {
+                        raster.zeile(&mut tabelle, i, "123456789", |z| {
+                            z.zahl("12345678901234567890");
+                            z.zelle(|ui| {
+                                assert!(sichtbereich.contains_rect(ui.clip_rect()) || !ui.clip_rect().is_positive());
+                                ui.label("Sehr langer Zellinhalt");
+                            });
+                        });
+                    }
+                });
+            });
+            // Der Test prüft Zeichenbefehle ohne GPU-Backend.
+            ausgabe.textures_delta.clear();
+            let mut texte = 0;
+            for form in ausgabe.shapes {
+                if matches!(form.shape, egui::epaint::Shape::Text(_)) {
+                    texte += 1;
+                    assert!(sichtbereich.contains_rect(form.clip_rect) || !form.clip_rect.is_positive());
+                    assert!(form.clip_rect.width() <= 60.0);
+                }
+            }
+            assert!(texte > 0);
+        }
+    }
+}
+
 impl Zellen<'_> {
     /// Fläche der nächsten Zelle (vorgerückt).
     fn naechste_flaeche(&mut self) -> Option<Rect> {
@@ -156,7 +198,8 @@ impl Zellen<'_> {
                     .max_rect(flaeche)
                     .layout(Layout::left_to_right(Align::Center)),
             );
-            kind.set_clip_rect(flaeche.expand2(Vec2::new(ZELLEN_RAND - 1.0, 0.0)));
+            // Die Zellgrenze darf den Clip des übergeordneten Scrollbereichs nicht erweitern.
+            kind.set_clip_rect(self.ui.clip_rect().intersect(flaeche.expand2(Vec2::new(ZELLEN_RAND - 1.0, 0.0))));
             inhalt(&mut kind);
         }
     }
@@ -176,7 +219,7 @@ impl Zellen<'_> {
     /// Wie `zahl`, aber mit eigener Farbe.
     pub fn zahl_farbig(&mut self, text: &str, farbe: Color32) {
         if let Some(flaeche) = self.naechste_flaeche() {
-            self.ui.painter().text(
+            self.ui.painter().with_clip_rect(self.ui.clip_rect().intersect(flaeche)).text(
                 Pos2::new(flaeche.right(), flaeche.center().y),
                 egui::Align2::RIGHT_CENTER,
                 text,

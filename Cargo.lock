@@ -1182,6 +1182,7 @@ dependencies = [
  "serde_json",
  "serialport",
  "sha2",
+ "ttf-parser",
  "ureq",
  "winresource",
  "zip",

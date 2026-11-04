@@ -23,6 +23,42 @@ pub const ZENTRIERFEHLER_ZIEL_STANDARD_MM: f64 = 2.0;
 /// Standard-Zentrierfehler am Standpunkt [mm].
 pub const ZENTRIERFEHLER_STANDPUNKT_STANDARD_MM: f64 = 0.0;
 
+/// Papierbezogene Vorgaben für den geplanten Vektor-PDF-Export des DXF-Viewers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdfParameter {
+    /// Nenner des Ausgabemaßstabs 1 : n.
+    pub massstab: f64,
+    pub querformat: bool,
+    /// Unterer Seitenrand; links 20 mm, oben und rechts 10 mm sind fest vorgegeben.
+    pub rand_mm: f64,
+    pub linie_min_mm: f64,
+    /// Mindestdurchmesser bzw. äußere Gesamtgröße eines Punktsymbols.
+    pub symbol_min_mm: f64,
+}
+
+impl Default for PdfParameter {
+    fn default() -> Self {
+        Self { massstab: 1000.0, querformat: false, rand_mm: 10.0, linie_min_mm: 0.25, symbol_min_mm: 2.0 }
+    }
+}
+
+impl PdfParameter {
+    /// Ungültige Dateieinträge ersetzen; die geforderten Papier-Mindestmaße gelten immer.
+    pub fn normalisiert(&self) -> Self {
+        let standard = Self::default();
+        let begrenzt = |wert: f64, ersatz: f64, min: f64, max: f64| {
+            if wert.is_finite() { wert.clamp(min, max) } else { ersatz }
+        };
+        Self {
+            massstab: begrenzt(self.massstab, standard.massstab, 1.0, 1_000_000.0),
+            querformat: self.querformat,
+            rand_mm: begrenzt(self.rand_mm, standard.rand_mm, 0.0, 50.0),
+            linie_min_mm: begrenzt(self.linie_min_mm, standard.linie_min_mm, 0.25, 10.0),
+            symbol_min_mm: begrenzt(self.symbol_min_mm, standard.symbol_min_mm, 2.0, 20.0),
+        }
+    }
+}
+
 /// Rechenparameter der Stationierung und der Polarpunkte.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rechenparameter {
@@ -47,6 +83,7 @@ pub struct Rechenparameter {
     pub gewichtung_nahe_ziele: bool,
     pub zentrierfehler_ziel_mm: f64,
     pub zentrierfehler_standpunkt_mm: f64,
+    pub pdf: PdfParameter,
 }
 
 impl Default for Rechenparameter {
@@ -65,6 +102,7 @@ impl Default for Rechenparameter {
             gewichtung_nahe_ziele: true,
             zentrierfehler_ziel_mm: ZENTRIERFEHLER_ZIEL_STANDARD_MM,
             zentrierfehler_standpunkt_mm: ZENTRIERFEHLER_STANDPUNKT_STANDARD_MM,
+            pdf: PdfParameter::default(),
         }
     }
 }
@@ -154,6 +192,7 @@ impl RechenparameterManager {
             return Ok(());
         }
         let p = &self.params;
+        let pdf = p.pdf.normalisiert();
         let wahr = |b: bool| if b { "true" } else { "false" }.to_string();
         let eintraege: Vec<(&str, String)> = vec![
             ("FehlergrenzCC_Winkel", f(p.fehlergrenze_cc_winkel, 1)),
@@ -169,6 +208,11 @@ impl RechenparameterManager {
             ("GewichtungNaheZiele", wahr(p.gewichtung_nahe_ziele)),
             ("ZentrierfehlerZiel_mm", f(p.zentrierfehler_ziel_mm, 1)),
             ("ZentrierfehlerStandpunkt_mm", f(p.zentrierfehler_standpunkt_mm, 1)),
+            ("PdfMassstab", f(pdf.massstab, 0)),
+            ("PdfQuerformat", wahr(pdf.querformat)),
+            ("PdfRand_mm", f(pdf.rand_mm, 1)),
+            ("PdfLinieMin_mm", f(pdf.linie_min_mm, 2)),
+            ("PdfSymbolMin_mm", f(pdf.symbol_min_mm, 1)),
         ];
         datei_speicher::schreibe_text(&self.pfad, &xml_einfach::schreibe(WURZEL, &eintraege))
     }
@@ -202,6 +246,13 @@ fn parse_parameter(doc: &XmlDokument) -> Rechenparameter {
         gewichtung_nahe_ziele: wahrheit("GewichtungNaheZiele", standard.gewichtung_nahe_ziele),
         zentrierfehler_ziel_mm: zahl("ZentrierfehlerZiel_mm", ZENTRIERFEHLER_ZIEL_STANDARD_MM),
         zentrierfehler_standpunkt_mm: zahl("ZentrierfehlerStandpunkt_mm", ZENTRIERFEHLER_STANDPUNKT_STANDARD_MM),
+        pdf: PdfParameter {
+            massstab: zahl("PdfMassstab", standard.pdf.massstab),
+            querformat: wahrheit("PdfQuerformat", standard.pdf.querformat),
+            rand_mm: zahl("PdfRand_mm", standard.pdf.rand_mm),
+            linie_min_mm: zahl("PdfLinieMin_mm", standard.pdf.linie_min_mm),
+            symbol_min_mm: zahl("PdfSymbolMin_mm", standard.pdf.symbol_min_mm),
+        }.normalisiert(),
     }
 }
 
@@ -219,6 +270,7 @@ mod tests {
         m.params.freier_massstab = false;
         m.params.polar_massstab_modus = MassstabModus::Vorgegeben;
         m.params.polar_massstab_wert = 1.000123;
+        m.params.pdf = PdfParameter { massstab: 500.0, querformat: true, rand_mm: 12.0, linie_min_mm: 0.35, symbol_min_mm: 3.0 };
         m.speichern().unwrap();
 
         let neu = RechenparameterManager::initialisiere(&pfad);
@@ -227,6 +279,7 @@ mod tests {
         assert_eq!(neu.params.polar_massstab_modus, MassstabModus::Vorgegeben);
         assert!((neu.params.polar_massstab_wert - 1.000123).abs() < 1e-9);
         assert_eq!(neu.params.sigma_bez(), "2·s₀");
+        assert_eq!(neu.params.pdf, m.params.pdf);
         assert!((neu.params.sigma_wert(1.5) - 3.0).abs() < 1e-12);
         let _ = fs::remove_dir_all(dir);
     }
@@ -237,5 +290,25 @@ mod tests {
         assert_eq!(p.sigma_faktor_wirksam(), 3);
         let p = Rechenparameter { sigma_faktor: -4, ..Rechenparameter::default() };
         assert_eq!(p.sigma_faktor_wirksam(), 1);
+    }
+
+    #[test]
+    fn alte_parameterdateien_erhalten_pdf_standardwerte() {
+        let doc = xml_einfach::lese(&format!("<{WURZEL}><Berechnung3D>false</Berechnung3D></{WURZEL}>")).unwrap();
+        let p = parse_parameter(&doc);
+        assert_eq!(p.pdf, PdfParameter::default());
+        assert!(!p.berechnung_3d);
+    }
+
+    #[test]
+    fn pdf_parameter_halten_papier_mindestmasse_ein() {
+        let doc = xml_einfach::lese(&format!("<{WURZEL}><PdfMassstab>-1</PdfMassstab><PdfLinieMin_mm>0.01</PdfLinieMin_mm><PdfSymbolMin_mm>0.5</PdfSymbolMin_mm><PdfRand_mm>200</PdfRand_mm></{WURZEL}>")).unwrap();
+        let p = parse_parameter(&doc);
+        assert_eq!(p.pdf.massstab, 1.0);
+        assert_eq!(p.pdf.linie_min_mm, 0.25);
+        assert_eq!(p.pdf.symbol_min_mm, 2.0);
+        assert_eq!(p.pdf.rand_mm, 50.0);
+        let p = PdfParameter { massstab: f64::NAN, linie_min_mm: f64::INFINITY, ..PdfParameter::default() }.normalisiert();
+        assert_eq!(p, PdfParameter::default());
     }
 }

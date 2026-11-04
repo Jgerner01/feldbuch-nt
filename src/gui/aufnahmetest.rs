@@ -374,9 +374,11 @@ mod tests {
     use super::*;
 
     fn ansicht() -> AufnahmetestAnsicht {
+        static DATEI_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let datei_id = DATEI_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         AufnahmetestAnsicht {
             zeilen: Vec::new(),
-            datei: std::env::temp_dir().join(format!("fb-aufn-gui-{}.json", std::process::id())),
+            datei: std::env::temp_dir().join(format!("fb-aufn-gui-{}-{datei_id}.json", std::process::id())),
             projekt_name: "T".into(),
             bearbeiter: "jg".into(),
             export_ordner: PathBuf::new(),

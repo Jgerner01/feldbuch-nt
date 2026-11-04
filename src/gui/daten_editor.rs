@@ -312,7 +312,7 @@ impl DatenPanel {
                 }
                 let name = self.datei.as_ref().and_then(|d| d.pfad.file_name()).map_or_else(|| "(keine Datei geöffnet)".to_string(), |n| n.to_string_lossy().into_owned());
                 let titel = if self.geaendert { format!("{name} *") } else { name };
-                ui.label(RichText::new(titel).monospace());
+                ui.add(egui::Label::new(RichText::new(titel).monospace()).wrap());
             });
             ui.separator();
             if self.datei.is_none() {
@@ -334,10 +334,11 @@ impl DatenPanel {
 
     fn zeichne_metadaten(&mut self, ui: &mut egui::Ui) {
         let mut geaendert = false;
+        let eingabe_breite = (ui.available_width() - 100.0).clamp(60.0, 220.0);
         egui::Grid::new("metadaten").num_columns(2).show(ui, |ui| {
             let mut zeile = |ui: &mut egui::Ui, titel: &str, text: &mut String| {
                 ui.label(titel);
-                geaendert |= ui.add(egui::TextEdit::singleline(text).desired_width(220.0)).changed();
+                geaendert |= ui.add(egui::TextEdit::singleline(text).desired_width(eingabe_breite)).changed();
                 ui.end_row();
             };
             zeile(ui, "Projekt:", &mut self.projekt);
@@ -404,8 +405,9 @@ impl DatenPanel {
         let mut kopf: Vec<&str> = vec!["✓"];
         kopf.extend(self.spalten.iter().map(String::as_str));
         let mut geaendert = false;
-        egui::ScrollArea::both().id_salt("datentabelle").max_height(TABELLE_HOEHE).show(ui, |ui| {
+        egui::ScrollArea::horizontal().id_salt("datentabelle_horizontal").auto_shrink([false, true]).show(ui, |ui| {
             raster.kopf(ui, &kopf);
+            egui::ScrollArea::vertical().id_salt("datentabelle_zeilen").max_height(TABELLE_HOEHE).show(ui, |ui| {
             for (i, zeile) in self.zeilen.iter_mut().enumerate() {
                 let markiert = &mut self.markiert[i];
                 raster.zeile(ui, i, &(i + 1).to_string(), |z| {
@@ -415,6 +417,7 @@ impl DatenPanel {
                     }
                 });
             }
+            });
         });
         self.geaendert |= geaendert;
     }
@@ -490,11 +493,30 @@ impl DatenEditorAnsicht {
     pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &Projekt) {
         ui.heading("Datenmanager");
         ui.colored_label(Color32::GRAY, "Beim Verlassen werden beide Dateien gespeichert.");
+        ui.add_space(6.0);
         ui.columns(2, |spalten| {
-            self.links.zeichne(&mut spalten[0], projekt, "links");
-            self.rechts.zeichne(&mut spalten[1], projekt, "rechts");
+            editor_bereich(&mut spalten[0], "links", "Datei links", Color32::from_rgb(232, 241, 252), Color32::from_rgb(65, 105, 155), &mut self.links, projekt);
+            editor_bereich(&mut spalten[1], "rechts", "Datei rechts", Color32::from_rgb(232, 246, 237), Color32::from_rgb(55, 120, 80), &mut self.rechts, projekt);
         });
     }
+}
+
+/// Jeder Editor bleibt in seiner eigenen Fläche und scrollt unabhängig.
+fn editor_bereich(ui: &mut egui::Ui, id: &str, titel: &str, hintergrund: Color32, akzent: Color32, panel: &mut DatenPanel, projekt: &Projekt) {
+    egui::Frame::new()
+        .fill(hintergrund)
+        .stroke(egui::Stroke::new(1.0, akzent))
+        .corner_radius(5.0)
+        .inner_margin(8.0)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.label(RichText::new(titel).strong().color(akzent));
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical()
+                .id_salt(("dateneditor", id))
+                .auto_shrink([false, false])
+                .show(ui, |ui| panel.zeichne(ui, projekt, id));
+        });
 }
 
 #[cfg(test)]
