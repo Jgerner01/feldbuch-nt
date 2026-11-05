@@ -1,1 +1,4 @@
 /target
+/dist
+/release/feldbuch-nt.exe
+/release/feldbuch-nt-linux

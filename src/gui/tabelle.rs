@@ -19,6 +19,8 @@ const TEXT_FARBE: Color32 = Color32::from_rgb(20, 20, 20);
 const ZEILEN_HOEHE: f32 = 24.0;
 /// Innenabstand der Zellen.
 const ZELLEN_RAND: f32 = 3.0;
+/// Breite eines Kontrollkästchens ohne Beschriftung (für die Zentrierung).
+const HAKEN_BREITE: f32 = 18.0;
 /// Breite der Rasterlinie.
 const LINIEN_BREITE: f32 = 1.0;
 
@@ -26,12 +28,42 @@ const LINIEN_BREITE: f32 = 1.0;
 pub struct Raster {
     spalten: Vec<f32>,
     zeilenkopf: Option<f32>,
+    zeilen_hoehe: f32,
+    /// Farbe von Kopfzeilen-Hintergrund und -Schrift; gesetzt: Überschriften fett und zentriert.
+    kopf_stil: Option<(Color32, Color32)>,
+    /// Abwechselnde Zeilenfarbe (AliceBlue).
+    streifen: bool,
 }
 
 impl Raster {
     /// Neue Tabelle mit den Breiten der Datenspalten.
     pub fn neu(spalten: &[f32]) -> Self {
-        Self { spalten: spalten.to_vec(), zeilenkopf: None }
+        Self { spalten: spalten.to_vec(), zeilenkopf: None, zeilen_hoehe: ZEILEN_HOEHE, kopf_stil: None, streifen: true }
+    }
+
+    /// Verteilt `breite` nach Füllgewichten auf die Spalten (wie AutoSizeColumnsMode.Fill); keine Spalte unter `minimum`.
+    pub fn fuellend(gewichte: &[f32], breite: f32, minimum: f32) -> Self {
+        let summe: f32 = gewichte.iter().sum();
+        let spalten: Vec<f32> = gewichte.iter().map(|g| (breite * g / summe).max(minimum)).collect();
+        Self::neu(&spalten)
+    }
+
+    /// Eigene Zeilenhöhe in Pixeln.
+    pub fn mit_zeilenhoehe(mut self, hoehe: f32) -> Self {
+        self.zeilen_hoehe = hoehe;
+        self
+    }
+
+    /// Farbige Kopfzeile mit fetter, zentrierter Schrift.
+    pub fn mit_kopf_stil(mut self, hintergrund: Color32, schrift: Color32) -> Self {
+        self.kopf_stil = Some((hintergrund, schrift));
+        self
+    }
+
+    /// Alle Zeilen weiß (ohne abwechselnde Färbung).
+    pub fn ohne_streifen(mut self) -> Self {
+        self.streifen = false;
+        self
     }
 
     /// Fügt links eine Spalte für Zeilenköpfe hinzu (wie RowHeadersWidth im DataGridView).
@@ -46,21 +78,24 @@ impl Raster {
 
     /// Zeichnet die Kopfzeile.
     pub fn kopf(&self, ui: &mut egui::Ui, titel: &[&str]) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(self.gesamt_breite(), ZEILEN_HOEHE), Sense::hover());
-        let maler = ui.painter();
-        maler.rect_filled(rect, 0.0, KOPF_FARBE);
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(self.gesamt_breite(), self.zeilen_hoehe), Sense::hover());
+        let (hintergrund, schrift) = self.kopf_stil.unwrap_or((KOPF_FARBE, TEXT_FARBE));
+        ui.painter().rect_filled(rect, 0.0, hintergrund);
         self.zeichne_linien(ui, rect, true);
         let mut x = rect.left() + self.zeilenkopf.unwrap_or(0.0);
         for (i, breite) in self.spalten.iter().enumerate() {
             let text = titel.get(i).copied().unwrap_or("");
             let zelle = Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(*breite, rect.height()));
-            ui.painter().with_clip_rect(ui.clip_rect().intersect(zelle)).text(
-                Pos2::new(x + ZELLEN_RAND, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                text,
-                egui::FontId::proportional(13.0),
-                TEXT_FARBE,
-            );
+            let maler = ui.painter().with_clip_rect(ui.clip_rect().intersect(zelle));
+            let schrift_art = egui::FontId::proportional(13.0);
+            if self.kopf_stil.is_some() {
+                // Fettdruck durch doppeltes Zeichnen mit halbem Pixel Versatz
+                for versatz in [0.0, 0.6] {
+                    maler.text(Pos2::new(zelle.center().x + versatz, rect.center().y), egui::Align2::CENTER_CENTER, text, schrift_art.clone(), schrift);
+                }
+            } else {
+                maler.text(Pos2::new(x + ZELLEN_RAND, rect.center().y), egui::Align2::LEFT_CENTER, text, schrift_art, schrift);
+            }
             x += breite;
         }
     }
@@ -85,8 +120,8 @@ impl Raster {
         hintergrund: Option<Color32>,
         inhalt: impl FnOnce(&mut Zellen<'_>),
     ) {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(self.gesamt_breite(), ZEILEN_HOEHE), Sense::hover());
-        let farbe = hintergrund.unwrap_or(if index % 2 == 0 { ZEILE_WEISS } else { ZEILE_BLAU });
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(self.gesamt_breite(), self.zeilen_hoehe), Sense::hover());
+        let farbe = hintergrund.unwrap_or(if self.streifen && index % 2 == 1 { ZEILE_BLAU } else { ZEILE_WEISS });
         ui.painter().rect_filled(rect, 0.0, farbe);
         if let Some(breite) = self.zeilenkopf {
             let kopf = Rect::from_min_size(rect.min, Vec2::new(breite, rect.height()));
@@ -232,21 +267,38 @@ impl Zellen<'_> {
     /// Eingabefeld ohne eigenen Rahmen.
     /// Liefert `true`, wenn der Text geändert wurde.
     pub fn eingabe(&mut self, wert: &mut String) -> bool {
-        let mut geaendert = false;
+        self.eingabe_antwort(wert).is_some_and(|antwort| antwort.changed())
+    }
+
+    /// Wie `eingabe`, liefert aber die Antwort des Eingabefelds (z. B. für ein Kontextmenü).
+    pub fn eingabe_antwort(&mut self, wert: &mut String) -> Option<egui::Response> {
+        let mut antwort = None;
         self.zelle(|ui| {
             let breite = ui.available_width();
-            geaendert = ui
-                .add(egui::TextEdit::singleline(wert).frame(egui::Frame::NONE).desired_width(breite))
-                .changed();
+            antwort = Some(ui.add(egui::TextEdit::singleline(wert).frame(egui::Frame::NONE).desired_width(breite)));
         });
-        geaendert
+        antwort
     }
 
     /// Kontrollkästchen, zentriert.
     pub fn haken(&mut self, wert: &mut bool) {
         self.zelle(|ui| {
+            ui.add_space(((ui.available_width() - HAKEN_BREITE) / 2.0).max(0.0));
             ui.checkbox(wert, "");
         });
+    }
+
+    /// Rechtsbündiger Text in der Standardschrift (wie die rechtsbündigen Zellen des DataGridView).
+    pub fn rechts(&mut self, text: &str) {
+        if let Some(flaeche) = self.naechste_flaeche() {
+            self.ui.painter().with_clip_rect(self.ui.clip_rect().intersect(flaeche)).text(
+                Pos2::new(flaeche.right(), flaeche.center().y),
+                egui::Align2::RIGHT_CENTER,
+                text,
+                egui::FontId::proportional(13.0),
+                TEXT_FARBE,
+            );
+        }
     }
 
     /// Schaltfläche in der Zelle; liefert `true` bei Klick.

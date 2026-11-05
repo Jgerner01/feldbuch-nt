@@ -257,7 +257,9 @@ impl eframe::App for FeldbuchApp {
             self.geraet.live_hz_aktiv = false;
         }
         match wunsch {
-            Some(dxf_viewer::Wunsch::FreieStationierung) => self.ansicht = Ansicht::FreieStationierung(Box::default()),
+            Some(dxf_viewer::Wunsch::FreieStationierung) => {
+                self.ansicht = Ansicht::FreieStationierung(Box::new(freie_stationierung::FreieStationierungAnsicht::neu(&self.projekt)));
+            }
             Some(dxf_viewer::Wunsch::Aufnahmetest) => self.oeffne_aufnahmetest(None),
             Some(dxf_viewer::Wunsch::Anfahren(nr)) => self.oeffne_aufnahmetest(Some(&nr)),
             None => {}

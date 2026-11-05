@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use chrono::NaiveDateTime;
 use eframe::egui::{self, Color32, RichText};
 
+use super::rechenparameter_ansicht::RechenparameterAnsicht;
 use super::tabelle::{Raster, Zellen};
 use crate::daten::kor_csv::{self, KorPunkt};
 use crate::daten::messdaten;
@@ -34,15 +35,47 @@ const STRICH: &str = "–";
 const PROZENT: f64 = 100.0;
 /// Anzahl der angezeigten stark abweichenden Punkte in der Rückfrage.
 const MAX_RUECKFRAGE_PUNKTE: usize = 10;
-/// Spaltenbreiten der Anschlusspunkttabelle: Nr, s, vHz, vQuer, vLängs, vHöhe, Gewicht, Hz, Str, Höhe.
-const BREITEN_ANSCHLUSS: [f32; 10] = [90.0, 80.0, 70.0, 70.0, 70.0, 70.0, 70.0, 44.0, 44.0, 52.0];
-/// Spaltenbreiten der Polartabelle: Berechnen, Nr, Hz, V, Strecke, ZH, eL, eQ, R, H, Höhe, Code, Zeit.
-const BREITEN_POLAR: [f32; 13] = [60.0, 70.0, 80.0, 80.0, 80.0, 60.0, 60.0, 60.0, 90.0, 90.0, 70.0, 80.0, 130.0];
-/// Breite der Zeilenköpfe.
-const ZEILENKOPF_BREITE: f32 = 30.0;
+/// Füllgewichte der Anschlusspunkttabelle: Punkt, Str.h, v Winkel, v Quer, Hz, v Längs, Str, v Höhe, Hoe, Gewicht.
+const GEWICHTE_ANSCHLUSS: [f32; 10] = [14.0, 11.0, 12.0, 11.0, 6.0, 11.0, 6.0, 11.0, 6.0, 10.0];
+/// Füllgewichte der Polartabelle: Berechnen, Punkt, Hz, V, Strecke, ZH, Exz längs, Exz quer, R, H, Höhe, Code, Zeit.
+const GEWICHTE_POLAR: [f32; 13] = [8.0, 9.0, 9.0, 9.0, 9.0, 6.0, 8.0, 8.0, 11.0, 11.0, 8.0, 6.0, 11.0];
+/// Zeilenhöhe der Tabellen (RowTemplate.Height).
+const ZEILEN_HOEHE: f32 = 26.0;
+/// Höhe der Kopfzeile (ColumnHeadersHeight).
+const KOPF_HOEHE: f32 = 32.0;
+/// Platz für den senkrechten Rollbalken und die Ränder der Gruppen.
+const TABELLEN_RAND: f32 = 40.0;
+/// Kleinste Spaltenbreite.
+const MIN_SPALTENBREITE: f32 = 36.0;
+/// Höhe des Fußbereichs mit Status und Schaltflächen.
+const UNTEN_HOEHE: f32 = 62.0;
+/// Höhe der Schaltflächen.
+const KNOPF_HOEHE: f32 = 36.0;
+/// Höhe der Kopfschaltflächen.
+const KOPF_KNOPF_HOEHE: f32 = 30.0;
+/// Breite des Statustexts im Fußbereich.
+const STATUS_BREITE: f32 = 420.0;
+/// Höhe des Ergebnisfelds unter der Anschlusspunkttabelle.
+const ERGEBNIS_HOEHE: f32 = 46.0;
+/// Mindesthöhe jedes Teils des geteilten Hauptbereichs.
+const MIN_TEIL_HOEHE: f32 = 120.0;
+/// Höhe des Teilers und Vorgabe der Teilung (je zur Hälfte).
+const TEILER_HOEHE: f32 = 6.0;
+const TEILUNG_VORGABE: f32 = 0.5;
+/// Platz über der Tabelle in einer Gruppe (Titel, Ränder) und unter dem Ergebnisfeld.
+const GRUPPE_KOPF: f32 = 34.0;
+/// Breite des Standpunkt-Auswahlfelds und des Höhenfelds.
+const STANDPUNKT_BREITE: f32 = 130.0;
+const HOEHEN_FELD_BREITE: f32 = 80.0;
 /// Farben.
-const FARBE_GRAU: Color32 = Color32::from_rgb(211, 211, 211);
+pub(super) const FARBE_GRAU: Color32 = Color32::from_rgb(211, 211, 211);
 const FARBE_EXZ_GROSS: Color32 = Color32::from_rgb(255, 230, 100);
+const FARBE_KOPF: Color32 = Color32::from_rgb(60, 100, 160);
+const FARBE_HINWEIS_HINTERGRUND: Color32 = Color32::from_rgb(255, 244, 200);
+const FARBE_HINWEIS_SCHRIFT: Color32 = Color32::from_rgb(90, 60, 0);
+const FARBE_ERGEBNIS_HINTERGRUND: Color32 = Color32::from_rgb(232, 238, 248);
+const FARBE_SPEICHERN: Color32 = Color32::from_rgb(46, 125, 50);
+const FARBE_RAHMEN: Color32 = Color32::from_rgb(160, 160, 160);
 const FARBE_FEHLER: Color32 = Color32::from_rgb(170, 30, 30);
 const FARBE_GRUEN: Color32 = Color32::from_rgb(180, 230, 160);
 const FARBE_GELB: Color32 = Color32::from_rgb(255, 230, 100);
@@ -53,6 +86,8 @@ const AMPEL_GELB_ZUSCHLAG: f64 = 5.0;
 
 /// Offene Rückfrage.
 enum Frage {
+    /// Hinweise zur Berechnung vor dem Speichern (nur Information).
+    Hinweise(String),
     Ueberschreiben(String),
     Kor(PathBuf),
 }
@@ -82,28 +117,35 @@ pub struct PolarpunkteAnsicht {
     ergebnis_text: String,
     status: String,
     frage: Option<Frage>,
+    /// Meldungsfenster (Titel, Text) wie eine MessageBox.
+    meldung: Option<(String, String)>,
+    /// Geöffnetes Fenster mit den Rechenparametern.
+    rechenparameter: Option<RechenparameterAnsicht>,
+    /// Anteil der oberen Tabelle am geteilten Hauptbereich.
+    teilung: f32,
+    /// Vom Benutzer gewählte Messdaten-Datei (statt der dat.csv des Projekts).
+    eigene_datei: Option<PathBuf>,
 }
 
-/// Eigene Fläche für jede Tabelle; breite Inhalte bleiben im Scrollbereich.
-fn tabellen_bereich<R>(ui: &mut egui::Ui, titel: &str, hintergrund: Color32, akzent: Color32, inhalt: impl FnOnce(&mut egui::Ui) -> R) -> R {
+/// Gruppenfeld mit fettem Titel (GroupBox der Originalversion).
+fn gruppe<R>(ui: &mut egui::Ui, titel: &str, inhalt: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
-        .fill(hintergrund)
-        .stroke(egui::Stroke::new(1.0, akzent))
-        .corner_radius(5.0)
-        .inner_margin(8.0)
+        .stroke(egui::Stroke::new(1.0, FARBE_RAHMEN))
+        .inner_margin(6.0)
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(RichText::new(titel).strong().color(akzent));
-            ui.add_space(4.0);
+            ui.label(RichText::new(titel).strong());
+            ui.add_space(2.0);
             inhalt(ui)
-        }).inner
+        })
+        .inner
 }
 
-fn ist_gruen(betrag: f64, grenze: f64) -> bool {
+pub(super) fn ist_gruen(betrag: f64, grenze: f64) -> bool {
     betrag <= grenze - AMPEL_GRUEN_ABZUG
 }
 
-fn ampel(betrag: f64, grenze: f64) -> Color32 {
+pub(super) fn ampel(betrag: f64, grenze: f64) -> Color32 {
     if ist_gruen(betrag, grenze) {
         FARBE_GRUEN
     } else if betrag <= grenze + AMPEL_GELB_ZUSCHLAG {
@@ -166,9 +208,30 @@ impl PolarpunkteAnsicht {
             ergebnis_text: String::new(),
             status: String::new(),
             frage: None,
+            meldung: None,
+            rechenparameter: None,
+            teilung: TEILUNG_VORGABE,
+            eigene_datei: None,
         };
         a.lade_datei(projekt);
         a
+    }
+
+    /// Pfad der Messdaten: gewählte Datei oder dat.csv des Projekts.
+    fn datei_pfad(&self, projekt: &Projekt) -> PathBuf {
+        self.eigene_datei.clone().unwrap_or_else(|| messdaten::messdatei_pfad(&projekt.einstellungen))
+    }
+
+    /// „CSV laden“: Messdaten-Datei wählen und einlesen.
+    fn waehle_csv(&mut self, projekt: &Projekt) {
+        let mut dialog = rfd::FileDialog::new().set_title("Messdaten-CSV laden").add_filter("CSV-Dateien (*.csv)", &["csv"]);
+        if projekt.einstellungen.ist_geladen() {
+            dialog = dialog.set_directory(&projekt.einstellungen.projekt_verzeichnis);
+        }
+        if let Some(pfad) = dialog.pick_file() {
+            self.eigene_datei = Some(pfad);
+            self.lade_datei(projekt);
+        }
     }
 
     fn sp_name(&self) -> String {
@@ -192,11 +255,11 @@ impl PolarpunkteAnsicht {
         self.ap.clear();
         self.np.clear();
         self.ergebnisse.clear();
-        if !projekt.einstellungen.ist_geladen() {
+        if self.eigene_datei.is_none() && !projekt.einstellungen.ist_geladen() {
             self.zeige_leer("Kein Projekt geladen.");
             return;
         }
-        let pfad = messdaten::messdatei_pfad(&projekt.einstellungen);
+        let pfad = self.datei_pfad(projekt);
         if !pfad.exists() {
             let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             self.zeige_leer(&format!("Keine Messdaten-Datei vorhanden ({name})."));
@@ -514,9 +577,19 @@ impl PolarpunkteAnsicht {
         self.neuberechnen(projekt);
         let anzahl = self.ergebnisse.iter().flatten().count();
         if self.station.is_none() || anzahl == 0 {
-            self.status = "Es sind keine berechneten Polarpunkte zum Speichern vorhanden.".to_string();
+            self.melde("Polarpunkte", "Es sind keine berechneten Polarpunkte zum Speichern vorhanden.");
             return;
         }
+        if self.hinweise.is_empty() {
+            self.pruefe_ueberschreiben(projekt);
+        } else {
+            let liste: Vec<String> = self.hinweise.iter().map(|h| format!("• {h}")).collect();
+            self.frage = Some(Frage::Hinweise(format!("Hinweise zu dieser Berechnung:\n\n{}", liste.join("\n"))));
+        }
+    }
+
+    /// Fragt nach, wenn vorhandene Punkte stark vom neuen Ergebnis abweichen; sonst wird gespeichert.
+    fn pruefe_ueberschreiben(&mut self, projekt: &mut Projekt) {
         let sp = self.sp_name();
         let abweichend: Vec<String> = self
             .ergebnisse
@@ -543,6 +616,10 @@ impl PolarpunkteAnsicht {
         }
         text.push_str("\n\nTrotzdem überschreiben?");
         self.frage = Some(Frage::Ueberschreiben(text));
+    }
+
+    fn melde(&mut self, titel: &str, text: impl Into<String>) {
+        self.meldung = Some((titel.to_string(), text.into()));
     }
 
     fn speichere_jetzt(&mut self, projekt: &mut Projekt) {
@@ -686,12 +763,13 @@ impl PolarpunkteAnsicht {
     /// Öffnet das zuletzt erzeugte Polarpunkte-Protokoll.
     fn oeffne_letztes_protokoll(&mut self, projekt: &Projekt) {
         match letztes_protokoll(&ausgabeverzeichnis(projekt), "Polarpunkte") {
-            None => {
-                self.status = "Kein Polarpunkte-Protokoll gefunden. Es wird beim Speichern erzeugt (sofern die Protokollierung eingeschaltet ist).".to_string();
-            }
+            None => self.melde(
+                "Kein Protokoll",
+                "Kein Polarpunkte-Protokoll gefunden.\nEs wird beim Speichern erzeugt (sofern das Protokoll in den Projektoptionen aktiviert ist).",
+            ),
             Some(pfad) => {
                 if let Err(fehler) = oeffne(&pfad) {
-                    self.status = format!("{fehler}\nDatei: {}", pfad.display());
+                    self.melde("Protokoll", format!("Protokoll konnte nicht geöffnet werden:\n{fehler}\n\nDatei: {}", pfad.display()));
                 }
             }
         }
@@ -712,12 +790,12 @@ impl PolarpunkteAnsicht {
         if aenderungen.is_empty() {
             return;
         }
-        let pfad = messdaten::messdatei_pfad(&projekt.einstellungen);
+        let pfad = self.datei_pfad(projekt);
         match messdaten::schreibe_exzentrizitaeten(&pfad, &aenderungen) {
             Ok(()) => self.exz_original = self.np.iter().map(|m| (m.exz_laengs_m, m.exz_quer_m)).collect(),
             Err(fehler) => {
                 fehler_log::log("Polarpunkte.schreibe_exzentrizitaeten", &fehler.to_string());
-                self.status = format!("Die geänderten Exzentrizitäten konnten nicht in die dat.csv geschrieben werden: {fehler}");
+                self.melde("Polarpunkte", format!("Die geänderten Exzentrizitäten konnten nicht in die dat.csv geschrieben werden:\n{fehler}"));
             }
         }
     }
@@ -727,7 +805,7 @@ impl PolarpunkteAnsicht {
     fn kor_csv(&mut self, projekt: &Projekt) {
         self.neuberechnen(projekt);
         if self.ergebnisse.iter().flatten().count() == 0 {
-            self.status = "Es sind keine berechneten Polarpunkte vorhanden.".to_string();
+            self.melde("Als KOR-CSV speichern", "Es sind keine berechneten Polarpunkte vorhanden.");
             return;
         }
         let mut dialog = rfd::FileDialog::new()
@@ -763,159 +841,315 @@ impl PolarpunkteAnsicht {
             }
             Err(fehler) => {
                 fehler_log::log("Polarpunkte.kor_csv", &fehler.to_string());
-                self.status = format!("Die Datei konnte nicht geschrieben werden: {fehler}");
+                self.melde("Als KOR-CSV speichern", format!("Die Datei konnte nicht geschrieben werden:\n{fehler}"));
             }
         }
     }
 
     // ── Darstellung ───────────────────────────────────────────────────────────
 
-    pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
-        ui.heading("Polarpunkte");
+    /// Zeichnet die Maske; `true`, wenn „Schließen“ gewählt wurde.
+    pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) -> bool {
+        let ctx = ui.ctx().clone();
+        let gesperrt = self.frage.is_some() || self.meldung.is_some() || self.rechenparameter.is_some();
+        let mut schliessen = false;
         let mut neu_rechnen = false;
-        let mut standpunkt_neu = false;
-        ui.horizontal_wrapped(|ui| {
-            ui.label("Standpunkt:");
-            let vorher = self.sp_index;
-            egui::ComboBox::from_id_salt("polar_standpunkt").selected_text(self.sp_name()).show_ui(ui, |ui| {
-                for (i, sp) in self.standpunkte.iter().enumerate() {
-                    ui.selectable_value(&mut self.sp_index, i, sp);
-                }
-            });
-            standpunkt_neu = vorher != self.sp_index;
-            ui.label("IH [m]:");
-            let antwort = ui.add(egui::TextEdit::singleline(&mut self.instr_hoehe).desired_width(60.0));
-            if antwort.lost_focus() {
-                neu_rechnen = true;
-            }
-            ui.label("Anschluss aus:");
-            let station = ui.radio_value(&mut self.quelle_station, true, "gespeicherter Stationierung").changed();
-            let dat = ui.radio_value(&mut self.quelle_station, false, "neu aus dat.csv").changed();
-            if station || dat {
-                self.fuelle_tabellen(projekt);
-            }
-        });
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Neu laden").clicked() {
-                self.lade_datei(projekt);
-            }
-            if ui.button("Neu berechnen").clicked() {
-                neu_rechnen = true;
-            }
-            if ui.button(RichText::new("Speichern").strong()).clicked() {
-                self.speichern(projekt);
-            }
-            if ui.button("Als KOR-CSV …").clicked() {
-                self.kor_csv(projekt);
-            }
-            if ui.button("Protokoll öffnen").clicked() {
-                self.oeffne_letztes_protokoll(projekt);
-            }
-        });
-        if standpunkt_neu {
-            self.standpunkt_gewaehlt(projekt);
-        }
-
-        if !self.hinweise.is_empty() {
+        ui.add_enabled_ui(!gesperrt, |ui| {
+            neu_rechnen |= self.zeichne_kopf(ui, projekt);
+            self.zeichne_hinweise(ui);
             ui.add_space(4.0);
-            for h in &self.hinweise {
-                ui.colored_label(Color32::from_rgb(150, 90, 0), format!("⚠ {h}"));
-            }
-        }
-        if !self.fehler.is_empty() {
-            ui.colored_label(FARBE_FEHLER, &self.fehler);
-        }
-        if !self.ergebnis_text.is_empty() {
-            ui.label(RichText::new(&self.ergebnis_text).monospace());
-        }
-        ui.add_space(6.0);
-
-        let geaendert_ap = tabellen_bereich(ui, "Anschlusspunkte", Color32::from_rgb(232, 241, 252), Color32::from_rgb(65, 105, 155), |ui| self.zeichne_anschluss(ui, projekt));
-        ui.add_space(10.0);
-        let geaendert_np = tabellen_bereich(ui, "Polarpunkte", Color32::from_rgb(232, 246, 237), Color32::from_rgb(55, 120, 80), |ui| self.zeichne_polar(ui));
-        if neu_rechnen || geaendert_ap || geaendert_np {
+            neu_rechnen |= self.zeichne_haupt(ui, projekt);
+            ui.add_space(6.0);
+            schliessen = self.zeichne_unten(ui, projekt);
+        });
+        neu_rechnen |= self.zeige_rechenparameter(&ctx, projekt);
+        if neu_rechnen {
             self.neuberechnen(projekt);
         }
-        ui.add_space(4.0);
-        ui.label(&self.status);
-        self.zeichne_frage(ui.ctx(), projekt);
+        self.zeichne_frage(&ctx, projekt);
+        self.zeige_meldung(&ctx);
+        schliessen
     }
 
-    fn zeichne_anschluss(&mut self, ui: &mut egui::Ui, projekt: &Projekt) -> bool {
+    /// Kopfbereich: Standpunkt, Instrumentenhöhe, Orientierungsquelle, Rechenparameter, Neu laden.
+    fn zeichne_kopf(&mut self, ui: &mut egui::Ui, projekt: &Projekt) -> bool {
+        let mut neu_rechnen = false;
+        let mut standpunkt_neu = false;
+        let mut quelle_neu = false;
+        let mut laden = false;
+        let mut csv_laden = false;
+        ui.horizontal(|ui| {
+            ui.label("Standpunkt:");
+            let vorher = self.sp_index;
+            egui::ComboBox::from_id_salt("polar_standpunkt")
+                .width(STANDPUNKT_BREITE)
+                .selected_text(RichText::new(self.sp_name()).monospace())
+                .show_ui(ui, |ui| {
+                    for (i, sp) in self.standpunkte.iter().enumerate() {
+                        ui.selectable_value(&mut self.sp_index, i, RichText::new(sp).monospace());
+                    }
+                });
+            standpunkt_neu = vorher != self.sp_index;
+            ui.add_space(12.0);
+            ui.label("Instrumentenhöhe [m]:");
+            let antwort = ui.add(
+                egui::TextEdit::singleline(&mut self.instr_hoehe)
+                    .font(egui::TextStyle::Monospace)
+                    .align(egui::Align2::RIGHT_CENTER)
+                    .desired_width(HOEHEN_FELD_BREITE),
+            );
+            neu_rechnen |= antwort.lost_focus();
+            ui.add_space(12.0);
+            if ui.add(egui::Button::new("Rechenparameter…").min_size(egui::Vec2::new(160.0, KOPF_KNOPF_HOEHE))).clicked() {
+                self.rechenparameter = Some(RechenparameterAnsicht::default());
+            }
+            laden = ui.add(egui::Button::new("Neu laden").min_size(egui::Vec2::new(100.0, KOPF_KNOPF_HOEHE))).clicked();
+            csv_laden = ui.add(egui::Button::new("CSV laden …").min_size(egui::Vec2::new(120.0, KOPF_KNOPF_HOEHE))).clicked();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Orientierung aus:");
+            quelle_neu |= ui.radio_value(&mut self.quelle_station, true, "gespeicherter Station").changed();
+            quelle_neu |= ui.radio_value(&mut self.quelle_station, false, "neu aus dat.csv").changed();
+        });
+        if csv_laden {
+            self.waehle_csv(projekt);
+        } else if laden {
+            self.lade_datei(projekt);
+        } else if standpunkt_neu {
+            self.standpunkt_gewaehlt(projekt);
+        } else if quelle_neu {
+            self.fuelle_tabellen(projekt);
+        }
+        neu_rechnen
+    }
+
+    /// Gelbes Hinweisband über den Tabellen.
+    fn zeichne_hinweise(&self, ui: &mut egui::Ui) {
+        if self.hinweise.is_empty() {
+            return;
+        }
+        egui::Frame::new().fill(FARBE_HINWEIS_HINTERGRUND).inner_margin(egui::Margin::symmetric(14, 4)).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            for h in &self.hinweise {
+                ui.label(RichText::new(format!("⚠ {h}")).color(FARBE_HINWEIS_SCHRIFT));
+            }
+        });
+    }
+
+    /// Geteilter Hauptbereich: oben Orientierung / Anschlusspunkte, unten Polarpunkte; `true`, wenn neu zu rechnen ist.
+    fn zeichne_haupt(&mut self, ui: &mut egui::Ui, projekt: &Projekt) -> bool {
+        let gesamt = (ui.available_height() - UNTEN_HOEHE).max(2.0 * MIN_TEIL_HOEHE + TEILER_HOEHE);
+        let nutzbar = gesamt - TEILER_HOEHE;
+        let oben = (nutzbar * self.teilung).clamp(MIN_TEIL_HOEHE, nutzbar - MIN_TEIL_HOEHE);
+        let unten = nutzbar - oben;
+        let breite = ui.available_width();
+
+        let mut geaendert = false;
+        ui.allocate_ui(egui::Vec2::new(breite, oben), |ui| {
+            geaendert |= gruppe(ui, "Orientierung / Anschlusspunkte", |ui| {
+                let tabelle = (oben - GRUPPE_KOPF - ERGEBNIS_HOEHE - KOPF_HOEHE).max(ZEILEN_HOEHE);
+                let geaendert = self.zeichne_anschluss(ui, projekt, breite, tabelle);
+                self.zeichne_ergebnisfeld(ui);
+                geaendert
+            });
+        });
+
+        // Teiler zum Verschieben der Aufteilung
+        let (rect, antwort) = ui.allocate_exact_size(egui::Vec2::new(breite, TEILER_HOEHE), egui::Sense::drag());
+        let farbe = if antwort.hovered() || antwort.dragged() { FARBE_KOPF } else { FARBE_RAHMEN };
+        ui.painter().line_segment([rect.left_center(), rect.right_center()], egui::Stroke::new(2.0, farbe));
+        if antwort.hovered() || antwort.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if antwort.dragged() {
+            self.teilung = ((oben + antwort.drag_delta().y) / nutzbar).clamp(MIN_TEIL_HOEHE / nutzbar, 1.0 - MIN_TEIL_HOEHE / nutzbar);
+        }
+
+        ui.allocate_ui(egui::Vec2::new(breite, unten), |ui| {
+            geaendert |= gruppe(ui, "Polarpunkte", |ui| {
+                let tabelle = (unten - GRUPPE_KOPF - KOPF_HOEHE).max(ZEILEN_HOEHE);
+                self.zeichne_polar(ui, breite, tabelle)
+            });
+        });
+        geaendert
+    }
+
+    fn tabellen_raster(gewichte: &[f32], breite: f32) -> Raster {
+        Raster::fuellend(gewichte, breite - TABELLEN_RAND, MIN_SPALTENBREITE)
+            .mit_zeilenhoehe(ZEILEN_HOEHE)
+            .mit_kopf_stil(FARBE_KOPF, Color32::WHITE)
+            .ohne_streifen()
+    }
+
+    fn zeichne_anschluss(&mut self, ui: &mut egui::Ui, projekt: &Projekt, breite: f32, hoehe: f32) -> bool {
         let par = &projekt.rechenparameter.params;
-        let raster = Raster::neu(&BREITEN_ANSCHLUSS).mit_zeilenkopf(ZEILENKOPF_BREITE);
-        egui::ScrollArea::horizontal().id_salt("polar_ap_horizontal").auto_shrink([false, true]).show(ui, |ui| {
-        raster.kopf(ui, &["PunktNr", "s [m]", "vHz [cc]", "vQuer [mm]", "vLängs [mm]", "vHöhe [mm]", "Gewicht", "Hz", "Str", "Höhe"]);
+        let raster = Self::tabellen_raster(&GEWICHTE_ANSCHLUSS, breite);
         let mut geaendert = false;
-        egui::ScrollArea::vertical().id_salt("polar_ap").max_height(180.0).show(ui, |ui| {
-            for (i, p) in self.ap.iter().enumerate() {
-                let r = self.residuen.get(i).and_then(Option::as_ref);
-                let akt = &mut self.akt[i];
-                raster.zeile(ui, i, &(i + 1).to_string(), |z| {
-                    z.text(&p.punkt_nr);
-                    z.zahl(&r.map_or_else(|| STRICH.to_string(), |r| f(r.strecke_h, 3)));
-                    wert_zelle(z, r.filter(|r| r.richtung_aktiv).map(|r| r.v_winkel_cc), par.fehlergrenze_cc_winkel);
-                    wert_zelle(z, r.filter(|r| r.richtung_aktiv).map(|r| r.v_quer_mm), par.fehlergrenze_mm_strecke);
-                    wert_zelle(z, r.filter(|r| r.strecke_aktiv).map(|r| r.v_strecke_mm), par.fehlergrenze_mm_strecke);
-                    wert_zelle(z, r.filter(|r| r.hoehe_aktiv).map(|r| r.v_hoehe_mm), par.fehlergrenze_mm_hoehe);
-                    let gewicht = r.map(|r| r.gewicht_richtung).filter(|w| !w.is_nan());
-                    z.zahl(&gewicht.map_or_else(|| STRICH.to_string(), |w| format!("{} %", f(w * PROZENT, 1))));
-                    let vorher = *akt;
-                    z.haken(&mut akt[0]);
-                    z.haken(&mut akt[1]);
-                    z.haken(&mut akt[2]);
-                    geaendert |= vorher != *akt;
+        egui::Frame::new().fill(Color32::WHITE).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            egui::ScrollArea::horizontal().id_salt("polar_ap_horizontal").auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                raster.kopf(ui, &["Punkt", "Str.h [m]", "v Winkel [cc]", "v Quer [mm]", "Hz", "v Längs [mm]", "Str", "v Höhe [mm]", "Hoe", "Gewicht"]);
+                egui::ScrollArea::vertical().id_salt("polar_ap").max_height(hoehe).auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                    for (i, p) in self.ap.iter().enumerate() {
+                        let r = self.residuen.get(i).and_then(Option::as_ref);
+                        let akt = &mut self.akt[i];
+                        raster.zeile(ui, i, "", |z| {
+                            let vorher = *akt;
+                            z.rechts(&p.punkt_nr);
+                            z.rechts(&r.map_or_else(|| STRICH.to_string(), |r| f(r.strecke_h, 3)));
+                            wert_zelle(z, r.filter(|r| r.richtung_aktiv).map(|r| r.v_winkel_cc), par.fehlergrenze_cc_winkel);
+                            wert_zelle(z, r.filter(|r| r.richtung_aktiv).map(|r| r.v_quer_mm), par.fehlergrenze_mm_strecke);
+                            z.haken(&mut akt[0]);
+                            wert_zelle(z, r.filter(|r| r.strecke_aktiv).map(|r| r.v_strecke_mm), par.fehlergrenze_mm_strecke);
+                            z.haken(&mut akt[1]);
+                            wert_zelle(z, r.filter(|r| r.hoehe_aktiv).map(|r| r.v_hoehe_mm), par.fehlergrenze_mm_hoehe);
+                            z.haken(&mut akt[2]);
+                            let gewicht = r.map(|r| r.gewicht_richtung).filter(|w| !w.is_nan());
+                            z.rechts(&gewicht.map_or_else(|| STRICH.to_string(), |w| format!("{} %", f(w * PROZENT, 1))));
+                            geaendert |= vorher != *akt;
+                        });
+                    }
                 });
-            }
+            });
         });
         geaendert
-        }).inner
     }
 
-    fn zeichne_polar(&mut self, ui: &mut egui::Ui) -> bool {
-        let raster = Raster::neu(&BREITEN_POLAR).mit_zeilenkopf(ZEILENKOPF_BREITE);
-        egui::ScrollArea::horizontal().id_salt("polar_np_horizontal").auto_shrink([false, true]).show(ui, |ui| {
-        raster.kopf(ui, &["Berechnen", "PunktNr", "Hz [gon]", "V [gon]", "Strecke [m]", "ZH [m]", "eL [m]", "eQ [m]", "R [m]", "H [m]", "Höhe [m]", "Code", "Zeit"]);
+    /// Ergebnisfeld unter der Anschlusspunkttabelle (Orientierung, Maßstab, s0) oder Fehlertext.
+    fn zeichne_ergebnisfeld(&self, ui: &mut egui::Ui) {
+        let (text, farbe) = if self.fehler.is_empty() { (self.ergebnis_text.as_str(), Color32::BLACK) } else { (self.fehler.as_str(), FARBE_FEHLER) };
+        egui::Frame::new().fill(FARBE_ERGEBNIS_HINTERGRUND).inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
+            ui.set_min_size(egui::Vec2::new(ui.available_width(), ERGEBNIS_HOEHE - 8.0));
+            ui.label(RichText::new(text).monospace().color(farbe));
+        });
+    }
+
+    fn zeichne_polar(&mut self, ui: &mut egui::Ui, breite: f32, hoehe: f32) -> bool {
+        let raster = Self::tabellen_raster(&GEWICHTE_POLAR, breite);
         let mut geaendert = false;
-        egui::ScrollArea::vertical().id_salt("polar_np").max_height(260.0).show(ui, |ui| {
-            for i in 0..self.np.len() {
-                let ergebnis = self.ergebnisse.get(i).and_then(Option::as_ref).cloned();
-                let hintergrund = ergebnis.is_none().then_some(FARBE_GRAU);
-                let m = &mut self.np[i];
-                let (exz_l, exz_q) = &mut self.exz_text[i];
-                let aktiv = &mut self.np_aktiv[i];
-                let (gross_l, gross_q) = (m.exz_laengs_m.abs() > EXZ_INFO_GRENZE_M, m.exz_quer_m.abs() > EXZ_INFO_GRENZE_M);
-                raster.zeile_farbig(ui, i, &(i + 1).to_string(), hintergrund, |z| {
-                    let vorher = *aktiv;
-                    z.haken(aktiv);
-                    geaendert |= vorher != *aktiv;
-                    z.text(&m.punkt_nr);
-                    z.zahl(&f(m.hz_gon, 4));
-                    z.zahl(&f(m.v_gon, 4));
-                    z.zahl(&f(m.strecke_m, 3));
-                    z.zahl(&f(m.zielhoehe_m, 3));
-                    if exz_zelle(z, exz_l, gross_l) {
-                        if let Some(w) = parse_zahl(exz_l) {
-                            m.exz_laengs_m = w;
-                        }
-                        geaendert = true;
+        egui::Frame::new().fill(Color32::WHITE).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            egui::ScrollArea::horizontal().id_salt("polar_np_horizontal").auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                raster.kopf(ui, &["Berechnen", "Punkt", "Hz [gon]", "V [gon]", "Strecke [m]", "ZH [m]", "Exz längs [m]", "Exz quer [m]", "R [m]", "H [m]", "Höhe [m]", "Code", "Zeit"]);
+                egui::ScrollArea::vertical().id_salt("polar_np").max_height(hoehe).auto_shrink([false, false]).show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+                    for i in 0..self.np.len() {
+                        let ergebnis = self.ergebnisse.get(i).and_then(Option::as_ref).cloned();
+                        let hintergrund = ergebnis.is_none().then_some(FARBE_GRAU);
+                        let m = &mut self.np[i];
+                        let (exz_l, exz_q) = &mut self.exz_text[i];
+                        let aktiv = &mut self.np_aktiv[i];
+                        let (gross_l, gross_q) = (m.exz_laengs_m.abs() > EXZ_INFO_GRENZE_M, m.exz_quer_m.abs() > EXZ_INFO_GRENZE_M);
+                        raster.zeile_farbig(ui, i, "", hintergrund, |z| {
+                            let vorher = *aktiv;
+                            z.haken(aktiv);
+                            geaendert |= vorher != *aktiv;
+                            z.rechts(&m.punkt_nr);
+                            z.rechts(&f(m.hz_gon, 4));
+                            z.rechts(&f(m.v_gon, 4));
+                            z.rechts(&f(m.strecke_m, 3));
+                            z.rechts(&f(m.zielhoehe_m, 3));
+                            if exz_zelle(z, exz_l, gross_l) {
+                                if let Some(w) = parse_zahl(exz_l) {
+                                    m.exz_laengs_m = w;
+                                }
+                                geaendert = true;
+                            }
+                            if exz_zelle(z, exz_q, gross_q) {
+                                if let Some(w) = parse_zahl(exz_q) {
+                                    m.exz_quer_m = w;
+                                }
+                                geaendert = true;
+                            }
+                            z.rechts(&ergebnis.as_ref().map_or_else(|| STRICH.to_string(), |e| f(e.r, 3)));
+                            z.rechts(&ergebnis.as_ref().map_or_else(|| STRICH.to_string(), |e| f(e.h, 3)));
+                            z.rechts(&ergebnis.as_ref().filter(|e| e.ist_3d).map_or_else(|| STRICH.to_string(), |e| f(e.hoehe, 3)));
+                            z.rechts(&m.code);
+                            z.rechts(&m.zeitstempel);
+                        });
                     }
-                    if exz_zelle(z, exz_q, gross_q) {
-                        if let Some(w) = parse_zahl(exz_q) {
-                            m.exz_quer_m = w;
-                        }
-                        geaendert = true;
-                    }
-                    z.zahl(&ergebnis.as_ref().map_or_else(|| STRICH.to_string(), |e| f(e.r, 3)));
-                    z.zahl(&ergebnis.as_ref().map_or_else(|| STRICH.to_string(), |e| f(e.h, 3)));
-                    z.zahl(&ergebnis.as_ref().filter(|e| e.ist_3d).map_or_else(|| STRICH.to_string(), |e| f(e.hoehe, 3)));
-                    z.text(&m.code);
-                    z.text(&m.zeitstempel);
                 });
-            }
+            });
         });
         geaendert
-        }).inner
+    }
+
+    /// Fußbereich: Status links, Schaltflächen rechts; `true` bei „Schließen“.
+    fn zeichne_unten(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) -> bool {
+        let mut schliessen = false;
+        let (mut neu, mut speichern, mut protokoll_zeigen, mut kor) = (false, false, false, false);
+        ui.horizontal(|ui| {
+            ui.allocate_ui(egui::Vec2::new(STATUS_BREITE, KNOPF_HOEHE), |ui| {
+                ui.set_max_width(STATUS_BREITE);
+                ui.label(&self.status);
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let knopf = |text: &str, breite: f32| egui::Button::new(text).min_size(egui::Vec2::new(breite, KNOPF_HOEHE));
+                schliessen = ui.add(knopf("Schließen", 100.0)).clicked();
+                kor = ui.add(knopf("Als KOR-CSV speichern", 180.0)).clicked();
+                protokoll_zeigen = ui.add(knopf("Protokoll anzeigen", 150.0)).clicked();
+                speichern = ui
+                    .add(egui::Button::new(RichText::new("Speichern").color(Color32::WHITE)).fill(FARBE_SPEICHERN).min_size(egui::Vec2::new(110.0, KNOPF_HOEHE)))
+                    .clicked();
+                neu = ui.add(knopf("Neu berechnen", 130.0)).clicked();
+            });
+        });
+        if neu {
+            self.neuberechnen(projekt);
+        }
+        if speichern {
+            self.speichern(projekt);
+        }
+        if protokoll_zeigen {
+            self.oeffne_letztes_protokoll(projekt);
+        }
+        if kor {
+            self.kor_csv(projekt);
+        }
+        schliessen
+    }
+
+    /// Fenster mit den Rechenparametern; `true`, wenn es geschlossen wurde (dann ist neu zu rechnen).
+    fn zeige_rechenparameter(&mut self, ctx: &egui::Context, projekt: &mut Projekt) -> bool {
+        let Some(mut ansicht) = self.rechenparameter.take() else {
+            return false;
+        };
+        let mut offen = true;
+        let mut schliessen = false;
+        egui::Window::new("Rechenparameter")
+            .open(&mut offen)
+            .collapsible(false)
+            .default_size(egui::Vec2::new(620.0, 560.0))
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ansicht.zeichne(ui, projekt);
+                if ui.button("Schliessen").clicked() {
+                    schliessen = true;
+                }
+            });
+        if offen && !schliessen {
+            self.rechenparameter = Some(ansicht);
+            return false;
+        }
+        true
+    }
+
+    fn zeige_meldung(&mut self, ctx: &egui::Context) {
+        let Some((titel, text)) = self.meldung.clone() else {
+            return;
+        };
+        let mut ok = false;
+        egui::Window::new(titel).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).show(ctx, |ui| {
+            ui.label(text);
+            ui.add_space(6.0);
+            ok = ui.button("OK").clicked();
+        });
+        if ok {
+            self.meldung = None;
+        }
     }
 
     fn zeichne_frage(&mut self, ctx: &egui::Context, projekt: &mut Projekt) {
@@ -924,10 +1158,18 @@ impl PolarpunkteAnsicht {
         };
         let mut antwort: Option<u8> = None;
         let titel = match &frage {
+            Frage::Hinweise(_) => "Information",
             Frage::Ueberschreiben(_) => "Polarpunkte überschreiben",
             Frage::Kor(_) => "Als KOR-CSV speichern",
         };
         egui::Window::new(titel).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO).show(ctx, |ui| match &frage {
+            Frage::Hinweise(text) => {
+                ui.label(text);
+                ui.add_space(6.0);
+                if ui.button("OK").clicked() {
+                    antwort = Some(0);
+                }
+            }
             Frage::Ueberschreiben(text) => {
                 ui.label(text);
                 ui.horizontal(|ui| {
@@ -940,12 +1182,12 @@ impl PolarpunkteAnsicht {
                 });
             }
             Frage::Kor(_) => {
-                ui.label("Die Datei ist bereits vorhanden.\n\nErgänzen: Punkte ergänzen bzw. ersetzen (andere Punkte bleiben erhalten)\nNeu anlegen: Datei überschreiben");
+                ui.label("Die Datei ist bereits vorhanden.\n\nJa:  Punkte ergänzen bzw. ersetzen (andere Punkte bleiben erhalten)\nNein:  Datei neu anlegen (überschreiben)");
                 ui.horizontal(|ui| {
-                    if ui.button("Ergänzen").clicked() {
+                    if ui.button("Ja").clicked() {
                         antwort = Some(0);
                     }
-                    if ui.button("Neu anlegen").clicked() {
+                    if ui.button("Nein").clicked() {
                         antwort = Some(1);
                     }
                     if ui.button("Abbrechen").clicked() {
@@ -957,6 +1199,7 @@ impl PolarpunkteAnsicht {
         match (antwort, frage) {
             (None, frage) => self.frage = Some(frage),
             (Some(0), Frage::Ueberschreiben(_)) => self.speichere_jetzt(projekt),
+            (Some(_), Frage::Hinweise(_)) => self.pruefe_ueberschreiben(projekt),
             (Some(2), Frage::Ueberschreiben(_)) => self.status = "Speichern abgebrochen – vorhandene Punkte unverändert.".to_string(),
             (Some(a), Frage::Kor(pfad)) if a < 2 => self.schreibe_kor(projekt, &pfad, a == 0),
             _ => {}
@@ -965,7 +1208,7 @@ impl PolarpunkteAnsicht {
 }
 
 /// Wertezelle mit Ampelfarbe (oder grau bei fehlendem Wert).
-fn wert_zelle(z: &mut Zellen<'_>, wert: Option<f64>, grenze: f64) {
+pub(super) fn wert_zelle(z: &mut Zellen<'_>, wert: Option<f64>, grenze: f64) {
     let (text, farbe) = match wert.filter(|w| !w.is_nan()) {
         Some(w) => (mit_vorzeichen(w), ampel(w.abs(), grenze)),
         None => (STRICH.to_string(), FARBE_GRAU),
@@ -978,19 +1221,19 @@ fn wert_zelle(z: &mut Zellen<'_>, wert: Option<f64>, grenze: f64) {
     });
 }
 
-/// Exzentrizitätszelle; bei großem Wert gelb hinterlegt. Liefert `true`, wenn der Text geändert wurde.
+/// Exzentrizitätszelle (rechtsbündig); bei großem Wert gelb hinterlegt. Liefert `true`, wenn der Text geändert wurde.
 fn exz_zelle(z: &mut Zellen<'_>, text: &mut String, gross: bool) -> bool {
-    if gross {
-        let mut geaendert = false;
-        z.zelle(|ui| {
+    let mut geaendert = false;
+    z.zelle(|ui| {
+        if gross {
             ui.painter().rect_filled(ui.max_rect().expand(1.0), 0.0, FARBE_EXZ_GROSS);
-            let breite = ui.available_width();
-            geaendert = ui.add(egui::TextEdit::singleline(text).frame(egui::Frame::NONE).desired_width(breite)).changed();
-        });
-        geaendert
-    } else {
-        z.eingabe(text)
-    }
+        }
+        let breite = ui.available_width();
+        geaendert = ui
+            .add(egui::TextEdit::singleline(text).frame(egui::Frame::NONE).align(egui::Align2::RIGHT_CENTER).desired_width(breite))
+            .changed();
+    });
+    geaendert
 }
 
 #[cfg(test)]

@@ -10,10 +10,12 @@ use crate::grundlagen::protokoll;
 /// Programmversion aus Cargo.toml.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const BUILDNUMMER: &str = env!("FELDBUCH_BUILD_NUMMER");
-/// Breite der Modulknöpfe.
-const KNOPF_BREITE: f32 = 260.0;
-/// Höhe der Modulknöpfe.
-const KNOPF_HOEHE: f32 = 36.0;
+/// Höhe der Modulknöpfe und des zentralen DXF-Knopfs.
+const KNOPF_HOEHE: f32 = 44.0;
+const DXF_KNOPF_HOEHE: f32 = 64.0;
+/// Größe der Knöpfe für Projekt und Projektdaten.
+const KLEIN_KNOPF_BREITE: f32 = 130.0;
+const KLEIN_KNOPF_HOEHE: f32 = 28.0;
 
 /// Zeichnet das Hauptfenster bzw. die aktive Ansicht.
 pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
@@ -48,7 +50,7 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &app.projekt));
             }
             Ansicht::Polarpunkte(ansicht) => {
-                egui::ScrollArea::vertical().show(ui, |ui| ansicht.zeichne(ui, &mut app.projekt));
+                zurueck = ansicht.zeichne(ui, &mut app.projekt);
             }
             Ansicht::Aufnahmetest(ansicht) => {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.geraet));
@@ -116,43 +118,105 @@ fn zeichne_start(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
     }
     ui.add_space(12.0);
 
-    // Module
-    let module: [(&str, fn() -> Ansicht); 13] = [
-        ("Projekt", || Ansicht::Projekt(projekt_dialog::ProjektDialog::neu())),
-        ("Freie Stationierung", || Ansicht::FreieStationierung(Box::default())),
-        ("Polarpunkte", || Ansicht::NochNichtPortiert("Polarpunkte")),
-        ("Absteckung", || Ansicht::Absteckung(Default::default())),
-        ("DXF-Viewer", || Ansicht::Start),
-        ("Projektdaten", || Ansicht::Projektdaten(projektdaten_ansicht::ProjektdatenAnsicht::default())),
-        ("Rechenparameter", || Ansicht::Rechenparameter(rechenparameter_ansicht::RechenparameterAnsicht::default())),
-        ("Konvertierung", || Ansicht::NochNichtPortiert("Konvertierung")),
-        ("Datenmanager", || Ansicht::Datenmanager(Default::default())),
-        ("Berechnungen", || Ansicht::Berechnungen(Default::default())),
-        ("Tachymeter-Kommunikation", || Ansicht::Kommunikation(Default::default())),
-        ("Testmessungen", || Ansicht::NochNichtPortiert("Testmessungen")),
-        ("Info", || Ansicht::Info),
-    ];
-    egui::Grid::new("module").num_columns(2).spacing([12.0, 12.0]).show(ui, |ui| {
-        for (i, (name, erzeuge)) in module.iter().enumerate() {
-            if ui.add_sized([KNOPF_BREITE, KNOPF_HOEHE], egui::Button::new(*name)).clicked() {
-                protokoll::log("FORM", &format!("Modul geöffnet: {name}"));
-                if *name == "DXF-Viewer" {
-                    app.dxf_viewer.get_or_insert_with(Box::default);
-                } else if *name == "Testmessungen" {
-                    app.ansicht = Ansicht::Testmessungen(Box::new(super::testmessungen::TestmessungenAnsicht::neu(&app.projekt)));
-                } else if *name == "Konvertierung" {
-                    app.ansicht = Ansicht::Konvertierung(Box::new(super::konvertierung::KonvertierungAnsicht::neu(&app.projekt)));
-                } else if *name == "Polarpunkte" {
-                    app.ansicht = Ansicht::Polarpunkte(Box::new(super::polarpunkte::PolarpunkteAnsicht::neu(&app.projekt)));
-                } else {
-                    app.ansicht = erzeuge();
-                }
-            }
-            if i % 2 == 1 {
-                ui.end_row();
+    // Projekt und Projektdaten: neben der Projektanzeige
+    ui.horizontal(|ui| {
+        for name in ["Projekt", "Projektdaten"] {
+            if ui.add(egui::Button::new(name).min_size(egui::Vec2::new(KLEIN_KNOPF_BREITE, KLEIN_KNOPF_HOEHE))).clicked() {
+                oeffne_modul(app, name);
             }
         }
     });
+    ui.add_space(8.0);
+
+    // Module: farblich nach Funktion getrennt, der DXF-Viewer als zentrale Funktion über die ganze Breite
+    let abstand = ui.spacing().item_spacing.x;
+    let halbe_breite = (ui.available_width() - abstand) / 2.0;
+    let mut gewaehlt: Option<&str> = None;
+    let mut knopf = |ui: &mut egui::Ui, modul: &Modul, breite: f32, hoehe: f32| {
+        let text = egui::RichText::new(modul.name).color(egui::Color32::WHITE).size(modul.schriftgroesse);
+        let button = egui::Button::new(text).fill(modul.farbe).min_size(egui::Vec2::new(breite, hoehe));
+        if ui.add(button).clicked() {
+            gewaehlt = Some(modul.name);
+        }
+    };
+    knopf(ui, &DXF_VIEWER, ui.available_width(), DXF_KNOPF_HOEHE);
+    ui.add_space(abstand);
+    for zeile in &MODUL_ZEILEN {
+        ui.horizontal(|ui| {
+            for modul in zeile {
+                knopf(ui, modul, halbe_breite, KNOPF_HOEHE);
+            }
+        });
+    }
+    if let Some(name) = gewaehlt {
+        oeffne_modul(app, name);
+    }
+}
+
+/// Ein Modulknopf: Name, Farbe der Funktionsgruppe und Schriftgröße.
+struct Modul {
+    name: &'static str,
+    farbe: egui::Color32,
+    schriftgroesse: f32,
+}
+
+const SCHRIFT_NORMAL: f32 = 15.0;
+const SCHRIFT_ZENTRAL: f32 = 20.0;
+/// Farben der Funktionsgruppen.
+const FARBE_ZENTRAL: egui::Color32 = egui::Color32::from_rgb(30, 70, 140);
+const FARBE_STATIONIERUNG: egui::Color32 = egui::Color32::from_rgb(40, 120, 80);
+const FARBE_RECHNEN: egui::Color32 = egui::Color32::from_rgb(190, 110, 20);
+const FARBE_DATEN: egui::Color32 = egui::Color32::from_rgb(120, 70, 150);
+const FARBE_GERAET: egui::Color32 = egui::Color32::from_rgb(20, 120, 140);
+const FARBE_SONSTIGES: egui::Color32 = egui::Color32::from_rgb(100, 105, 115);
+
+const DXF_VIEWER: Modul = Modul { name: "DXF-Viewer", farbe: FARBE_ZENTRAL, schriftgroesse: SCHRIFT_ZENTRAL };
+
+/// Anordnung der übrigen Module in zwei Spalten.
+const MODUL_ZEILEN: [[Modul; 2]; 5] = [
+    [
+        Modul { name: "Freie Stationierung", farbe: FARBE_STATIONIERUNG, schriftgroesse: SCHRIFT_NORMAL },
+        Modul { name: "Polarpunkte", farbe: FARBE_STATIONIERUNG, schriftgroesse: SCHRIFT_NORMAL },
+    ],
+    [
+        Modul { name: "Berechnungen", farbe: FARBE_RECHNEN, schriftgroesse: SCHRIFT_NORMAL },
+        Modul { name: "Absteckung", farbe: FARBE_RECHNEN, schriftgroesse: SCHRIFT_NORMAL },
+    ],
+    [
+        Modul { name: "Datenmanager", farbe: FARBE_DATEN, schriftgroesse: SCHRIFT_NORMAL },
+        Modul { name: "Konvertierung", farbe: FARBE_DATEN, schriftgroesse: SCHRIFT_NORMAL },
+    ],
+    [
+        Modul { name: "Tachymeter-Kommunikation", farbe: FARBE_GERAET, schriftgroesse: SCHRIFT_NORMAL },
+        Modul { name: "Rechenparameter", farbe: FARBE_GERAET, schriftgroesse: SCHRIFT_NORMAL },
+    ],
+    [
+        Modul { name: "Testmessungen", farbe: FARBE_SONSTIGES, schriftgroesse: SCHRIFT_NORMAL },
+        Modul { name: "Info", farbe: FARBE_SONSTIGES, schriftgroesse: SCHRIFT_NORMAL },
+    ],
+];
+
+/// Öffnet das Modul mit diesem Namen.
+fn oeffne_modul(app: &mut FeldbuchApp, name: &str) {
+    protokoll::log("FORM", &format!("Modul geöffnet: {name}"));
+    app.ansicht = match name {
+        "DXF-Viewer" => {
+            app.dxf_viewer.get_or_insert_with(Box::default);
+            return;
+        }
+        "Projekt" => Ansicht::Projekt(projekt_dialog::ProjektDialog::neu()),
+        "Projektdaten" => Ansicht::Projektdaten(projektdaten_ansicht::ProjektdatenAnsicht::default()),
+        "Freie Stationierung" => Ansicht::FreieStationierung(Box::new(super::freie_stationierung::FreieStationierungAnsicht::neu(&app.projekt))),
+        "Polarpunkte" => Ansicht::Polarpunkte(Box::new(super::polarpunkte::PolarpunkteAnsicht::neu(&app.projekt))),
+        "Berechnungen" => Ansicht::Berechnungen(Default::default()),
+        "Absteckung" => Ansicht::Absteckung(Default::default()),
+        "Datenmanager" => Ansicht::Datenmanager(Default::default()),
+        "Konvertierung" => Ansicht::Konvertierung(Box::new(super::konvertierung::KonvertierungAnsicht::neu(&app.projekt))),
+        "Tachymeter-Kommunikation" => Ansicht::Kommunikation(Default::default()),
+        "Rechenparameter" => Ansicht::Rechenparameter(rechenparameter_ansicht::RechenparameterAnsicht::default()),
+        "Testmessungen" => Ansicht::Testmessungen(Box::new(super::testmessungen::TestmessungenAnsicht::neu(&app.projekt))),
+        _ => Ansicht::Info,
+    };
 }
 
 /// Hilfehinweise der Info-Seite (wie im Original).

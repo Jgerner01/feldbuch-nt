@@ -1,342 +1,828 @@
-// Zweck:    Freie Stationierung mit Handeingabe der Anschlusspunkte: Berechnung, Residuen, Übernahme
+// Zweck:    Freie Stationierung mit Handeingabe der Anschlusspunkte – Maske und Ergebnisdialog
+//           nach dem Vorbild der Originalversion (FormFreieStationierung / FormErgebnis)
 // Hardware: keine
 // Autor:    Johann Gerner
 
-use eframe::egui;
+use std::path::PathBuf;
+use std::time::SystemTime;
 
-use super::tabelle::{Raster, Zellen};
+use eframe::egui::{self, Align, Color32, Layout, RichText, Vec2};
+
+use super::polarpunkte::{ist_gruen, wert_zelle};
+use super::rechenparameter_ansicht::RechenparameterAnsicht;
+use super::tabelle::Raster;
 use crate::daten::modelle::{StationierungsErgebnis, StationierungsPunkt, jetzt};
 use crate::daten::projekt::Projekt;
 use crate::grundlagen::format::{de, parse_zahl};
-use crate::grundlagen::protokoll;
-use crate::protokolle::{schreibe_fuer_projekt, stationierung};
+use crate::grundlagen::{datei_speicher, fehler_log, pfade, protokoll};
+use crate::protokolle::{ausgabeverzeichnis, letztes_protokoll, oeffne, schreibe_fuer_projekt, stationierung};
 use crate::rechnen::freie_stationierung::{self, Optionen};
-use crate::rechnen::neupunkt::pruefe_station;
+use crate::rechnen::neupunkt::{ist_verwendbar, pruefe_station};
 
-/// Breiten der Tabellenspalten (Nr, R, H, Höhe, Hz, V, Strecke, Zielhöhe, 3 Haken, Aktionen).
-const SPALTEN_BREITEN: [f32; 12] = [90.0, 110.0, 110.0, 80.0, 80.0, 70.0, 90.0, 90.0, 38.0, 38.0, 38.0, 64.0];
-/// Breite der Zeilenköpfe (wie RowHeadersWidth im DataGridView).
+/// Anzahl der Tabellenzeilen (wie MAX_ROWS im Original).
+const MAX_ROWS: usize = 40;
+/// Anzahl der Eingabespalten.
+const SPALTEN: usize = 8;
+/// Spaltenüberschriften der Eingabetabelle.
+const KOPF_EINGABE: [&str; SPALTEN] = ["PunktNr", "R", "H", "Höhe", "HZ [gon]", "V [gon]", "Strecke [m]", "Zielhöhe [m]"];
+/// Kopfzeile der CSV-Dateien (Anschlusspunkte, Standpunkt).
+const KOPFZEILE_CSV: &str = "PunktNr,R,H,Hoehe,HZ,V,Strecke,Zielhoehe";
+/// Breite der Zeilenköpfe (RowHeadersWidth = 32).
 const ZEILENKOPF_BREITE: f32 = 32.0;
-/// Breiten der Residuentabelle.
-const RESIDUEN_BREITEN: [f32; 6] = [90.0, 120.0, 110.0, 110.0, 120.0, 110.0];
+/// Platzbedarf des senkrechten Rollbalkens der Tabelle.
+const ROLLBALKEN_BREITE: f32 = 18.0;
+/// Kleinste Spaltenbreite der Eingabetabelle.
+const MIN_SPALTENBREITE: f32 = 70.0;
+/// Platz unterhalb der Tabelle (Auto-Match-Leiste und zwei Knopfzeilen).
+const PLATZ_UNTER_TABELLE: f32 = 190.0;
+/// Kleinste Höhe der Tabelle.
+const MIN_TABELLENHOEHE: f32 = 160.0;
 
-/// Eingabezeile eines Anschlusspunkts.
-#[derive(Clone)]
-struct Zeile {
-    nr: String,
-    r: String,
-    h: String,
-    hoehe: String,
-    hz: String,
-    v: String,
-    strecke: String,
-    zielhoehe: String,
-    akt_hz: bool,
-    akt_str: bool,
-    akt_hoe: bool,
-}
+/// Instrumentenhöhe: Vorgabe, Grenzen und Schrittweite [m].
+const IH_VORGABE: f64 = 1.5;
+const IH_MAX: f64 = 10.0;
+const IH_SCHRITT: f64 = 0.001;
+const IH_STELLEN: usize = 3;
 
-impl Default for Zeile {
-    fn default() -> Self {
-        Self {
-            nr: String::new(),
-            r: String::new(),
-            h: String::new(),
-            hoehe: String::new(),
-            hz: String::new(),
-            v: "100".to_string(),
-            strecke: String::new(),
-            zielhoehe: "0".to_string(),
-            akt_hz: true,
-            akt_str: true,
-            akt_hoe: true,
-        }
-    }
-}
+/// Dateiname der Testdaten neben der EXE.
+const MUSTER_DATEI: &str = "Muster.csv";
+/// Dateinamenspräfix der Berechnungsprotokolle.
+const PROTOKOLL_PRAEFIX: &str = "FreieStationierung";
+/// Präfix automatisch vergebener Standpunktnummern.
+const STANDPUNKT_PRAEFIX: &str = "STP";
+
+/// Farben und Maße der Originalversion.
+const FARBE_AUTO_MATCH_HINTERGRUND: Color32 = Color32::from_rgb(240, 248, 255);
+const FARBE_RAHMEN: Color32 = Color32::from_rgb(160, 160, 160);
+const FARBE_STATUS: Color32 = Color32::from_rgb(80, 80, 80);
+const FARBE_NEUER_STANDPUNKT: Color32 = Color32::from_rgb(220, 120, 20);
+const FARBE_BERECHNEN: Color32 = Color32::from_rgb(70, 130, 180);
+const FARBE_NEU_BERECHNEN: Color32 = Color32::from_rgb(60, 130, 60);
+const FARBE_HOEHE_WARNUNG: Color32 = Color32::from_rgb(139, 0, 0);
+const KNOPF_HOEHE: f32 = 36.0;
+const KOPF_KNOPF_HOEHE: f32 = 30.0;
+const KNOPF_BREITE_CSV: f32 = 120.0;
+const KNOPF_BREITE_NEUER_STANDPUNKT: f32 = 195.0;
+const KNOPF_BREITE_AUTO_MATCH_PROTOKOLL: f32 = 195.0;
+const KNOPF_BREITE_RECHENPARAMETER: f32 = 230.0;
+const KNOPF_BREITE_TESTDATEN: f32 = 240.0;
+const KNOPF_BREITE_SPEICHERN: f32 = 200.0;
+const KNOPF_BREITE_BERECHNEN: f32 = 250.0;
+const KNOPF_BREITE_NEU_BERECHNEN: f32 = 160.0;
+const KNOPF_BREITE_SCHLIESSEN: f32 = 126.0;
+const SCHRIFT_KOPF: f32 = 15.0;
+const SCHRIFT_TITEL: f32 = 20.0;
+const SCHRIFT_UEBERSCHRIFT: f32 = 15.0;
+
+/// Breite des Ergebnisdialogs und Höhe seiner Residuentabelle.
+const DIALOG_BREITE: f32 = 820.0;
+const DIALOG_TABELLE_HOEHE: f32 = 220.0;
+/// Breite der Haken-Spalten im Ergebnisdialog.
+const HAKEN_SPALTE: f32 = 38.0;
+/// Füllgewichte der Residuenspalten (Punkt, Str.h, v Winkel, v Quer, v Längs, v Höhe).
+const GEWICHTE_RESIDUEN: [f32; 6] = [15.0, 13.0, 14.0, 13.0, 13.0, 13.0];
+/// Breite der Beschriftung vor dem Wert in den Kopfzeilen des Ergebnisdialogs.
+const BESCHRIFTUNG_BREITE: usize = 25;
+/// Mindestanzahl grüner Quer- und Längsresiduen für eine gültige Berechnung.
+const MIN_GRUENE_RESIDUEN: usize = 3;
+/// Mindestanzahl von Zeilen für die Berechnung.
+const MIN_ZEILEN: usize = 2;
+/// Wiederholrate der Dateiüberwachung [s].
+const ABFRAGE_SEKUNDEN: f32 = 1.0;
+/// Platzhalter für nicht vorhandene Werte.
+const STRICH: &str = "–";
+
+type Zeile = [String; SPALTEN];
 
 /// Maske der Freien Stationierung.
 pub struct FreieStationierungAnsicht {
     standpunkt: String,
-    instr_hoehe: String,
+    instr_hoehe: f64,
     zeilen: Vec<Zeile>,
-    ergebnis: Option<(StationierungsErgebnis, Vec<StationierungsPunkt>)>,
-    meldung: String,
-    fehler: bool,
+    /// Speichern ist erst nach einer gültigen Berechnung ohne spätere Änderung der Punktdaten frei.
+    speichern_frei: bool,
+    /// Standpunktnummer der letzten gültigen Berechnung (Dateiname des Speicherns).
+    speicher_standpunkt: String,
+    auto_match: bool,
+    distanz_pflicht: bool,
+    ergebnis_dialog: Option<ErgebnisDialog>,
+    rechenparameter: Option<RechenparameterAnsicht>,
+    /// Meldungsfenster (Titel, Text) wie eine MessageBox.
+    meldung: Option<(String, String)>,
+    /// Zeitstempel der Anschlusspunktdatei beim letzten Lesen oder Schreiben.
+    anschluss_zeit: Option<SystemTime>,
 }
 
-impl Default for FreieStationierungAnsicht {
-    fn default() -> Self {
-        Self {
-            standpunkt: String::new(),
-            instr_hoehe: "0".to_string(),
-            zeilen: vec![Zeile::default(), Zeile::default()],
-            ergebnis: None,
-            meldung: String::new(),
-            fehler: false,
-        }
-    }
+fn leere_zeile() -> Zeile {
+    Default::default()
+}
+
+fn dateizeit(pfad: &std::path::Path) -> Option<SystemTime> {
+    std::fs::metadata(pfad).and_then(|m| m.modified()).ok()
 }
 
 impl FreieStationierungAnsicht {
-    pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
-        ui.heading("Freie Stationierung");
-        egui::Grid::new("fs_kopf").num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
-            ui.label("Standpunkt-Nr:");
-            ui.add(egui::TextEdit::singleline(&mut self.standpunkt).desired_width(120.0));
-            ui.label("Instrumentenhöhe [m]:");
-            ui.add(egui::TextEdit::singleline(&mut self.instr_hoehe).desired_width(80.0));
-            ui.end_row();
-        });
-        ui.add_space(6.0);
+    /// Öffnet die Maske: Anschlusspunkte laden, Standpunktnummer und Instrumentenhöhe vorbelegen.
+    pub fn neu(projekt: &Projekt) -> Self {
+        let e = &projekt.einstellungen;
+        let standpunkt = if !projekt.station.standpunkt_nr.is_empty() {
+            projekt.station.standpunkt_nr.clone()
+        } else if !e.letzte_standpunkt_nr.is_empty() {
+            e.letzte_standpunkt_nr.clone()
+        } else {
+            format!("{STANDPUNKT_PRAEFIX}{}", e.stationierung_zaehler)
+        };
+        let ih = if projekt.station.instrumenten_hoehe > 0.0 { projekt.station.instrumenten_hoehe } else { e.instrumenten_hoehe };
+        let mut ansicht = Self {
+            standpunkt,
+            instr_hoehe: if ih > 0.0 { ih.clamp(0.0, IH_MAX) } else { IH_VORGABE },
+            zeilen: vec![leere_zeile(); MAX_ROWS],
+            speichern_frei: false,
+            speicher_standpunkt: String::new(),
+            auto_match: false,
+            distanz_pflicht: true,
+            ergebnis_dialog: None,
+            rechenparameter: None,
+            meldung: None,
+            anschluss_zeit: None,
+        };
+        ansicht.lade_anschlusspunkte(projekt);
+        ansicht
+    }
 
-        let mut loeschen = None;
-        let mut suchen = None;
-        let raster = Raster::neu(&SPALTEN_BREITEN).mit_zeilenkopf(ZEILENKOPF_BREITE);
-        egui::ScrollArea::horizontal().show(ui, |ui| {
-            ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-            raster.kopf(ui, &["Punkt-Nr", "R [m]", "H [m]", "Höhe [m]", "Hz [gon]", "V [gon]", "Strecke [m]", "Zielhöhe [m]", "Hz", "S", "Hö", ""]);
-            for (i, z) in self.zeilen.iter_mut().enumerate() {
-                raster.zeile(ui, i, &(i + 1).to_string(), |zellen| {
-                    zellen.eingabe(&mut z.nr);
-                    zellen.eingabe(&mut z.r);
-                    zellen.eingabe(&mut z.h);
-                    zellen.eingabe(&mut z.hoehe);
-                    zellen.eingabe(&mut z.hz);
-                    zellen.eingabe(&mut z.v);
-                    zellen.eingabe(&mut z.strecke);
-                    zellen.eingabe(&mut z.zielhoehe);
-                    zellen.haken(&mut z.akt_hz);
-                    zellen.haken(&mut z.akt_str);
-                    zellen.haken(&mut z.akt_hoe);
-                    zellen.zelle(|ui| {
-                        if ui.small_button("🔍").on_hover_text("Koordinaten zur Nummer suchen").clicked() {
-                            suchen = Some(i);
-                        }
-                        if ui.small_button("✕").on_hover_text("Zeile entfernen").clicked() {
-                            loeschen = Some(i);
-                        }
-                    });
-                });
-            }
-        });
-        ui.add_space(6.0);
-        if let Some(i) = suchen {
-            self.suche_koordinaten(i, projekt);
-        }
-        if let Some(i) = loeschen {
-            if self.zeilen.len() > 1 {
-                self.zeilen.remove(i);
-            }
-        }
+    // ── Dateien ───────────────────────────────────────────────────────────────
 
-        ui.horizontal(|ui| {
-            if ui.button("Zeile hinzufügen").clicked() {
-                self.zeilen.push(Zeile::default());
-            }
-            if ui.button("Berechnen").clicked() {
-                self.berechne(projekt);
-            }
-            let kann_uebernehmen = self.ergebnis.is_some() && !self.standpunkt.trim().is_empty();
-            if ui.add_enabled(kann_uebernehmen, egui::Button::new("Übernehmen")).clicked() {
-                self.uebernehme(projekt);
-            }
-            if ui.add_enabled(self.ergebnis.is_some(), egui::Button::new("Protokoll")).clicked() {
-                self.schreibe_protokoll(projekt);
-            }
-        });
-
-        if !self.meldung.is_empty() {
-            let farbe = if self.fehler { egui::Color32::RED } else { ui.visuals().text_color() };
-            ui.colored_label(farbe, &self.meldung);
+    /// Liest die Anschlusspunkte aus der Projektdatei (vom DXF-Viewer geschrieben) in die Tabelle.
+    fn lade_anschlusspunkte(&mut self, projekt: &Projekt) {
+        let pfad = projekt.anschlusspunkte_pfad();
+        self.anschluss_zeit = dateizeit(&pfad);
+        let Ok(text) = std::fs::read_to_string(&pfad) else {
+            return;
+        };
+        let zeilen: Vec<&str> = text.lines().skip(1).filter(|z| !z.trim().is_empty()).collect();
+        if zeilen.is_empty() {
+            return;
         }
-        if let Some((ergebnis, _)) = &self.ergebnis {
-            ui.separator();
-            zeige_ergebnis(ui, ergebnis, projekt);
+        self.fuelle_zeilen(&zeilen);
+    }
+
+    /// Leert die Tabelle und füllt sie mit CSV-Zeilen (Zeilen mit weniger als 8 Spalten bleiben leer).
+    fn fuelle_zeilen(&mut self, csv: &[&str]) {
+        self.zeilen = vec![leere_zeile(); MAX_ROWS];
+        for (i, zeile) in csv.iter().take(MAX_ROWS).enumerate() {
+            let teile: Vec<&str> = zeile.split(',').collect();
+            if teile.len() < SPALTEN {
+                continue;
+            }
+            for (j, teil) in teile.iter().take(SPALTEN).enumerate() {
+                self.zeilen[i][j] = teil.trim().to_string();
+            }
         }
     }
 
-    /// Schreibt das RTF-Protokoll der letzten Berechnung.
-    fn schreibe_protokoll(&mut self, projekt: &Projekt) {
-        let Some((erg, punkte)) = &self.ergebnis else {
+    /// Prüft, ob der DXF-Viewer die Anschlusspunktdatei geändert hat, und lädt sie dann neu.
+    fn beobachte_anschlusspunkte(&mut self, projekt: &Projekt) {
+        let zeit = dateizeit(&projekt.anschlusspunkte_pfad());
+        if zeit.is_some() && zeit != self.anschluss_zeit {
+            self.lade_anschlusspunkte(projekt);
+        }
+    }
+
+    /// Kopfzeile und alle belegten Tabellenzeilen als CSV-Zeilen.
+    fn tabellen_csv(&self) -> Vec<String> {
+        let mut csv = vec![KOPFZEILE_CSV.to_string()];
+        for z in self.zeilen.iter().filter(|z| !z[0].trim().is_empty()) {
+            csv.push(z.iter().map(|w| w.trim()).collect::<Vec<_>>().join(","));
+        }
+        csv
+    }
+
+    fn standpunkt_csv_pfad(&self, standpunkt: &str, projekt: &Projekt) -> PathBuf {
+        let nr = standpunkt.trim();
+        let sicher: String = if nr.is_empty() {
+            "Unbekannt".to_string()
+        } else {
+            nr.chars().map(|c| if "\\/:*?\"<>|".contains(c) { '_' } else { c }).collect()
+        };
+        let name = format!("Standpunkt-{sicher}.csv");
+        if projekt.einstellungen.ist_geladen() { projekt.einstellungen.get_pfad(&name) } else { pfade::get(&name) }
+    }
+
+    fn melde(&mut self, titel: &str, text: impl Into<String>) {
+        self.meldung = Some((titel.to_string(), text.into()));
+    }
+
+    /// Merkt Standpunktnummer und Instrumentenhöhe für den nächsten Aufruf.
+    fn merke(&self, projekt: &mut Projekt) {
+        let nr = self.standpunkt.trim();
+        if !nr.is_empty() {
+            projekt.einstellungen.letzte_standpunkt_nr = nr.to_string();
+        }
+        projekt.einstellungen.instrumenten_hoehe = self.instr_hoehe;
+        if let Err(fehler) = projekt.einstellungen.speichern() {
+            fehler_log::log("FreieStationierung.merke", &fehler.to_string());
+        }
+    }
+
+    // ── Aktionen ──────────────────────────────────────────────────────────────
+
+    /// „Neuer Standpunkt“: Anschlusspunktdatei mit Zeitstempel archivieren und die Tabelle leeren.
+    fn neuer_standpunkt(&mut self, projekt: &Projekt) {
+        let pfad = projekt.anschlusspunkte_pfad();
+        if pfad.exists() {
+            let zeitstempel = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
+            let archiv = pfad.with_file_name(format!("Anschlusspunkte_{zeitstempel}.csv"));
+            if let Err(fehler) = std::fs::rename(&pfad, &archiv) {
+                self.melde("Fehler", format!("Die Anschlusspunktdatei konnte nicht archiviert werden: {fehler}"));
+                return;
+            }
+        }
+        self.zeilen = vec![leere_zeile(); MAX_ROWS];
+        self.speichern_frei = false;
+        self.anschluss_zeit = None;
+    }
+
+    /// Entfernt eine Zeile, schließt die Lücke und schreibt die CSV-Dateien neu.
+    fn zeile_entfernen(&mut self, index: usize, projekt: &Projekt) {
+        self.zeilen.remove(index);
+        self.zeilen.push(leere_zeile());
+        self.speichern_frei = false;
+        let csv = self.tabellen_csv();
+        let anschluss = projekt.anschlusspunkte_pfad();
+        let standpunkt = self.standpunkt_csv_pfad(&self.standpunkt, projekt);
+        let ergebnis = datei_speicher::schreibe_zeilen(&anschluss, &csv).and_then(|()| {
+            if standpunkt.exists() { datei_speicher::schreibe_zeilen(&standpunkt, &csv) } else { Ok(()) }
+        });
+        self.anschluss_zeit = dateizeit(&anschluss);
+        if let Err(fehler) = ergebnis {
+            self.melde("Fehler", format!("Fehler beim Schreiben der CSV-Dateien: {fehler}"));
+        }
+    }
+
+    fn lade_testdaten(&mut self) {
+        self.lade_csv(&pfade::get(MUSTER_DATEI));
+    }
+
+    /// „CSV laden“: Dateiauswahl, dann die Zeilen (PunktNr, R, H, Höhe, HZ, V, Strecke, Zielhöhe) in die Tabelle übernehmen.
+    fn waehle_csv(&mut self, projekt: &Projekt) {
+        let mut dialog = rfd::FileDialog::new().set_title("CSV mit Anschlusspunkten laden").add_filter("CSV-Dateien (*.csv)", &["csv"]);
+        if projekt.einstellungen.ist_geladen() {
+            dialog = dialog.set_directory(&projekt.einstellungen.projekt_verzeichnis);
+        }
+        if let Some(pfad) = dialog.pick_file() {
+            self.lade_csv(&pfad);
+        }
+    }
+
+    fn lade_csv(&mut self, pfad: &std::path::Path) {
+        let Ok(text) = std::fs::read_to_string(pfad) else {
+            let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            self.melde("Datei nicht gefunden", format!("{name} nicht gefunden.
+Erwartet in: {}", pfad.display()));
             return;
         };
-        let (hz, st, hoe) = self
-            .lese_eingaben()
-            .map(|(_, hz, st, hoe)| (hz, st, hoe))
-            .unwrap_or_else(|_| (vec![true; punkte.len()], vec![true; punkte.len()], vec![true; punkte.len()]));
-        let ih = parse_zahl(&self.instr_hoehe).unwrap_or(0.0);
-        let p = stationierung::protokoll(
-            erg,
-            punkte,
-            (&hz, &st, &hoe),
-            self.standpunkt.trim(),
+        let zeilen: Vec<&str> = text.lines().skip(1).take(MAX_ROWS).collect();
+        self.fuelle_zeilen(&zeilen);
+        self.speichern_frei = false;
+    }
+
+    fn speichern(&mut self, projekt: &Projekt) {
+        let pfad = self.standpunkt_csv_pfad(&self.speicher_standpunkt, projekt);
+        let csv = self.tabellen_csv();
+        match datei_speicher::schreibe_zeilen(&pfad, &csv) {
+            Ok(()) => self.melde("Gespeichert", format!("Gespeichert: {} Punkte\n{}", csv.len() - 1, pfad.display())),
+            Err(fehler) => self.melde("Fehler", format!("Fehler beim Speichern: {fehler}")),
+        }
+    }
+
+    fn oeffne_protokoll(&mut self, projekt: &Projekt) {
+        match letztes_protokoll(&ausgabeverzeichnis(projekt), PROTOKOLL_PRAEFIX) {
+            None => self.melde(
+                "Kein Protokoll",
+                "Kein Berechnungsprotokoll gefunden.\nEs wird beim Schließen des Berechnungsdialogs erzeugt.",
+            ),
+            Some(pfad) => {
+                if let Err(fehler) = oeffne(&pfad) {
+                    self.melde("Fehler", format!("Protokoll konnte nicht geöffnet werden:\n{fehler}"));
+                }
+            }
+        }
+    }
+
+    /// Liest die Tabelle; Fehlertext mit Zeilennummer, wenn ein Wert ungültig ist.
+    fn lese_punkte(&self) -> Result<Vec<StationierungsPunkt>, String> {
+        let mut punkte = Vec::new();
+        for (i, z) in self.zeilen.iter().enumerate() {
+            if z[0].trim().is_empty() {
+                continue;
+            }
+            let zahl = |index: usize, name: &str| {
+                parse_zahl(&z[index]).ok_or_else(|| format!("Fehler in Zeile {}: {name} ungültig", i + 1))
+            };
+            punkte.push(StationierungsPunkt {
+                punkt_nr: z[0].trim().to_string(),
+                r: zahl(1, "R")?,
+                h: zahl(2, "H")?,
+                hoehe: zahl(3, "Höhe")?,
+                hz: zahl(4, "HZ")?,
+                v: zahl(5, "V")?,
+                strecke: zahl(6, "Strecke")?,
+                zielhoehe: zahl(7, "Zielhöhe")?,
+            });
+        }
+        Ok(punkte)
+    }
+
+    fn berechnen(&mut self, projekt: &mut Projekt) {
+        self.merke(projekt);
+        let punkte = match self.lese_punkte() {
+            Ok(p) => p,
+            Err(text) => {
+                self.melde("Eingabefehler", text);
+                return;
+            }
+        };
+        if punkte.len() < MIN_ZEILEN {
+            self.melde("Zu wenig Punkte", "Mindestens 2 vollständige Zeilen erforderlich.");
+            return;
+        }
+        match ErgebnisDialog::neu(self.standpunkt.trim().to_string(), self.instr_hoehe, punkte, projekt) {
+            Ok(dialog) => self.ergebnis_dialog = Some(dialog),
+            Err(fehler) => self.melde("Fehler", format!("Berechnungsfehler: {fehler}")),
+        }
+    }
+
+    /// Nach dem Schließen des Ergebnisdialogs: Protokoll schreiben, Speichern freigeben, Standpunktzähler erhöhen.
+    fn nach_dialog(&mut self, dialog: &ErgebnisDialog, projekt: &mut Projekt) {
+        if let Err(text) = dialog.schreibe_protokoll(projekt) {
+            if projekt.einstellungen.protokoll_aktiv {
+                self.melde("Protokoll", text);
+            }
+        }
+        self.speichern_frei = ist_gueltige_berechnung(projekt.station.ergebnis.as_ref(), projekt);
+        self.speicher_standpunkt = dialog.standpunkt.clone();
+
+        let nr = dialog.standpunkt.as_str();
+        if nr.len() > STANDPUNKT_PRAEFIX.len() && nr[..STANDPUNKT_PRAEFIX.len()].eq_ignore_ascii_case(STANDPUNKT_PRAEFIX) {
+            if let Ok(n) = nr[STANDPUNKT_PRAEFIX.len()..].parse::<i32>() {
+                projekt.einstellungen.stationierung_zaehler = n + 1;
+                self.standpunkt = format!("{STANDPUNKT_PRAEFIX}{}", n + 1);
+            }
+        }
+        self.merke(projekt);
+    }
+
+    // ── Darstellung ───────────────────────────────────────────────────────────
+
+    pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
+        let ctx = ui.ctx().clone();
+        self.beobachte_anschlusspunkte(projekt);
+        ctx.request_repaint_after(std::time::Duration::from_secs_f32(ABFRAGE_SEKUNDEN));
+
+        let gesperrt = self.ergebnis_dialog.is_some() || self.meldung.is_some();
+        ui.add_enabled_ui(!gesperrt, |ui| self.zeichne_maske(ui, projekt));
+
+        if let Some(mut dialog) = self.ergebnis_dialog.take() {
+            if dialog.zeige(&ctx, projekt) {
+                self.nach_dialog(&dialog, projekt);
+            } else {
+                self.ergebnis_dialog = Some(dialog);
+            }
+        }
+        self.zeige_rechenparameter(&ctx, projekt);
+        self.zeige_meldung(&ctx);
+    }
+
+    fn zeichne_maske(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
+        ui.heading("Freie Stationierung");
+        ui.add_space(4.0);
+
+        // ── Kopfzeile ────────────────────────────────────────────────────────
+        let mut csv_laden = false;
+        ui.horizontal(|ui| {
+            ui.label("Standpunktnummer:");
+            let nr = ui.add(egui::TextEdit::singleline(&mut self.standpunkt).desired_width(110.0));
+            ui.add_space(24.0);
+            ui.label("Instrumentenhöhe (m):");
+            let ih = ui.add(
+                egui::DragValue::new(&mut self.instr_hoehe)
+                    .range(0.0..=IH_MAX)
+                    .speed(IH_SCHRITT)
+                    .fixed_decimals(IH_STELLEN),
+            );
+            if nr.lost_focus() || ih.lost_focus() || ih.drag_stopped() {
+                self.merke(projekt);
+            }
+            ui.add_space(24.0);
+            csv_laden = ui.add(egui::Button::new("CSV laden …").min_size(Vec2::new(KNOPF_BREITE_CSV, KOPF_KNOPF_HOEHE))).clicked();
+        });
+        if csv_laden {
+            self.waehle_csv(projekt);
+        }
+        ui.add_space(6.0);
+
+        self.zeichne_tabelle(ui, projekt);
+        ui.add_space(8.0);
+        self.zeichne_auto_match_leiste(ui, projekt);
+        ui.add_space(8.0);
+        self.zeichne_knoepfe(ui, projekt);
+    }
+
+    fn zeichne_tabelle(&mut self, ui: &mut egui::Ui, projekt: &Projekt) {
+        let breite = ((ui.available_width() - ZEILENKOPF_BREITE - ROLLBALKEN_BREITE) / SPALTEN as f32).max(MIN_SPALTENBREITE);
+        let raster = Raster::neu(&[breite; SPALTEN]).mit_zeilenkopf(ZEILENKOPF_BREITE);
+        let hoehe = (ui.available_height() - PLATZ_UNTER_TABELLE).max(MIN_TABELLENHOEHE);
+        let mut geaendert = false;
+        let mut entfernen = None;
+        egui::ScrollArea::horizontal().id_salt("fs_horizontal").auto_shrink([false, true]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            raster.kopf(ui, &KOPF_EINGABE);
+            egui::ScrollArea::vertical().id_salt("fs_vertikal").max_height(hoehe).auto_shrink([false, true]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                for i in 0..MAX_ROWS {
+                    let nr = self.zeilen[i][0].trim().to_string();
+                    let zeile = &mut self.zeilen[i];
+                    raster.zeile(ui, i, &(i + 1).to_string(), |zellen| {
+                        for wert in zeile.iter_mut() {
+                            let Some(antwort) = zellen.eingabe_antwort(wert) else {
+                                continue;
+                            };
+                            geaendert |= antwort.changed();
+                            if !nr.is_empty() {
+                                antwort.context_menu(|ui| {
+                                    if ui.button(format!("Zeile '{nr}' entfernen")).clicked() {
+                                        entfernen = Some(i);
+                                        ui.close();
+                                    }
+                                });
+                            }
+                        }
+                    });
+                }
+            });
+        });
+        if geaendert {
+            self.speichern_frei = false;
+        }
+        if let Some(i) = entfernen {
+            self.zeile_entfernen(i, projekt);
+        }
+    }
+
+    fn zeichne_auto_match_leiste(&mut self, ui: &mut egui::Ui, projekt: &Projekt) {
+        let grenze = projekt.rechenparameter.params.fehlergrenze_mm_s0_auto_match;
+        let ergebnis = projekt.station.ergebnis.as_ref();
+        let brauchbar = ergebnis.is_some_and(|e| e.redundanz > 0 && e.s0_mm <= grenze);
+        let status = match ergebnis {
+            None => "Keine Stationierung vorhanden".to_string(),
+            Some(e) if !brauchbar => {
+                format!("Station zu ungenau (s₀={} mm > {} mm) – Auto-Match gesperrt", de(e.s0_mm, 1), de(grenze, 0))
+            }
+            Some(e) => format!(
+                "Station: {}  r={}  – Auto-Match bereit",
+                projekt.rechenparameter.params.sigma_text(e.s0_mm, 2),
+                e.redundanz
+            ),
+        };
+        if !brauchbar {
+            self.auto_match = false;
+        }
+        let mut protokoll_wunsch = false;
+        egui::Frame::new()
+            .fill(FARBE_AUTO_MATCH_HINTERGRUND)
+            .stroke(egui::Stroke::new(1.0, FARBE_RAHMEN))
+            .inner_margin(egui::Margin::symmetric(8, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    // Die Live-Punktsuche über den Tachymeter ist in Feldbuch-NT noch nicht portiert.
+                    ui.add_enabled(false, egui::Checkbox::new(&mut self.auto_match, RichText::new("Auto-Punktsuche aktiv").strong()))
+                        .on_disabled_hover_text("Die automatische Punktsuche ist in Feldbuch-NT noch nicht umgesetzt.");
+                    ui.add_space(12.0);
+                    ui.checkbox(&mut self.distanz_pflicht, "Distanz-Pflicht");
+                    ui.add_space(12.0);
+                    ui.label(RichText::new(status).color(FARBE_STATUS));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.button("Berechnungsprotokoll").clicked() {
+                            protokoll_wunsch = true;
+                        }
+                    });
+                });
+            });
+        if protokoll_wunsch {
+            self.oeffne_protokoll(projekt);
+        }
+    }
+
+    fn zeichne_knoepfe(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
+        let mut neuer_standpunkt = false;
+        let mut testdaten = false;
+        let mut speichern = false;
+        let mut berechnen = false;
+
+        // Zeile 1: [Neuer Standpunkt] [Auto-Match-Protokoll] … [Rechenparameter]
+        ui.horizontal(|ui| {
+            if projekt.anschlusspunkte_pfad().exists() {
+                let knopf = egui::Button::new(RichText::new("Neuer Standpunkt").strong().size(SCHRIFT_KOPF).color(Color32::WHITE))
+                    .fill(FARBE_NEUER_STANDPUNKT)
+                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(180, 90, 10)))
+                    .min_size(Vec2::new(KNOPF_BREITE_NEUER_STANDPUNKT, KNOPF_HOEHE));
+                neuer_standpunkt = ui.add(knopf).clicked();
+            }
+            ui.add_enabled(false, egui::Button::new("Auto-Match-Protokoll").min_size(Vec2::new(KNOPF_BREITE_AUTO_MATCH_PROTOKOLL, KNOPF_HOEHE)))
+                .on_disabled_hover_text("Die automatische Punktsuche ist in Feldbuch-NT noch nicht umgesetzt.");
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let knopf = egui::Button::new("⚙ Rechenparameter").min_size(Vec2::new(KNOPF_BREITE_RECHENPARAMETER, KNOPF_HOEHE));
+                if ui.add(knopf).clicked() {
+                    self.rechenparameter = Some(RechenparameterAnsicht::default());
+                }
+            });
+        });
+        ui.add_space(4.0);
+
+        // Zeile 2: [Testdaten laden] … [Speichern] [Berechnen]
+        ui.horizontal(|ui| {
+            let knopf = egui::Button::new("Testdaten laden (Muster.csv)").min_size(Vec2::new(KNOPF_BREITE_TESTDATEN, KNOPF_HOEHE));
+            testdaten = ui.add(knopf).clicked();
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let knopf = egui::Button::new(RichText::new("Berechnen").strong().size(SCHRIFT_KOPF).color(Color32::WHITE))
+                    .fill(FARBE_BERECHNEN)
+                    .min_size(Vec2::new(KNOPF_BREITE_BERECHNEN, KNOPF_HOEHE));
+                berechnen = ui.add(knopf).clicked();
+                let knopf = egui::Button::new("Speichern").min_size(Vec2::new(KNOPF_BREITE_SPEICHERN, KNOPF_HOEHE));
+                speichern = ui.add_enabled(self.speichern_frei, knopf).clicked();
+            });
+        });
+
+        if neuer_standpunkt {
+            self.neuer_standpunkt(projekt);
+        }
+        if testdaten {
+            self.lade_testdaten();
+        }
+        if speichern {
+            self.speichern(projekt);
+        }
+        if berechnen {
+            self.berechnen(projekt);
+        }
+    }
+
+    /// Fenster mit den Rechenparametern; beim Schließen wird die Standardabweichung neu in die Projektdaten geschrieben.
+    fn zeige_rechenparameter(&mut self, ctx: &egui::Context, projekt: &mut Projekt) {
+        let Some(mut ansicht) = self.rechenparameter.take() else {
+            return;
+        };
+        let mut offen = true;
+        let mut schliessen = false;
+        egui::Window::new("Rechenparameter")
+            .open(&mut offen)
+            .collapsible(false)
+            .default_size(Vec2::new(620.0, 560.0))
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ansicht.zeichne(ui, projekt);
+                if ui.button("Schliessen").clicked() {
+                    schliessen = true;
+                }
+            });
+        if offen && !schliessen {
+            self.rechenparameter = Some(ansicht);
+            return;
+        }
+        if let Some(s0) = projekt.station.ergebnis.as_ref().map(|e| e.s0_mm) {
+            if let Err(fehler) = projekt.schreibe_sigma_projektdaten(s0) {
+                fehler_log::log("FreieStationierung.rechenparameter", &fehler.to_string());
+            }
+        }
+    }
+
+    fn zeige_meldung(&mut self, ctx: &egui::Context) {
+        let Some((titel, text)) = self.meldung.clone() else {
+            return;
+        };
+        let mut ok = false;
+        egui::Window::new(titel).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            ui.label(text);
+            ui.add_space(6.0);
+            ok = ui.button("OK").clicked();
+        });
+        if ok {
+            self.meldung = None;
+        }
+    }
+}
+
+/// Gültige Berechnung: verwendbare Station und mindestens 3 grüne Quer- und 3 grüne Längsresiduen.
+fn ist_gueltige_berechnung(erg: Option<&StationierungsErgebnis>, projekt: &Projekt) -> bool {
+    let Some(e) = erg.filter(|e| ist_verwendbar(Some(e))) else {
+        return false;
+    };
+    let par = &projekt.rechenparameter.params;
+    let (mut quer, mut laengs) = (0, 0);
+    for r in &e.residuen {
+        if r.richtung_aktiv && !r.v_quer_mm.is_nan() && ist_gruen(r.v_quer_mm.abs(), par.fehlergrenze_mm_strecke) {
+            quer += 1;
+        }
+        if r.strecke_aktiv && !r.v_strecke_mm.is_nan() && ist_gruen(r.v_strecke_mm.abs(), par.fehlergrenze_mm_strecke) {
+            laengs += 1;
+        }
+    }
+    quer >= MIN_GRUENE_RESIDUEN && laengs >= MIN_GRUENE_RESIDUEN
+}
+
+/// Ergebnisdialog „Ergebnis – Freie Stationierung“ mit Residuentabelle und Aktivierung je Beobachtung.
+struct ErgebnisDialog {
+    standpunkt: String,
+    ih: f64,
+    punkte: Vec<StationierungsPunkt>,
+    ergebnis: StationierungsErgebnis,
+    akt_hz: Vec<bool>,
+    akt_str: Vec<bool>,
+    akt_hoe: Vec<bool>,
+    fehler: String,
+}
+
+impl ErgebnisDialog {
+    /// Rechnet mit allen Richtungen und Strecken; Höhen mit Höhe 0 sind zunächst abgeschaltet.
+    fn neu(standpunkt: String, ih: f64, punkte: Vec<StationierungsPunkt>, projekt: &mut Projekt) -> Result<Self, String> {
+        let n = punkte.len();
+        let akt_hoe = punkte.iter().map(|p| p.hoehe != 0.0).collect();
+        let mut dialog = Self {
+            standpunkt,
             ih,
+            punkte,
+            ergebnis: StationierungsErgebnis::default(),
+            akt_hz: vec![true; n],
+            akt_str: vec![true; n],
+            akt_hoe,
+            fehler: String::new(),
+        };
+        dialog.rechne(projekt)?;
+        Ok(dialog)
+    }
+
+    /// Berechnet mit der aktuellen Aktivierung und übernimmt das Ergebnis in Station, Feldbuchpunkte und Projektdaten.
+    fn rechne(&mut self, projekt: &mut Projekt) -> Result<(), String> {
+        let optionen = {
+            let par = &projekt.rechenparameter.params;
+            Optionen {
+                freier_massstab: par.freier_massstab,
+                aktiv_richtung: Some(self.akt_hz.clone()),
+                aktiv_strecke: Some(self.akt_str.clone()),
+                aktiv_hoehe: Some(self.akt_hoe.clone()),
+                berechnung_3d: par.berechnung_3d,
+                fehlergrenze_mm_hoehe: par.fehlergrenze_mm_hoehe,
+                ..Optionen::default()
+            }
+        };
+        let ergebnis = freie_stationierung::berechnen(&self.punkte, self.ih, &optionen)?;
+        pruefe_station(&ergebnis)?;
+        projekt.uebernehme_manuelle_stationierung(&self.standpunkt, self.ih, self.punkte.clone(), ergebnis.clone())?;
+        protokoll::log("RECHNUNG", &format!("Freie Stationierung berechnet, s0 = {} mm", de(ergebnis.s0_mm, 2)));
+        self.ergebnis = ergebnis;
+        Ok(())
+    }
+
+    /// Schreibt das RTF-Protokoll mit der zuletzt berechneten Aktivierung.
+    fn schreibe_protokoll(&self, projekt: &Projekt) -> Result<(), String> {
+        let p = stationierung::protokoll(
+            &self.ergebnis,
+            &self.punkte,
+            (&self.akt_hz, &self.akt_str, &self.akt_hoe),
+            &self.standpunkt,
+            self.ih,
             &projekt.rechenparameter.params,
             &projekt.projektdaten.bearbeiter,
             jetzt(),
         );
-        match schreibe_fuer_projekt(&p, projekt) {
-            Ok(pfad) => {
-                self.meldung = format!("Protokoll gespeichert:\n{}", pfad.display());
-                self.fehler = false;
-            }
-            Err(text) => {
-                self.meldung = text;
-                self.fehler = true;
-            }
-        }
+        schreibe_fuer_projekt(&p, projekt).map(|_| ())
     }
 
-    fn suche_koordinaten(&mut self, index: usize, projekt: &Projekt) {
-        let nr = self.zeilen[index].nr.clone();
-        match projekt.finde_anschlusspunkt(&nr) {
-            Some((r, h, hoehe)) => {
-                let z = &mut self.zeilen[index];
-                z.r = format!("{r:.3}");
-                z.h = format!("{h:.3}");
-                z.hoehe = format!("{hoehe:.3}");
-                self.meldung.clear();
-            }
-            None => {
-                self.meldung = format!("Punkt „{nr}“ wurde nicht gefunden.");
-                self.fehler = true;
-            }
-        }
-    }
-
-    /// Liest die Eingaben; `Err` mit Zeilennummer bei ungültigen Zahlen.
-    fn lese_eingaben(&self) -> Result<(Vec<StationierungsPunkt>, Vec<bool>, Vec<bool>, Vec<bool>), String> {
-        let (mut punkte, mut hz, mut st, mut hoe) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for (i, z) in self.zeilen.iter().enumerate() {
-            if z.nr.trim().is_empty() && z.r.trim().is_empty() && z.hz.trim().is_empty() {
-                continue;
-            }
-            let zahl = |text: &str, name: &str| {
-                parse_zahl(text).ok_or_else(|| format!("Zeile {}: ungültiger Wert für {name}.", i + 1))
-            };
-            punkte.push(StationierungsPunkt {
-                punkt_nr: z.nr.trim().to_string(),
-                r: zahl(&z.r, "R")?,
-                h: zahl(&z.h, "H")?,
-                hoehe: parse_zahl(&z.hoehe).unwrap_or(0.0),
-                hz: zahl(&z.hz, "Hz")?,
-                v: zahl(&z.v, "V")?,
-                strecke: zahl(&z.strecke, "Strecke")?,
-                zielhoehe: parse_zahl(&z.zielhoehe).unwrap_or(0.0),
+    /// Zeichnet den Dialog; `true`, wenn er geschlossen wurde.
+    fn zeige(&mut self, ctx: &egui::Context, projekt: &mut Projekt) -> bool {
+        let mut schliessen = false;
+        let mut neu_rechnen = false;
+        egui::Window::new("Ergebnis – Freie Stationierung")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_width(DIALOG_BREITE);
+                ui.label(RichText::new("Freie Stationierung  –  Ergebnis").strong().size(SCHRIFT_TITEL));
+                ui.separator();
+                self.zeichne_kopfdaten(ui, projekt);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(RichText::new("Residuen pro Anschlusspunkt:").strong().size(SCHRIFT_UEBERSCHRIFT));
+                ui.add_space(4.0);
+                neu_rechnen |= self.zeichne_residuen(ui, projekt);
+                if !self.fehler.is_empty() {
+                    ui.colored_label(Color32::RED, &self.fehler);
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let knopf = egui::Button::new(RichText::new("↻ Neu berechnen").strong().size(SCHRIFT_KOPF).color(Color32::WHITE))
+                        .fill(FARBE_NEU_BERECHNEN)
+                        .min_size(Vec2::new(KNOPF_BREITE_NEU_BERECHNEN, KNOPF_HOEHE));
+                    neu_rechnen |= ui.add(knopf).clicked();
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let knopf = egui::Button::new("Schliessen").min_size(Vec2::new(KNOPF_BREITE_SCHLIESSEN, KNOPF_HOEHE));
+                        schliessen = ui.add(knopf).clicked();
+                    });
+                });
             });
-            hz.push(z.akt_hz);
-            st.push(z.akt_str);
-            hoe.push(z.akt_hoe);
+        if neu_rechnen {
+            self.fehler = self.rechne(projekt).err().unwrap_or_default();
         }
-        Ok((punkte, hz, st, hoe))
+        schliessen
     }
 
-    fn berechne(&mut self, projekt: &Projekt) {
-        self.ergebnis = None;
-        let ergebnis = self.lese_eingaben().and_then(|(punkte, hz, st, hoe)| {
-            let par = &projekt.rechenparameter.params;
-            let ih = parse_zahl(&self.instr_hoehe).unwrap_or(0.0);
-            let optionen = Optionen {
-                freier_massstab: par.freier_massstab,
-                aktiv_richtung: Some(hz),
-                aktiv_strecke: Some(st),
-                aktiv_hoehe: Some(hoe),
-                berechnung_3d: par.berechnung_3d,
-                fehlergrenze_mm_hoehe: par.fehlergrenze_mm_hoehe,
-                ..Optionen::default()
-            };
-            freie_stationierung::berechnen(&punkte, ih, &optionen).map(|e| (e, punkte))
-        });
-        match ergebnis {
-            Ok((e, punkte)) => {
-                self.meldung = if e.konvergiert {
-                    String::new()
-                } else {
-                    "Die Ausgleichung ist nicht konvergiert.".to_string()
-                };
-                self.fehler = !e.konvergiert;
-                protokoll::log("RECHNUNG", &format!("Freie Stationierung berechnet, s0 = {} mm", de(e.s0_mm, 2)));
-                self.ergebnis = Some((e, punkte));
-            }
-            Err(fehler) => {
-                self.meldung = fehler;
-                self.fehler = true;
-            }
-        }
-    }
-
-    fn uebernehme(&mut self, projekt: &mut Projekt) {
-        let Some((ergebnis, punkte)) = self.ergebnis.clone() else {
-            return;
+    fn zeichne_kopfdaten(&self, ui: &mut egui::Ui, projekt: &Projekt) {
+        let e = &self.ergebnis;
+        let p = &projekt.rechenparameter.params;
+        let zeile = |ui: &mut egui::Ui, text: String| {
+            ui.label(RichText::new(text).monospace());
         };
-        let ih = parse_zahl(&self.instr_hoehe).unwrap_or(0.0);
-        let nr = self.standpunkt.trim().to_string();
-        let ergebnis_pruefung = pruefe_station(&ergebnis)
-            .and_then(|()| projekt.uebernehme_manuelle_stationierung(&nr, ih, punkte, ergebnis));
-        match ergebnis_pruefung {
-            Ok(()) => {
-                self.meldung = format!("Standpunkt {nr} übernommen.");
-                self.fehler = false;
-            }
-            Err(fehler) => {
-                self.meldung = format!("Übernahme fehlgeschlagen: {fehler}");
-                self.fehler = true;
-            }
-        }
+        zeile(ui, format!("Standpunktnummer:        {}", self.standpunkt));
+        zeile(ui, format!("Instrumentenhöhe:        {} m", de(self.ih, 3)));
+        zeile(ui, format!("R  (Rechtswert):         {} m", de(e.r, 3)));
+        zeile(ui, format!("H  (Hochwert):           {} m", de(e.h, 3)));
+        let hoehe = if e.berechnung_3d {
+            format!("Höhe:                    {} m", de(e.hoehe, 3))
+        } else if !e.warnung_hoehe.is_empty() {
+            "Höhe:                    –  (Höhenabweichung zu groß; Ergebnis nur 2D)".to_string()
+        } else {
+            "Höhe:                    –  (keine aktiven Höhenmessungen)".to_string()
+        };
+        let farbe = if e.warnung_hoehe.is_empty() { ui.visuals().text_color() } else { FARBE_HOEHE_WARNUNG };
+        ui.label(RichText::new(hoehe).monospace().color(farbe));
+        zeile(ui, format!("Orientierungsunbekannte: {} gon", de(e.orientierung_gon, 4)));
+        let fixiert = if p.freier_massstab { "" } else { "  [fixiert]" };
+        zeile(ui, format!("Maßstab (Helmert):       {}{fixiert}", de(e.massstab, 6)));
+        let beschriftung = format!("{:<w$}", format!("Standardabw. {}:", p.sigma_bez()), w = BESCHRIFTUNG_BREITE);
+        zeile(
+            ui,
+            if e.redundanz > 0 {
+                format!("{beschriftung}{} mm   (Redundanz r = {})", de(p.sigma_wert(e.s0_mm), 2), e.redundanz)
+            } else {
+                format!("{beschriftung}–   (Redundanz r = 0, eindeutig bestimmt)")
+            },
+        );
+        zeile(
+            ui,
+            if self.punkte.len() == 2 {
+                "Methode:                 Ähnlichkeitstransformation  (2 Punkte, Direktlösung)".to_string()
+            } else {
+                format!(
+                    "Iterationen:             {}{}",
+                    e.iterationen,
+                    if e.konvergiert { "  (konvergiert)" } else { "  !! NICHT konvergiert !!" }
+                )
+            },
+        );
     }
-}
 
-fn zeige_ergebnis(ui: &mut egui::Ui, e: &StationierungsErgebnis, projekt: &Projekt) {
-    let p = &projekt.rechenparameter.params;
-    egui::Grid::new("fs_ergebnis").num_columns(4).spacing([16.0, 4.0]).show(ui, |ui| {
-        ui.label("R [m]");
-        ui.monospace(de(e.r, 3));
-        ui.label("H [m]");
-        ui.monospace(de(e.h, 3));
-        ui.end_row();
-        ui.label("Höhe [m]");
-        ui.monospace(if e.berechnung_3d { de(e.hoehe, 3) } else { "–".to_string() });
-        ui.label("Orientierung [gon]");
-        ui.monospace(de(e.orientierung_gon, 4));
-        ui.end_row();
-        ui.label("Maßstab");
-        ui.monospace(de(e.massstab, 6));
-        ui.label("Genauigkeit");
-        ui.monospace(p.sigma_text(e.s0_mm, 2));
-        ui.end_row();
-        ui.label("Redundanz");
-        ui.monospace(e.redundanz.to_string());
-        ui.label("Iterationen");
-        ui.monospace(e.iterationen.to_string());
-        ui.end_row();
-    });
-    if !e.warnung_hoehe.is_empty() {
-        ui.colored_label(egui::Color32::from_rgb(200, 120, 0), &e.warnung_hoehe);
-    }
-    ui.add_space(6.0);
-    ui.strong("Residuen");
-    let raster = Raster::neu(&RESIDUEN_BREITEN).mit_zeilenkopf(ZEILENKOPF_BREITE);
-    ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-    raster.kopf(ui, &["Punkt", "Strecke H [m]", "vWinkel [cc]", "vQuer [mm]", "vStrecke [mm]", "vHöhe [mm]"]);
-    for (i, r) in e.residuen.iter().enumerate() {
-        raster.zeile(ui, i, &(i + 1).to_string(), |zellen| {
-            zellen.text(&r.punkt_nr);
-            zellen.zahl(&de(r.strecke_h, 3));
-            wert_mit_grenze(zellen, r.v_winkel_cc, p.fehlergrenze_cc_winkel);
-            wert_mit_grenze(zellen, r.v_quer_mm, p.fehlergrenze_mm_strecke);
-            wert_mit_grenze(zellen, r.v_strecke_mm, p.fehlergrenze_mm_strecke);
-            wert_mit_grenze(zellen, r.v_hoehe_mm, p.fehlergrenze_mm_hoehe);
+    /// Residuentabelle; `true`, wenn ein Haken geändert wurde (dann ist neu zu rechnen).
+    fn zeichne_residuen(&mut self, ui: &mut egui::Ui, projekt: &Projekt) -> bool {
+        let par = &projekt.rechenparameter.params;
+        let frei = DIALOG_BREITE - 3.0 * HAKEN_SPALTE;
+        let summe: f32 = GEWICHTE_RESIDUEN.iter().sum();
+        let b: Vec<f32> = GEWICHTE_RESIDUEN.iter().map(|g| frei * g / summe).collect();
+        // Reihenfolge: Punkt | Str.h | v Winkel | v Quer | Hz | v Längs | Str | v Höhe | Hoe
+        let raster = Raster::neu(&[b[0], b[1], b[2], b[3], HAKEN_SPALTE, b[4], HAKEN_SPALTE, b[5], HAKEN_SPALTE]);
+        let mut geaendert = false;
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
+        raster.kopf(ui, &["Punkt", "Str.h [m]", "v Winkel [cc]", "v Quer [mm]", "Hz", "v Längs [mm]", "Str", "v Höhe [mm]", "Hoe"]);
+        egui::ScrollArea::vertical().id_salt("fs_residuen").max_height(DIALOG_TABELLE_HOEHE).auto_shrink([false, true]).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            for i in 0..self.punkte.len() {
+                let res = self.ergebnis.residuen.get(i);
+                let nr = self.punkte[i].punkt_nr.clone();
+                let (hz, st, hoe) = (&mut self.akt_hz[i], &mut self.akt_str[i], &mut self.akt_hoe[i]);
+                raster.zeile(ui, i, "", |z| {
+                    z.zelle(|ui| {
+                        ui.label(RichText::new(nr).monospace());
+                    });
+                    z.zelle(|ui| {
+                        ui.label(RichText::new(res.map_or_else(|| STRICH.to_string(), |r| de(r.strecke_h, 3))).monospace());
+                    });
+                    wert_zelle(z, res.filter(|r| r.richtung_aktiv).map(|r| r.v_winkel_cc), par.fehlergrenze_cc_winkel);
+                    wert_zelle(z, res.filter(|r| r.richtung_aktiv).map(|r| r.v_quer_mm), par.fehlergrenze_mm_strecke);
+                    let vorher = *hz;
+                    z.haken(hz);
+                    geaendert |= vorher != *hz;
+                    wert_zelle(z, res.filter(|r| r.strecke_aktiv).map(|r| r.v_strecke_mm), par.fehlergrenze_mm_strecke);
+                    let vorher = *st;
+                    z.haken(st);
+                    geaendert |= vorher != *st;
+                    wert_zelle(z, res.filter(|r| r.hoehe_aktiv).map(|r| r.v_hoehe_mm), par.fehlergrenze_mm_hoehe);
+                    let vorher = *hoe;
+                    z.haken(hoe);
+                    geaendert |= vorher != *hoe;
+                });
+            }
         });
-    }
-}
-
-/// Zeigt einen Residuenwert und färbt ihn rot, wenn die Fehlergrenze überschritten ist.
-fn wert_mit_grenze(zellen: &mut Zellen<'_>, wert: f64, grenze: f64) {
-    if wert.is_nan() {
-        zellen.zahl("–");
-    } else if wert.abs() > grenze {
-        zellen.zahl_farbig(&de(wert, 1), egui::Color32::RED);
-    } else {
-        zellen.zahl(&de(wert, 1));
+        geaendert
     }
 }
