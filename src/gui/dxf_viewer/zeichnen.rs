@@ -628,7 +628,35 @@ impl DxfViewer {
         maler.text(Pos2::new(x_links + bar_px + 6.0, y_mitte), Align2::LEFT_CENTER, text, FontId::proportional(12.0), farbe);
     }
 
+    /// Zwei-Finger-Geste auf dem Touchscreen: Spreizen/Zusammenziehen zoomt um den Mittelpunkt zwischen den Fingern,
+    /// gemeinsames Bewegen verschiebt die Grafik. Gibt `true` zurück, solange die Geste läuft.
+    fn verarbeite_zwei_finger(&mut self, ui: &egui::Ui, antwort: &egui::Response, ursprung: Pos2) -> bool {
+        let Some(geste) = ui.input(|i| i.multi_touch()) else {
+            return false;
+        };
+        if !antwort.rect.contains(geste.center_pos) {
+            return false;
+        }
+        // Begonnene Ein-Finger-Aktionen verwerfen (kein Löschrechteck, kein Verschieben des PDF-Rahmens)
+        self.auswahl_start = None;
+        self.auswahl_ende = None;
+        self.pdf_ziehen = false;
+        let massstab = self.ansicht(ursprung).scale;
+        let d = geste.translation_delta;
+        self.mitte[0] -= f64::from(d.x) / massstab;
+        self.mitte[1] += f64::from(d.y) / massstab;
+        let faktor = f64::from(geste.zoom_delta);
+        if faktor.is_finite() && faktor > 0.0 && (faktor - 1.0).abs() > f64::EPSILON {
+            self.zoom(faktor, geste.center_pos, ursprung);
+        }
+        ui.ctx().request_repaint();
+        true
+    }
+
     fn verarbeite_eingabe(&mut self, ui: &mut egui::Ui, antwort: &egui::Response, projekt: &mut Projekt, ursprung: Pos2) {
+        if self.verarbeite_zwei_finger(ui, antwort, ursprung) {
+            return;
+        }
         if self.pdf_mitte.is_some() {
             let a=self.ansicht(ursprung);
             if antwort.drag_started() {

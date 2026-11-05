@@ -60,7 +60,16 @@ pub struct FeldbuchApp {
     update_dialog: Option<update_dialog::UpdateDialog>,
     /// Die Info-Seite wünscht eine Suche.
     update_pruefen_wunsch: bool,
+    /// Die Startgröße (Full HD oder maximiert) wurde bereits festgelegt.
+    startgroesse_gesetzt: bool,
 }
+
+/// Gewünschte Fenstergröße (Innenfläche) beim Start in Punkten: Full HD.
+const START_GROESSE: egui::Vec2 = egui::Vec2::new(1920.0, 1080.0);
+/// Platz für Fensterrahmen und Titelleiste, solange die tatsächlichen Maße noch unbekannt sind.
+const RAHMEN_RESERVE: egui::Vec2 = egui::Vec2::new(16.0, 40.0);
+/// Platz für die Taskleiste.
+const TASKLEISTE_RESERVE: f32 = 48.0;
 
 impl FeldbuchApp {
     pub fn neu() -> Self {
@@ -102,6 +111,38 @@ impl FeldbuchApp {
             update_suche,
             update_dialog: None,
             update_pruefen_wunsch: false,
+            startgroesse_gesetzt: false,
+        }
+    }
+
+    /// Legt beim Start die Fenstergröße fest: Full HD, wenn es samt Rahmen und Taskleiste auf den Bildschirm passt,
+    /// sonst maximiert. Gilt für das Hauptfenster und damit für alle darin angezeigten Module.
+    fn setze_startgroesse(&mut self, ctx: &egui::Context) {
+        if self.startgroesse_gesetzt {
+            return;
+        }
+        let (monitor, innen, aussen) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.monitor_size, v.inner_rect, v.outer_rect)
+        });
+        let Some(monitor) = monitor else {
+            // Bildschirmgröße noch nicht bekannt: im nächsten Frame erneut versuchen
+            ctx.request_repaint();
+            return;
+        };
+        self.startgroesse_gesetzt = true;
+        let rahmen = match (innen, aussen) {
+            (Some(innen), Some(aussen)) if aussen.size().x >= innen.size().x => aussen.size() - innen.size(),
+            _ => RAHMEN_RESERVE,
+        };
+        let aussen_groesse = START_GROESSE + rahmen;
+        if monitor.x >= aussen_groesse.x && monitor.y - TASKLEISTE_RESERVE >= aussen_groesse.y {
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(START_GROESSE));
+            let links = ((monitor.x - aussen_groesse.x) / 2.0).max(0.0);
+            let oben = ((monitor.y - TASKLEISTE_RESERVE - aussen_groesse.y) / 2.0).max(0.0);
+            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(links, oben)));
+        } else {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
         }
     }
 
@@ -231,6 +272,7 @@ impl FeldbuchApp {
 impl eframe::App for FeldbuchApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.setze_startgroesse(&ctx);
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.titel()));
         // Gerät: Verbindungsversuch und Empfang verarbeiten, auch wenn das Kommunikationsfenster zu ist
         self.geraet.aktualisiere();
