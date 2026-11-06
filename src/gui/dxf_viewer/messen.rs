@@ -171,6 +171,7 @@ impl DxfViewer {
             self.gesehene_station_version = projekt.station_version;
             self.baue_overlay(projekt);
             self.baue_neupunkte_overlay(projekt);
+            self.baue_qualitaets_overlay(projekt);
         }
         geraet.live_hz_aktiv = true;
         // V wird nur für die getrennte Messung (hier) und den Messdaten-Dialog (schaltet selbst ein) abgefragt
@@ -434,6 +435,11 @@ impl DxfViewer {
                 );
                 if !erg.warnung_hoehe.is_empty() {
                     self.status.push_str(&format!(" | {}", erg.warnung_hoehe));
+                }
+                // Die gespeicherte Beobachtungsauswahl wurde angewendet: abgeschaltete Beobachtungen sichtbar machen
+                let abgeschaltet = projekt.station.aktivierung().anzahl_abgeschaltet();
+                if abgeschaltet > 0 {
+                    self.status.push_str(&format!(" | {abgeschaltet} Beobachtung(en) abgeschaltet"));
                 }
             }
             None => {

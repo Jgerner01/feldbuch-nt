@@ -21,8 +21,10 @@ use crate::protokolle::{ausgabeverzeichnis, letztes_protokoll, oeffne, schreibe_
 use crate::rechnen::freie_stationierung::{self, Optionen};
 use crate::rechnen::neupunkt::{ist_verwendbar, pruefe_station};
 
-/// Anzahl der Tabellenzeilen (wie MAX_ROWS im Original).
-const MAX_ROWS: usize = 40;
+/// Anzahl der Tabellenzeilen = Messzeilen (Mehrfachmessungen derselben Anschlusspunkte sind möglich).
+const MAX_ROWS: usize = 3000;
+/// Höchstzahl verschiedener Anschlusspunkte in der Tabelle.
+const MAX_ANSCHLUSSPUNKTE: usize = 40;
 /// Anzahl der Eingabespalten.
 const SPALTEN: usize = 8;
 /// Spaltenüberschriften der Eingabetabelle.
@@ -198,6 +200,8 @@ struct Ausstehend {
     aktivierung: Aktivierung,
     ergebnis: StationierungsErgebnis,
     freigabe: Freigabe,
+    /// Stand der Eingaben (Tabelle, Instrumentenhöhe) bei der Berechnung; Änderungen sperren das Speichern.
+    eingaben: String,
 }
 
 fn leere_zeile() -> Zeile {
@@ -551,22 +555,50 @@ impl FreieStationierungAnsicht {
             self.melde("Zu wenig Punkte", "Mindestens 2 vollständige Zeilen erforderlich.");
             return;
         }
+        let verschiedene = anzahl_verschiedene(&punkte);
+        if verschiedene < MIN_ZEILEN {
+            self.melde("Zu wenig Punkte", format!("Mindestens {MIN_ZEILEN} verschiedene Anschlusspunkte erforderlich (vorhanden: {verschiedene})."));
+            return;
+        }
+        if verschiedene > MAX_ANSCHLUSSPUNKTE {
+            self.melde(
+                "Zu viele Anschlusspunkte",
+                format!("Höchstens {MAX_ANSCHLUSSPUNKTE} verschiedene Anschlusspunkte sind erlaubt (vorhanden: {verschiedene}). Messzeilen: bis zu {MAX_ROWS}."),
+            );
+            return;
+        }
         let standpunkt = self.standpunkt.trim().to_string();
         let vorgabe = gespeicherte_aktivierung(projekt, &standpunkt, &punkte);
+        let hinweis = verworfene_auswahl(projekt, &standpunkt, vorgabe.is_some());
         match ErgebnisDialog::neu(standpunkt, self.instr_hoehe, punkte, vorgabe, projekt) {
-            Ok(dialog) => self.ergebnis_dialog = Some(dialog),
+            Ok(mut dialog) => {
+                dialog.hinweis = hinweis;
+                self.ergebnis_dialog = Some(dialog);
+            }
             Err(fehler) => self.melde("Fehler", format!("Berechnungsfehler: {fehler}")),
         }
     }
 
     /// Nach dem Schließen des Ergebnisdialogs: Protokoll schreiben, Speichern freigeben, Standpunktzähler erhöhen.
     fn nach_dialog(&mut self, dialog: &ErgebnisDialog, projekt: &mut Projekt) {
+        // Scheiterte die letzte Neuberechnung (nach geänderten Haken), passt das angezeigte Ergebnis nicht zur Auswahl:
+        // weder Protokoll noch Übernahme
+        if !dialog.gueltig {
+            self.speichern_frei = false;
+            self.ausstehend = None;
+            self.melde(
+                "Berechnung fehlgeschlagen",
+                "Die letzte Berechnung mit den geänderten Haken ist fehlgeschlagen. Das angezeigte Ergebnis gehört zur vorherigen Auswahl \
+                 und wird weder protokolliert noch zur Übernahme freigegeben. Bitte erneut berechnen.",
+            );
+            return;
+        }
         if let Err(text) = dialog.schreibe_protokoll(projekt) {
             if projekt.einstellungen.protokoll_aktiv {
                 self.melde("Protokoll", text);
             }
         }
-        let freigabe = bewerte_freigabe(&dialog.ergebnis, dialog.punkte.len(), projekt);
+        let freigabe = bewerte_freigabe(&dialog.ergebnis, anzahl_verschiedene(&dialog.punkte), projekt);
         self.speichern_frei = !matches!(freigabe, Freigabe::Gesperrt(_));
         self.speicher_standpunkt = dialog.standpunkt.clone();
         self.ausstehend = Some(Ausstehend {
@@ -580,6 +612,7 @@ impl FreieStationierungAnsicht {
             },
             ergebnis: dialog.ergebnis.clone(),
             freigabe,
+            eingaben: self.eingaben_stand(),
         });
 
         let nr = dialog.standpunkt.as_str();
@@ -594,9 +627,23 @@ impl FreieStationierungAnsicht {
 
     // ── Darstellung ───────────────────────────────────────────────────────────
 
+    /// Stand der Eingaben, auf denen eine Berechnung beruht: Instrumentenhöhe und alle belegten Tabellenzeilen.
+    fn eingaben_stand(&self) -> String {
+        format!("{:.6}\n{}", self.instr_hoehe, self.tabellen_csv().join("\n"))
+    }
+
+    /// Änderungen nach dem Berechnen (Tabelle, Instrumentenhöhe, nachgeladene Anschlusspunktdatei) sperren das Speichern.
+    fn pruefe_eingaben(&mut self) {
+        if self.ausstehend.as_ref().is_some_and(|a| a.eingaben != self.eingaben_stand()) {
+            self.ausstehend = None;
+            self.speichern_frei = false;
+        }
+    }
+
     pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
         let ctx = ui.ctx().clone();
         self.beobachte_anschlusspunkte(projekt);
+        self.pruefe_eingaben();
         ctx.request_repaint_after(std::time::Duration::from_secs_f32(ABFRAGE_SEKUNDEN));
 
         let gesperrt = self.ergebnis_dialog.is_some() || self.meldung.is_some() || self.bestaetigung.is_some();
@@ -658,9 +705,11 @@ impl FreieStationierungAnsicht {
         egui::ScrollArea::horizontal().id_salt("fs_horizontal").auto_shrink([false, true]).show(ui, |ui| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             raster.kopf(ui, &KOPF_EINGABE);
-            egui::ScrollArea::vertical().id_salt("fs_vertikal").max_height(hoehe).auto_shrink([false, true]).show(ui, |ui| {
+            // Bis zu 3000 Messzeilen: nur die sichtbaren Zeilen werden gezeichnet
+            let zeilen_hoehe = raster.zeilen_hoehe();
+            egui::ScrollArea::vertical().id_salt("fs_vertikal").max_height(hoehe).auto_shrink([false, true]).show_rows(ui, zeilen_hoehe, MAX_ROWS, |ui, sichtbar| {
                 ui.spacing_mut().item_spacing = Vec2::ZERO;
-                for i in 0..MAX_ROWS {
+                for i in sichtbar {
                     let nr = self.zeilen[i][0].trim().to_string();
                     let zeile = &mut self.zeilen[i];
                     raster.zeile(ui, i, &(i + 1).to_string(), |zellen| {
@@ -850,12 +899,15 @@ impl FreieStationierungAnsicht {
 /// - nicht verwendbar (z. B. nicht konvergiert): gesperrt;
 /// - genau 2 Punkte (Direktlösung, r = 0, keine Residuenkontrolle): nur nach ausdrücklicher Bestätigung;
 /// - sonst frei bei mindestens 3 grünen Quer- und 3 grünen Längsresiduen, andernfalls gesperrt.
-fn bewerte_freigabe(e: &StationierungsErgebnis, punkte: usize, projekt: &Projekt) -> Freigabe {
+fn bewerte_freigabe(e: &StationierungsErgebnis, verschiedene: usize, projekt: &Projekt) -> Freigabe {
     if !ist_verwendbar(Some(e)) {
         return Freigabe::Gesperrt("Die Berechnung ist nicht verwendbar (nicht konvergiert oder ungültige Werte).".to_string());
     }
-    if punkte == MIN_ZEILEN {
-        return Freigabe::NurMitBestaetigung(format!("Nur {MIN_ZEILEN} Anschlusspunkte: Direktlösung ohne Redundanz (r = 0)."));
+    if verschiedene <= MIN_ZEILEN {
+        return Freigabe::NurMitBestaetigung(format!(
+            "Nur {verschiedene} verschiedene Anschlusspunkte: geringe Kontrolle (Redundanz r = {}).",
+            e.redundanz
+        ));
     }
     let par = &projekt.rechenparameter.params;
     let (mut quer, mut laengs) = (0, 0);
@@ -874,6 +926,26 @@ fn bewerte_freigabe(e: &StationierungsErgebnis, punkte: usize, projekt: &Projekt
             "{quer} von {MIN_GRUENE_RESIDUEN} grünen Quer- und {laengs} von {MIN_GRUENE_RESIDUEN} grünen Längsresiduen."
         ))
     }
+}
+
+/// Hinweistext, wenn für den Standpunkt abgeschaltete Beobachtungen gespeichert sind, die Auswahl aber nicht zu den
+/// aktuellen Punkten passt und deshalb verworfen wird (alle Beobachtungen aktiv).
+fn verworfene_auswahl(projekt: &Projekt, standpunkt: &str, wird_angewendet: bool) -> String {
+    let gespeichert = projekt.station.standpunkt_nr == standpunkt && projekt.station.aktivierung().anzahl_abgeschaltet() > 0;
+    if gespeichert && !wird_angewendet {
+        "Die gespeicherte Beobachtungsauswahl passt nicht zu den Punkten (Anzahl oder Reihenfolge) und wurde verworfen: \
+         alle Beobachtungen sind aktiv. Bitte die Haken prüfen."
+            .to_string()
+    } else if gespeichert {
+        "Die gespeicherte Beobachtungsauswahl wurde übernommen. Bitte die Haken prüfen.".to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// Anzahl verschiedener Anschlusspunkte (Punktnummern) unter den Messzeilen.
+fn anzahl_verschiedene(punkte: &[StationierungsPunkt]) -> usize {
+    punkte.iter().map(|p| p.punkt_nr.trim()).collect::<std::collections::HashSet<_>>().len()
 }
 
 /// Gespeicherte Beobachtungsauswahl, wenn der aktive Standpunkt derselbe ist und die Punkte in gleicher Reihenfolge vorliegen.
@@ -895,6 +967,10 @@ struct ErgebnisDialog {
     akt_str: Vec<bool>,
     akt_hoe: Vec<bool>,
     fehler: String,
+    /// Hinweis zur Beobachtungsauswahl (orange).
+    hinweis: String,
+    /// Das angezeigte Ergebnis gehört zur aktuellen Haken-Auswahl (falsch nach einer fehlgeschlagenen Neuberechnung).
+    gueltig: bool,
 }
 
 impl ErgebnisDialog {
@@ -921,6 +997,8 @@ impl ErgebnisDialog {
             akt_str,
             akt_hoe,
             fehler: String::new(),
+            hinweis: String::new(),
+            gueltig: true,
         };
         dialog.rechne(projekt)?;
         Ok(dialog)
@@ -928,6 +1006,8 @@ impl ErgebnisDialog {
 
     /// Berechnet mit der aktuellen Aktivierung. Das Ergebnis wird erst beim Speichern ins Projekt übernommen.
     fn rechne(&mut self, projekt: &Projekt) -> Result<(), String> {
+        // Bis zum erfolgreichen Abschluss gilt das angezeigte Ergebnis nicht mehr für die aktuelle Auswahl
+        self.gueltig = false;
         let optionen = {
             let par = &projekt.rechenparameter.params;
             Optionen {
@@ -944,6 +1024,7 @@ impl ErgebnisDialog {
         pruefe_station(&ergebnis)?;
         protokoll::log("RECHNUNG", &format!("Freie Stationierung berechnet, s0 = {} mm", de(ergebnis.s0_mm, 2)));
         self.ergebnis = ergebnis;
+        self.gueltig = true;
         Ok(())
     }
 
@@ -984,6 +1065,9 @@ impl ErgebnisDialog {
                 if !self.fehler.is_empty() {
                     ui.colored_label(Color32::RED, &self.fehler);
                 }
+                if !self.hinweis.is_empty() {
+                    ui.colored_label(FARBE_FREIGABE_BESTAETIGUNG, &self.hinweis);
+                }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     let knopf = egui::Button::new(RichText::new("↻ Neu berechnen").strong().size(SCHRIFT_KOPF).color(Color32::WHITE))
@@ -997,7 +1081,12 @@ impl ErgebnisDialog {
                 });
             });
         if neu_rechnen {
-            self.fehler = self.rechne(projekt).err().unwrap_or_default();
+            self.fehler = match self.rechne(projekt) {
+                Ok(()) => String::new(),
+                Err(fehler) => format!(
+                    "{fehler}\nDas angezeigte Ergebnis gehört zur vorherigen Auswahl und wird nicht zur Übernahme freigegeben."
+                ),
+            };
         }
         schliessen
     }
@@ -1042,7 +1131,7 @@ impl ErgebnisDialog {
         );
         zeile(
             ui,
-            if self.punkte.len() == 2 {
+            if self.punkte.len() == 2 && e.iterationen == 0 && e.redundanz == 0 {
                 "Methode:                 Ähnlichkeitstransformation  (2 Punkte, Direktlösung)".to_string()
             } else {
                 format!(
@@ -1083,9 +1172,9 @@ impl ErgebnisDialog {
                     ),
                 );
             }
-            None => zeile(ui, "Konfidenzellipse:        nicht bestimmbar (Direktlösung, r = 0)".to_string()),
+            None => zeile(ui, "Konfidenzellipse:        nicht bestimmbar (Direktlösung oder singuläre Normalmatrix)".to_string()),
         }
-        let freigabe = bewerte_freigabe(e, self.punkte.len(), projekt);
+        let freigabe = bewerte_freigabe(e, anzahl_verschiedene(&self.punkte), projekt);
         ui.label(RichText::new("Berechnung:             möglich").monospace().color(FARBE_FREIGABE_FREI));
         let text = match freigabe.grund() {
             Some(grund) => format!("Übernahme:              {} – {grund}", freigabe.status()),
@@ -1105,9 +1194,11 @@ impl ErgebnisDialog {
         let mut geaendert = false;
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         raster.kopf(ui, &["Punkt", "Str.h [m]", "v Winkel [cc]", "v Quer [mm]", "Hz", "v Längs [mm]", "Str", "v Höhe [mm]", "Hoe"]);
-        egui::ScrollArea::vertical().id_salt("fs_residuen").max_height(DIALOG_TABELLE_HOEHE).auto_shrink([false, true]).show(ui, |ui| {
+        let zeilen_hoehe = raster.zeilen_hoehe();
+        let anzahl = self.punkte.len();
+        egui::ScrollArea::vertical().id_salt("fs_residuen").max_height(DIALOG_TABELLE_HOEHE).auto_shrink([false, true]).show_rows(ui, zeilen_hoehe, anzahl, |ui, sichtbar| {
             ui.spacing_mut().item_spacing = Vec2::ZERO;
-            for i in 0..self.punkte.len() {
+            for i in sichtbar {
                 let res = self.ergebnis.residuen.get(i);
                 let nr = self.punkte[i].punkt_nr.clone();
                 let (hz, st, hoe) = (&mut self.akt_hz[i], &mut self.akt_str[i], &mut self.akt_hoe[i]);

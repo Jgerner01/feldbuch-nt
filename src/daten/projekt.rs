@@ -70,10 +70,45 @@ pub struct Aktivierung {
     pub hoehe: Vec<bool>,
 }
 
+impl Aktivierung {
+    /// Anzahl der abgeschalteten Beobachtungen (Richtungen, Strecken und Höhen zusammen).
+    pub fn anzahl_abgeschaltet(&self) -> usize {
+        [&self.richtung, &self.strecke, &self.hoehe].iter().map(|liste| liste.iter().filter(|aktiv| !**aktiv).count()).sum()
+    }
+}
+
 impl StationsdatenDatei {
+    /// Alte Dateien (vor Version 0.5.0) haben keine Listen, nur die Aktivierungsflags in den Residuen des Ergebnisses.
+    /// Daraus werden die Listen abgeleitet, wenn Residuen und Messungen Punkt für Punkt zusammenpassen.
+    fn uebernimm_aktivierung_aus_ergebnis(&mut self) {
+        if !(self.aktiv_richtung.is_empty() && self.aktiv_strecke.is_empty() && self.aktiv_hoehe.is_empty()) {
+            return;
+        }
+        let Some(ergebnis) = &self.ergebnis else {
+            return;
+        };
+        let passt = ergebnis.residuen.len() == self.messungen.len()
+            && ergebnis.residuen.iter().zip(&self.messungen).all(|(r, m)| r.punkt_nr == m.punkt_nr);
+        if passt {
+            self.aktiv_richtung = ergebnis.residuen.iter().map(|r| r.richtung_aktiv).collect();
+            self.aktiv_strecke = ergebnis.residuen.iter().map(|r| r.strecke_aktiv).collect();
+            self.aktiv_hoehe = ergebnis.residuen.iter().map(|r| r.hoehe_aktiv).collect();
+        }
+    }
+
+    /// Fügt eine Messung hinzu; ihre Beobachtungen sind aktiv. Die bisherige Auswahl bleibt erhalten.
+    pub fn fuege_messung_hinzu(&mut self, punkt: StationierungsPunkt) {
+        self.gleiche_aktivierung_an();
+        self.messungen.push(punkt);
+        self.aktiv_richtung.push(true);
+        self.aktiv_strecke.push(true);
+        self.aktiv_hoehe.push(true);
+    }
+
     /// Bringt die Aktivierungslisten auf die Zahl der Messungen: neue Messungen sind aktiv, überzählige Einträge entfallen.
     /// Liefert `true`, wenn eine bereits gespeicherte, nicht leere Liste nicht zur Messungszahl passte.
     pub fn gleiche_aktivierung_an(&mut self) -> bool {
+        self.uebernimm_aktivierung_aus_ergebnis();
         let n = self.messungen.len();
         let mut abweichung = false;
         for liste in [&mut self.aktiv_richtung, &mut self.aktiv_strecke, &mut self.aktiv_hoehe] {
@@ -380,8 +415,10 @@ impl Projekt {
     /// Liefert das neue Ergebnis oder `None`, wenn noch zu wenige Messungen vorliegen.
     pub fn hinzufuegen_und_berechnen(&mut self, punkt: StationierungsPunkt) -> Result<Option<StationierungsErgebnis>, String> {
         datei_speicher::pruefe_schreibzugriff(&self.station_pfad).map_err(|e| e.to_string())?;
+        // Die Auswahl wird vor dem Löschen des Ergebnisses gesichert (alte Dateien: Ableitung aus den Residuen)
+        self.station.gleiche_aktivierung_an();
         self.station.ergebnis = None;
-        self.station.messungen.push(punkt);
+        self.station.fuege_messung_hinzu(punkt);
         let ergebnis = self.neuberechnen()?;
         if ergebnis.is_some() {
             self.neupunkte_nach_stationierung();
@@ -425,8 +462,8 @@ impl Projekt {
     /// Entfernt einen Anschlusspunkt aus dem Stack und berechnet neu.
     pub fn entfernen_und_berechnen(&mut self, punkt_nr: &str) -> Result<Option<StationierungsErgebnis>, String> {
         datei_speicher::pruefe_schreibzugriff(&self.station_pfad).map_err(|e| e.to_string())?;
-        self.station.ergebnis = None;
         self.station.entferne_messung(punkt_nr);
+        self.station.ergebnis = None;
         if self.station.messungen.len() < MIN_ANSCHLUSSPUNKTE {
             self.station_speichern().map_err(|e| e.to_string())?;
             return Ok(None);
@@ -715,6 +752,29 @@ mod tests {
         assert_eq!(p.station.aktiv_strecke, vec![true, false, true, true]);
         assert_eq!(p.station.messungen.len(), 4);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn aktivierung_alter_dateien_wird_aus_den_residuen_abgeleitet() {
+        let res = |nr: &str, hz: bool, str_: bool| crate::daten::modelle::PunktResiduum { punkt_nr: nr.into(), richtung_aktiv: hz, strecke_aktiv: str_, ..Default::default() };
+        let mut daten = StationsdatenDatei {
+            messungen: vec![anschluss("A", 0.0, 0.0, 0.0, 1.0), anschluss("B", 1.0, 1.0, 0.0, 1.0), anschluss("C", 2.0, 2.0, 0.0, 1.0)],
+            ergebnis: Some(StationierungsErgebnis {
+                residuen: vec![res("A", true, true), res("B", true, false), res("C", false, true)],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let akt = daten.aktivierung();
+        assert_eq!(akt.strecke, vec![true, false, true]);
+        assert_eq!(akt.richtung, vec![true, true, false]);
+        assert_eq!(akt.anzahl_abgeschaltet(), 2);
+        // Passen die Punkte nicht zu den Residuen, bleibt alles aktiv
+        daten.aktiv_richtung.clear();
+        daten.aktiv_strecke.clear();
+        daten.aktiv_hoehe.clear();
+        daten.messungen[1].punkt_nr = "X".into();
+        assert_eq!(daten.aktivierung().anzahl_abgeschaltet(), 0);
     }
 
     #[test]

@@ -72,6 +72,11 @@ impl Raster {
         self
     }
 
+    /// Höhe einer Zeile in Pixeln (für `ScrollArea::show_rows`).
+    pub fn zeilen_hoehe(&self) -> f32 {
+        self.zeilen_hoehe
+    }
+
     fn gesamt_breite(&self) -> f32 {
         self.zeilenkopf.unwrap_or(0.0) + self.spalten.iter().sum::<f32>()
     }

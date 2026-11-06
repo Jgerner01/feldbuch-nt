@@ -4,7 +4,9 @@
 //           er bleibt der Wert der Helmert-Näherung. Festpunktzwang.
 //           Aus der Normalmatrix der Lageausgleichung folgt die Konfidenzellipse des Standpunkts.
 //           Beobachtungen (Richtung/Strecke/Höhe) sind je Punkt einzeln aktivierbar.
-//           Sonderfall n = 2: direkte Helmert-Lösung ohne Ausgleichung (r = 0, keine Konfidenzellipse).
+//           Sonderfall n = 2 mit freiem Maßstab: direkte Helmert-Lösung ohne Ausgleichung (r = 0, keine Konfidenzellipse);
+//           sie braucht alle 4 Beobachtungen. Mit festem Maßstab gilt auch bei n = 2 die Ausgleichung, damit
+//           abgeschaltete Beobachtungen die Standpunktlage nicht beeinflussen.
 // Hardware: keine
 // Autor:    Johann Gerner
 
@@ -139,9 +141,11 @@ pub fn berechnen(
     // Schritt 1: Helmert-Näherungslösung
     let (r0, h0, mut o0, massstab) = helmert_transformation(punkte, &hz_rad, &dh, optionen.freier_massstab)?;
 
-    // Schritt 2: Ausgleichung oder Direktlösung
+    // Schritt 2: Ausgleichung oder Direktlösung. Die Direktlösung (2 Punkte, freier Maßstab) verwendet alle 4 Beobachtungen
+    // (siehe Prüfung oben); in allen anderen Fällen beachtet die Ausgleichung die Aktivierung je Beobachtung.
+    let direkt = n == 2 && optionen.freier_massstab;
     let (mut r_fs, mut h_fs) = (r0, h0);
-    let (v_quer_m, v_str_m, iterationen, konvergiert, kov_normal) = if n >= 3 {
+    let (v_quer_m, v_str_m, iterationen, konvergiert, kov_normal) = if !direkt {
         voll_ausgleichung(punkte, &hz_rad, &dh, &param, &akt_hz, &akt_str, &mut r_fs, &mut h_fs, &mut o0)
     } else {
         let mut v_quer = vec![0.0; n];
@@ -160,7 +164,7 @@ pub fn berechnen(
     let m0_m = param.m0_mm / MM_PRO_M;
     let m_spz = param.m_spz_mm / MM_PRO_M;
     let m_zpz = param.m_zpz_mm / MM_PRO_M;
-    let r: i32 = if n == 2 { 0 } else { (n_dir + n_dist) as i32 - MIN_BEOBACHTUNGEN as i32 };
+    let r: i32 = if direkt { 0 } else { (n_dir + n_dist) as i32 - MIN_BEOBACHTUNGEN as i32 };
     let mut vtpv = 0.0;
     for i in 0..n {
         let s0_i = (punkte[i].r - r_fs).hypot(punkte[i].h - h_fs);
@@ -629,6 +633,65 @@ mod tests {
         assert!((e.r - STAND_R).abs() < 1e-6);
         assert!((e.h - STAND_H).abs() < 1e-6);
         assert!(e.residuen[0].gewicht_richtung.is_nan());
+    }
+
+    #[test]
+    fn zwei_punkte_fester_massstab_beachten_ausgeschaltete_strecken() {
+        let mut punkte = testpunkte()[..2].to_vec();
+        let optionen = Optionen {
+            freier_massstab: false,
+            aktiv_strecke: Some(vec![true, false]),
+            berechnung_3d: false,
+            ..Optionen::default()
+        };
+        let ohne = berechnen(&punkte, 0.0, &optionen).unwrap();
+        assert!(ohne.konvergiert);
+        assert_eq!(ohne.redundanz, 0);
+        assert!((ohne.r - STAND_R).abs() < 1e-5 && (ohne.h - STAND_H).abs() < 1e-5, "R = {}, H = {}", ohne.r, ohne.h);
+
+        // Eine um 10 m geänderte, ausgeschaltete Strecke darf die Standpunktlage nicht verschieben
+        punkte[1].strecke += 10.0;
+        let mit = berechnen(&punkte, 0.0, &optionen).unwrap();
+        assert!(mit.konvergiert);
+        assert!((mit.r - ohne.r).abs() < 1e-6 && (mit.h - ohne.h).abs() < 1e-6, "R {} → {}, H {} → {}", ohne.r, mit.r, ohne.h, mit.h);
+        assert!((mit.orientierung_gon - ohne.orientierung_gon).abs() < 1e-6);
+
+        // Auch eine ausgeschaltete Richtung wirkt nicht mehr (3 aktive Beobachtungen genügen bei festem Maßstab)
+        let optionen = Optionen { aktiv_richtung: Some(vec![true, false]), aktiv_strecke: Some(vec![true, true]), ..optionen };
+        let punkte_richtung = testpunkte()[..2].to_vec();
+        let basis = berechnen(&punkte_richtung, 0.0, &optionen).unwrap();
+        let mut verstellt = punkte_richtung;
+        verstellt[1].hz += 5.0;
+        let nach = berechnen(&verstellt, 0.0, &optionen).unwrap();
+        assert!((nach.r - basis.r).abs() < 1e-6 && (nach.h - basis.h).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dreitausend_messzeilen_mit_40_anschlusspunkten() {
+        // 40 verschiedene Punkte auf einem Ring, jeder 75-mal gemessen = 3000 Messzeilen
+        let ring: Vec<StationierungsPunkt> = (0..40)
+            .map(|i| {
+                let winkel = f64::from(i) * std::f64::consts::TAU / 40.0;
+                messung(&format!("P{i}"), STAND_R + 150.0 * winkel.cos(), STAND_H + 150.0 * winkel.sin(), 100.0 + f64::from(i % 5))
+            })
+            .collect();
+        let punkte: Vec<StationierungsPunkt> = (0..3000).map(|i| ring[i % 40].clone()).collect();
+        let start = std::time::Instant::now();
+        let e = berechnen(&punkte, 0.0, &Optionen::default()).unwrap();
+        assert!(start.elapsed().as_secs_f64() < 5.0, "Rechenzeit {:?}", start.elapsed());
+        assert!(e.konvergiert);
+        assert!((e.r - STAND_R).abs() < 1e-6 && (e.h - STAND_H).abs() < 1e-6);
+        assert_eq!(e.residuen.len(), 3000);
+        assert_eq!(e.redundanz, 6000 - 3);
+        assert!(e.konfidenz.is_some());
+    }
+
+    #[test]
+    fn zwei_punkte_freier_massstab_brauchen_alle_vier_beobachtungen() {
+        let punkte = testpunkte()[..2].to_vec();
+        let optionen = Optionen { aktiv_strecke: Some(vec![true, false]), ..Optionen::default() };
+        let fehler = berechnen(&punkte, 0.0, &optionen).unwrap_err();
+        assert!(fehler.contains("mindestens 4"), "{fehler}");
     }
 
     #[test]

@@ -16,7 +16,8 @@ const PROZENT: f64 = 100.0;
 const ZWEI_PUNKTE: usize = 2;
 
 fn s0_info(erg: &StationierungsErgebnis, punkte: usize, par: &Rechenparameter) -> String {
-    if punkte == ZWEI_PUNKTE {
+    // Direktlösung (ohne Iteration) nur bei 2 Punkten mit freiem Maßstab
+    if punkte == ZWEI_PUNKTE && erg.iterationen == 0 && erg.redundanz == 0 {
         "Aehnlichkeitstransformation  (2 Punkte, Direktloesung, r = 0)".to_string()
     } else if erg.redundanz > 0 {
         let bez = if par.sigma_faktor_wirksam() == 1 { "s0".to_string() } else { format!("{}*s0", par.sigma_faktor_wirksam()) };

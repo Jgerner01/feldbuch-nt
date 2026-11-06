@@ -818,10 +818,22 @@ impl DxfViewer {
         self.aktualisiere_lokales_system(projekt);
         self.baue_overlay(projekt);
         self.baue_neupunkte_overlay(projekt);
-        if let Some(erg) = projekt.station.ergebnis.clone().filter(|e| !e.residuen.is_empty()) {
-            if self.ellipsen.is_empty() {
-                self.baue_residual_overlay(projekt, &erg);
+        self.baue_qualitaets_overlay(projekt);
+    }
+
+    /// Baut Residuen und Ellipsen aus der aktuellen Stationierung neu auf (oder leert sie, wenn es keine gibt).
+    /// Ein vom Benutzer eingestellter Ellipsenmaßstab bleibt erhalten.
+    fn baue_qualitaets_overlay(&mut self, projekt: &Projekt) {
+        let skalierung = (!self.ellipsen.is_empty()).then_some(self.ellipsen_skalierung);
+        match projekt.station.ergebnis.clone().filter(|e| !e.residuen.is_empty()) {
+            Some(erg) => self.baue_residual_overlay(projekt, &erg),
+            None => {
+                self.residuen.clear();
+                self.ellipsen.clear();
             }
+        }
+        if let Some(skalierung) = skalierung {
+            self.setze_ellipsen_skalierung(skalierung);
         }
     }
 
