@@ -12,8 +12,10 @@ use super::polarpunkte::{ist_gruen, wert_zelle};
 use super::rechenparameter_ansicht::RechenparameterAnsicht;
 use super::tabelle::Raster;
 use crate::daten::modelle::{StationierungsErgebnis, StationierungsPunkt, jetzt};
-use crate::daten::projekt::Projekt;
-use crate::grundlagen::format::{de, parse_zahl};
+use super::stationierungs_hinweis;
+use crate::daten::projekt::{Aktivierung, Projekt, StationierungsAenderung};
+use crate::daten::stationierung_csv;
+use crate::grundlagen::format::{de, f, parse_zahl};
 use crate::grundlagen::{datei_speicher, fehler_log, pfade, protokoll};
 use crate::protokolle::{ausgabeverzeichnis, letztes_protokoll, oeffne, schreibe_fuer_projekt, stationierung};
 use crate::rechnen::freie_stationierung::{self, Optionen};
@@ -27,6 +29,14 @@ const SPALTEN: usize = 8;
 const KOPF_EINGABE: [&str; SPALTEN] = ["PunktNr", "R", "H", "Höhe", "HZ [gon]", "V [gon]", "Strecke [m]", "Zielhöhe [m]"];
 /// Kopfzeile der CSV-Dateien (Anschlusspunkte, Standpunkt).
 const KOPFZEILE_CSV: &str = "PunktNr,R,H,Hoehe,HZ,V,Strecke,Zielhoehe";
+/// Nachkommastellen beim Rückschreiben geladener Stationierungsdateien: R, H, Höhe.
+const STELLEN_KOORDINATE: usize = 3;
+/// Nachkommastellen: HZ und V [gon].
+const STELLEN_WINKEL: usize = 4;
+/// Nachkommastellen: Strecke und Zielhöhe [m].
+const STELLEN_STRECKE: usize = 3;
+/// Nachkommastellen der Instrumentenhöhe in den Metadaten.
+const STELLEN_IH: usize = 3;
 /// Breite der Zeilenköpfe (RowHeadersWidth = 32).
 const ZEILENKOPF_BREITE: f32 = 32.0;
 /// Platzbedarf des senkrechten Rollbalkens der Tabelle.
@@ -85,6 +95,15 @@ const GEWICHTE_RESIDUEN: [f32; 6] = [15.0, 13.0, 14.0, 13.0, 13.0, 13.0];
 const BESCHRIFTUNG_BREITE: usize = 25;
 /// Mindestanzahl grüner Quer- und Längsresiduen für eine gültige Berechnung.
 const MIN_GRUENE_RESIDUEN: usize = 3;
+/// Farben der Bewertung „Übernahme freigegeben / nur nach Bestätigung / gesperrt“.
+const FARBE_FREIGABE_FREI: Color32 = Color32::from_rgb(40, 150, 60);
+const FARBE_FREIGABE_BESTAETIGUNG: Color32 = Color32::from_rgb(200, 130, 40);
+const FARBE_FREIGABE_GESPERRT: Color32 = Color32::from_rgb(200, 60, 40);
+/// Grau für Nebenhinweise.
+const FARBE_HINWEIS_GRAU: Color32 = Color32::from_rgb(120, 120, 120);
+/// Umrechnung rad → gon und Anteil → Prozent.
+const RAD_ZU_GON: f64 = 200.0 / std::f64::consts::PI;
+const PROZENT: f64 = 100.0;
 /// Mindestanzahl von Zeilen für die Berechnung.
 const MIN_ZEILEN: usize = 2;
 /// Wiederholrate der Dateiüberwachung [s].
@@ -111,6 +130,74 @@ pub struct FreieStationierungAnsicht {
     meldung: Option<(String, String)>,
     /// Zeitstempel der Anschlusspunktdatei beim letzten Lesen oder Schreiben.
     anschluss_zeit: Option<SystemTime>,
+    /// Berechnete, noch nicht ins Projekt übernommene Stationierung (wird erst beim Speichern übernommen).
+    ausstehend: Option<Ausstehend>,
+    /// Rückfrage „Stationierung übernehmen?“ (Warnung bei fehlender Kontrolle und/oder Änderungen gegenüber der bisherigen).
+    bestaetigung: Option<Bestaetigung>,
+}
+
+/// Inhalt der Rückfrage vor dem Übernehmen.
+#[derive(Clone)]
+struct Bestaetigung {
+    standpunkt: String,
+    warnung: Option<String>,
+    aenderung: Option<StationierungsAenderung>,
+}
+
+/// Bewertung einer berechneten Stationierung. „Berechnung möglich“ heißt noch nicht „zur Übernahme freigegeben“.
+#[derive(Clone, Debug, PartialEq)]
+enum Freigabe {
+    /// Genug grüne Residuen: Übernahme ohne Rückfrage.
+    Frei,
+    /// Übernahme erst nach ausdrücklicher Bestätigung (Grund im Text).
+    NurMitBestaetigung(String),
+    /// Übernahme nicht möglich (Grund im Text).
+    Gesperrt(String),
+}
+
+impl Freigabe {
+    /// Kurzbezeichnung des Zustands.
+    fn status(&self) -> &'static str {
+        match self {
+            Self::Frei => "freigegeben",
+            Self::NurMitBestaetigung(_) => "nur nach Bestätigung",
+            Self::Gesperrt(_) => "gesperrt",
+        }
+    }
+
+    fn grund(&self) -> Option<&str> {
+        match self {
+            Self::Frei => None,
+            Self::NurMitBestaetigung(g) | Self::Gesperrt(g) => Some(g),
+        }
+    }
+
+    fn farbe(&self) -> Color32 {
+        match self {
+            Self::Frei => FARBE_FREIGABE_FREI,
+            Self::NurMitBestaetigung(_) => FARBE_FREIGABE_BESTAETIGUNG,
+            Self::Gesperrt(_) => FARBE_FREIGABE_GESPERRT,
+        }
+    }
+
+    /// Einzeiliger Text für die Maske: Berechnung möglich, Übernahme je nach Bewertung.
+    fn zeile(&self) -> String {
+        match self.grund() {
+            Some(grund) => format!("Berechnung möglich – Übernahme {}: {grund}", self.status()),
+            None => format!("Berechnung möglich – Übernahme {}.", self.status()),
+        }
+    }
+}
+
+/// Berechnete Stationierung, die auf das Speichern wartet.
+#[derive(Clone)]
+struct Ausstehend {
+    standpunkt: String,
+    ih: f64,
+    punkte: Vec<StationierungsPunkt>,
+    aktivierung: Aktivierung,
+    ergebnis: StationierungsErgebnis,
+    freigabe: Freigabe,
 }
 
 fn leere_zeile() -> Zeile {
@@ -145,6 +232,8 @@ impl FreieStationierungAnsicht {
             rechenparameter: None,
             meldung: None,
             anschluss_zeit: None,
+            ausstehend: None,
+            bestaetigung: None,
         };
         ansicht.lade_anschlusspunkte(projekt);
         ansicht
@@ -197,6 +286,19 @@ impl FreieStationierungAnsicht {
         csv
     }
 
+    /// Inhalt der Standpunkt-Datei: Metadaten (Standpunktnummer, Instrumentenhöhe) und die Tabellenzeilen.
+    /// Die Datenzeilen entsprechen dem Original; die Metadaten stehen in Kommentar- bzw. Schlüssel-Zeilen davor.
+    fn standpunkt_datei_zeilen(&self, standpunkt: &str, ih: f64) -> Vec<String> {
+        let mut zeilen = vec![
+            "# METADATA".to_string(),
+            format!("StandpunktNr: {}", standpunkt.trim()),
+            format!("Instrumentenhoehe: {}", f(ih, STELLEN_IH)),
+            "# DATEN".to_string(),
+        ];
+        zeilen.extend(self.tabellen_csv());
+        zeilen
+    }
+
     fn standpunkt_csv_pfad(&self, standpunkt: &str, projekt: &Projekt) -> PathBuf {
         let nr = standpunkt.trim();
         let sicher: String = if nr.is_empty() {
@@ -239,6 +341,7 @@ impl FreieStationierungAnsicht {
         }
         self.zeilen = vec![leere_zeile(); MAX_ROWS];
         self.speichern_frei = false;
+        self.ausstehend = None;
         self.anschluss_zeit = None;
     }
 
@@ -247,11 +350,16 @@ impl FreieStationierungAnsicht {
         self.zeilen.remove(index);
         self.zeilen.push(leere_zeile());
         self.speichern_frei = false;
+        self.ausstehend = None;
         let csv = self.tabellen_csv();
         let anschluss = projekt.anschlusspunkte_pfad();
         let standpunkt = self.standpunkt_csv_pfad(&self.standpunkt, projekt);
         let ergebnis = datei_speicher::schreibe_zeilen(&anschluss, &csv).and_then(|()| {
-            if standpunkt.exists() { datei_speicher::schreibe_zeilen(&standpunkt, &csv) } else { Ok(()) }
+            if standpunkt.exists() {
+                datei_speicher::schreibe_zeilen(&standpunkt, self.standpunkt_datei_zeilen(&self.standpunkt, self.instr_hoehe))
+            } else {
+                Ok(())
+            }
         });
         self.anschluss_zeit = dateizeit(&anschluss);
         if let Err(fehler) = ergebnis {
@@ -277,20 +385,117 @@ impl FreieStationierungAnsicht {
     fn lade_csv(&mut self, pfad: &std::path::Path) {
         let Ok(text) = std::fs::read_to_string(pfad) else {
             let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            self.melde("Datei nicht gefunden", format!("{name} nicht gefunden.
-Erwartet in: {}", pfad.display()));
+            self.melde("Datei nicht gefunden", format!("{name} nicht gefunden.\nErwartet in: {}", pfad.display()));
             return;
         };
-        let zeilen: Vec<&str> = text.lines().skip(1).take(MAX_ROWS).collect();
-        self.fuelle_zeilen(&zeilen);
-        self.speichern_frei = false;
+        let beginnt_mit_metadaten = text.trim_start_matches('\u{feff}').trim_start().starts_with('#');
+        if !beginnt_mit_metadaten {
+            // Originalformat: Kopfzeile, danach die Punktzeilen
+            let zeilen: Vec<&str> = text.lines().skip(1).take(MAX_ROWS).collect();
+            self.fuelle_zeilen(&zeilen);
+            self.speichern_frei = false;
+            self.ausstehend = None;
+            return;
+        }
+        match stationierung_csv::parse(&text) {
+            Ok(import) => {
+                if let Some(nr) = import.standpunkt.filter(|nr| !nr.is_empty()) {
+                    self.standpunkt = nr;
+                }
+                if let Some(ih) = import.instrumentenhoehe {
+                    self.instr_hoehe = ih.clamp(0.0, IH_MAX);
+                }
+                let zeilen: Vec<String> = import
+                    .punkte
+                    .iter()
+                    .map(|p| {
+                        [
+                            p.punkt_nr.clone(),
+                            f(p.r, STELLEN_KOORDINATE),
+                            f(p.h, STELLEN_KOORDINATE),
+                            f(p.hoehe, STELLEN_KOORDINATE),
+                            f(p.hz, STELLEN_WINKEL),
+                            f(p.v, STELLEN_WINKEL),
+                            f(p.strecke, STELLEN_STRECKE),
+                            f(p.zielhoehe, STELLEN_STRECKE),
+                        ]
+                        .join(",")
+                    })
+                    .collect();
+                let refs: Vec<&str> = zeilen.iter().map(String::as_str).collect();
+                self.fuelle_zeilen(&refs);
+                if import.punkte.len() > MAX_ROWS {
+                    self.melde("CSV laden", format!("Die Datei enthält {} Punkte, es werden nur die ersten {MAX_ROWS} übernommen.", import.punkte.len()));
+                }
+                self.speichern_frei = false;
+                self.ausstehend = None;
+            }
+            Err(fehler) => self.melde("CSV laden", format!("Die Datei konnte nicht gelesen werden:\n{fehler}")),
+        }
     }
 
-    fn speichern(&mut self, projekt: &Projekt) {
+    /// Speichern: eine neue Stationierung wird erst nach Rückfrage (Vergleich mit der bisherigen) übernommen.
+    fn speichern(&mut self, projekt: &mut Projekt) {
+        let Some(a) = self.ausstehend.as_ref() else {
+            self.schreibe_csv(projekt);
+            return;
+        };
+        let warnung = match &a.freigabe {
+            Freigabe::Gesperrt(_) => return,
+            Freigabe::NurMitBestaetigung(grund) => Some(format!("{grund} Die Stationierung hat keine Kontrolle durch Residuen.")),
+            Freigabe::Frei => None,
+        };
+        let aenderung = projekt.aenderung_vorschau(&a.standpunkt, &a.ergebnis);
+        if warnung.is_some() || aenderung.is_some() {
+            self.bestaetigung = Some(Bestaetigung { standpunkt: a.standpunkt.clone(), warnung, aenderung });
+        } else {
+            self.uebernimm_stationierung(projekt);
+        }
+    }
+
+    /// Übernimmt die berechnete Stationierung ins Projekt (Neupunkte werden dabei neu berechnet) und schreibt die CSV.
+    fn uebernimm_stationierung(&mut self, projekt: &mut Projekt) {
+        let Some(a) = self.ausstehend.clone() else {
+            return;
+        };
+        match projekt.uebernehme_manuelle_stationierung(&a.standpunkt, a.ih, a.punkte, a.aktivierung, a.ergebnis) {
+            Ok(()) => {
+                self.ausstehend = None;
+                self.schreibe_csv(projekt);
+            }
+            Err(fehler) => self.melde("Fehler", format!("Stationierung konnte nicht übernommen werden:\n{fehler}")),
+        }
+    }
+
+    /// Rückfrage-Fenster: „Übernehmen“ setzt die neue Stationierung, „Abbrechen“ belässt die bisherigen Daten.
+    fn zeige_bestaetigung(&mut self, ctx: &egui::Context, projekt: &mut Projekt) {
+        let Some(frage) = self.bestaetigung.clone() else {
+            return;
+        };
+        let mut antwort = None;
+        egui::Window::new("Stationierung übernehmen?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                antwort = stationierungs_hinweis::zeichne(ui, &frage.standpunkt, frage.warnung.as_deref(), frage.aenderung.as_ref());
+            });
+        match antwort {
+            Some(true) => {
+                self.bestaetigung = None;
+                self.uebernimm_stationierung(projekt);
+            }
+            Some(false) => self.bestaetigung = None,
+            None => {}
+        }
+    }
+
+    fn schreibe_csv(&mut self, projekt: &Projekt) {
         let pfad = self.standpunkt_csv_pfad(&self.speicher_standpunkt, projekt);
-        let csv = self.tabellen_csv();
-        match datei_speicher::schreibe_zeilen(&pfad, &csv) {
-            Ok(()) => self.melde("Gespeichert", format!("Gespeichert: {} Punkte\n{}", csv.len() - 1, pfad.display())),
+        let anzahl = self.tabellen_csv().len() - 1;
+        let zeilen = self.standpunkt_datei_zeilen(&self.speicher_standpunkt, self.instr_hoehe);
+        match datei_speicher::schreibe_zeilen(&pfad, &zeilen) {
+            Ok(()) => self.melde("Gespeichert", format!("Gespeichert: {anzahl} Punkte\n{}", pfad.display())),
             Err(fehler) => self.melde("Fehler", format!("Fehler beim Speichern: {fehler}")),
         }
     }
@@ -346,7 +551,9 @@ Erwartet in: {}", pfad.display()));
             self.melde("Zu wenig Punkte", "Mindestens 2 vollständige Zeilen erforderlich.");
             return;
         }
-        match ErgebnisDialog::neu(self.standpunkt.trim().to_string(), self.instr_hoehe, punkte, projekt) {
+        let standpunkt = self.standpunkt.trim().to_string();
+        let vorgabe = gespeicherte_aktivierung(projekt, &standpunkt, &punkte);
+        match ErgebnisDialog::neu(standpunkt, self.instr_hoehe, punkte, vorgabe, projekt) {
             Ok(dialog) => self.ergebnis_dialog = Some(dialog),
             Err(fehler) => self.melde("Fehler", format!("Berechnungsfehler: {fehler}")),
         }
@@ -359,8 +566,21 @@ Erwartet in: {}", pfad.display()));
                 self.melde("Protokoll", text);
             }
         }
-        self.speichern_frei = ist_gueltige_berechnung(projekt.station.ergebnis.as_ref(), projekt);
+        let freigabe = bewerte_freigabe(&dialog.ergebnis, dialog.punkte.len(), projekt);
+        self.speichern_frei = !matches!(freigabe, Freigabe::Gesperrt(_));
         self.speicher_standpunkt = dialog.standpunkt.clone();
+        self.ausstehend = Some(Ausstehend {
+            standpunkt: dialog.standpunkt.clone(),
+            ih: dialog.ih,
+            punkte: dialog.punkte.clone(),
+            aktivierung: Aktivierung {
+                richtung: dialog.akt_hz.clone(),
+                strecke: dialog.akt_str.clone(),
+                hoehe: dialog.akt_hoe.clone(),
+            },
+            ergebnis: dialog.ergebnis.clone(),
+            freigabe,
+        });
 
         let nr = dialog.standpunkt.as_str();
         if nr.len() > STANDPUNKT_PRAEFIX.len() && nr[..STANDPUNKT_PRAEFIX.len()].eq_ignore_ascii_case(STANDPUNKT_PRAEFIX) {
@@ -379,7 +599,7 @@ Erwartet in: {}", pfad.display()));
         self.beobachte_anschlusspunkte(projekt);
         ctx.request_repaint_after(std::time::Duration::from_secs_f32(ABFRAGE_SEKUNDEN));
 
-        let gesperrt = self.ergebnis_dialog.is_some() || self.meldung.is_some();
+        let gesperrt = self.ergebnis_dialog.is_some() || self.meldung.is_some() || self.bestaetigung.is_some();
         ui.add_enabled_ui(!gesperrt, |ui| self.zeichne_maske(ui, projekt));
 
         if let Some(mut dialog) = self.ergebnis_dialog.take() {
@@ -390,6 +610,7 @@ Erwartet in: {}", pfad.display()));
             }
         }
         self.zeige_rechenparameter(&ctx, projekt);
+        self.zeige_bestaetigung(&ctx, projekt);
         self.zeige_meldung(&ctx);
     }
 
@@ -463,6 +684,7 @@ Erwartet in: {}", pfad.display()));
         });
         if geaendert {
             self.speichern_frei = false;
+            self.ausstehend = None;
         }
         if let Some(i) = entfernen {
             self.zeile_entfernen(i, projekt);
@@ -540,6 +762,12 @@ Erwartet in: {}", pfad.display()));
         });
         ui.add_space(4.0);
 
+        // Bewertung der letzten Berechnung: „Berechnung möglich“ und „Übernahme freigegeben“ getrennt benennen
+        if let Some(a) = &self.ausstehend {
+            ui.label(RichText::new(a.freigabe.zeile()).color(a.freigabe.farbe()));
+            ui.add_space(2.0);
+        }
+
         // Zeile 2: [Testdaten laden] … [Speichern] [Berechnen]
         ui.horizontal(|ui| {
             let knopf = egui::Button::new("Testdaten laden (Muster.csv)").min_size(Vec2::new(KNOPF_BREITE_TESTDATEN, KNOPF_HOEHE));
@@ -550,7 +778,12 @@ Erwartet in: {}", pfad.display()));
                     .min_size(Vec2::new(KNOPF_BREITE_BERECHNEN, KNOPF_HOEHE));
                 berechnen = ui.add(knopf).clicked();
                 let knopf = egui::Button::new("Speichern").min_size(Vec2::new(KNOPF_BREITE_SPEICHERN, KNOPF_HOEHE));
-                speichern = ui.add_enabled(self.speichern_frei, knopf).clicked();
+                let antwort = ui.add_enabled(self.speichern_frei, knopf);
+                let antwort = match self.ausstehend.as_ref().and_then(|a| a.freigabe.grund()) {
+                    Some(grund) => antwort.on_hover_text(grund).on_disabled_hover_text(grund),
+                    None => antwort,
+                };
+                speichern = antwort.clicked();
             });
         });
 
@@ -613,11 +846,17 @@ Erwartet in: {}", pfad.display()));
     }
 }
 
-/// Gültige Berechnung: verwendbare Station und mindestens 3 grüne Quer- und 3 grüne Längsresiduen.
-fn ist_gueltige_berechnung(erg: Option<&StationierungsErgebnis>, projekt: &Projekt) -> bool {
-    let Some(e) = erg.filter(|e| ist_verwendbar(Some(e))) else {
-        return false;
-    };
+/// Bewertet eine berechnete Stationierung:
+/// - nicht verwendbar (z. B. nicht konvergiert): gesperrt;
+/// - genau 2 Punkte (Direktlösung, r = 0, keine Residuenkontrolle): nur nach ausdrücklicher Bestätigung;
+/// - sonst frei bei mindestens 3 grünen Quer- und 3 grünen Längsresiduen, andernfalls gesperrt.
+fn bewerte_freigabe(e: &StationierungsErgebnis, punkte: usize, projekt: &Projekt) -> Freigabe {
+    if !ist_verwendbar(Some(e)) {
+        return Freigabe::Gesperrt("Die Berechnung ist nicht verwendbar (nicht konvergiert oder ungültige Werte).".to_string());
+    }
+    if punkte == MIN_ZEILEN {
+        return Freigabe::NurMitBestaetigung(format!("Nur {MIN_ZEILEN} Anschlusspunkte: Direktlösung ohne Redundanz (r = 0)."));
+    }
     let par = &projekt.rechenparameter.params;
     let (mut quer, mut laengs) = (0, 0);
     for r in &e.residuen {
@@ -628,7 +867,22 @@ fn ist_gueltige_berechnung(erg: Option<&StationierungsErgebnis>, projekt: &Proje
             laengs += 1;
         }
     }
-    quer >= MIN_GRUENE_RESIDUEN && laengs >= MIN_GRUENE_RESIDUEN
+    if quer >= MIN_GRUENE_RESIDUEN && laengs >= MIN_GRUENE_RESIDUEN {
+        Freigabe::Frei
+    } else {
+        Freigabe::Gesperrt(format!(
+            "{quer} von {MIN_GRUENE_RESIDUEN} grünen Quer- und {laengs} von {MIN_GRUENE_RESIDUEN} grünen Längsresiduen."
+        ))
+    }
+}
+
+/// Gespeicherte Beobachtungsauswahl, wenn der aktive Standpunkt derselbe ist und die Punkte in gleicher Reihenfolge vorliegen.
+fn gespeicherte_aktivierung(projekt: &Projekt, standpunkt: &str, punkte: &[StationierungsPunkt]) -> Option<Aktivierung> {
+    let station = &projekt.station;
+    let gleich = station.standpunkt_nr == standpunkt
+        && station.messungen.len() == punkte.len()
+        && station.messungen.iter().zip(punkte).all(|(a, b)| a.punkt_nr == b.punkt_nr);
+    gleich.then(|| station.aktivierung())
 }
 
 /// Ergebnisdialog „Ergebnis – Freie Stationierung“ mit Residuentabelle und Aktivierung je Beobachtung.
@@ -645,16 +899,26 @@ struct ErgebnisDialog {
 
 impl ErgebnisDialog {
     /// Rechnet mit allen Richtungen und Strecken; Höhen mit Höhe 0 sind zunächst abgeschaltet.
-    fn neu(standpunkt: String, ih: f64, punkte: Vec<StationierungsPunkt>, projekt: &mut Projekt) -> Result<Self, String> {
+    /// `vorgabe`: gespeicherte Beobachtungsauswahl desselben Standpunkts mit denselben Punkten (sonst alles aktiv).
+    fn neu(
+        standpunkt: String,
+        ih: f64,
+        punkte: Vec<StationierungsPunkt>,
+        vorgabe: Option<Aktivierung>,
+        projekt: &Projekt,
+    ) -> Result<Self, String> {
         let n = punkte.len();
-        let akt_hoe = punkte.iter().map(|p| p.hoehe != 0.0).collect();
+        let (akt_hz, akt_str, akt_hoe) = match vorgabe {
+            Some(a) => (a.richtung, a.strecke, a.hoehe),
+            None => (vec![true; n], vec![true; n], punkte.iter().map(|p| p.hoehe != 0.0).collect()),
+        };
         let mut dialog = Self {
             standpunkt,
             ih,
             punkte,
             ergebnis: StationierungsErgebnis::default(),
-            akt_hz: vec![true; n],
-            akt_str: vec![true; n],
+            akt_hz,
+            akt_str,
             akt_hoe,
             fehler: String::new(),
         };
@@ -662,8 +926,8 @@ impl ErgebnisDialog {
         Ok(dialog)
     }
 
-    /// Berechnet mit der aktuellen Aktivierung und übernimmt das Ergebnis in Station, Feldbuchpunkte und Projektdaten.
-    fn rechne(&mut self, projekt: &mut Projekt) -> Result<(), String> {
+    /// Berechnet mit der aktuellen Aktivierung. Das Ergebnis wird erst beim Speichern ins Projekt übernommen.
+    fn rechne(&mut self, projekt: &Projekt) -> Result<(), String> {
         let optionen = {
             let par = &projekt.rechenparameter.params;
             Optionen {
@@ -678,7 +942,6 @@ impl ErgebnisDialog {
         };
         let ergebnis = freie_stationierung::berechnen(&self.punkte, self.ih, &optionen)?;
         pruefe_station(&ergebnis)?;
-        projekt.uebernehme_manuelle_stationierung(&self.standpunkt, self.ih, self.punkte.clone(), ergebnis.clone())?;
         protokoll::log("RECHNUNG", &format!("Freie Stationierung berechnet, s0 = {} mm", de(ergebnis.s0_mm, 2)));
         self.ergebnis = ergebnis;
         Ok(())
@@ -712,6 +975,7 @@ impl ErgebnisDialog {
                 ui.label(RichText::new("Freie Stationierung  –  Ergebnis").strong().size(SCHRIFT_TITEL));
                 ui.separator();
                 self.zeichne_kopfdaten(ui, projekt);
+                self.zeichne_bewertung(ui, projekt);
                 ui.separator();
                 ui.add_space(4.0);
                 ui.label(RichText::new("Residuen pro Anschlusspunkt:").strong().size(SCHRIFT_UEBERSCHRIFT));
@@ -759,7 +1023,14 @@ impl ErgebnisDialog {
         ui.label(RichText::new(hoehe).monospace().color(farbe));
         zeile(ui, format!("Orientierungsunbekannte: {} gon", de(e.orientierung_gon, 4)));
         let fixiert = if p.freier_massstab { "" } else { "  [fixiert]" };
-        zeile(ui, format!("Maßstab (Helmert):       {}{fixiert}", de(e.massstab, 6)));
+        zeile(ui, format!("Maßstab (Näherung):      {}{fixiert}", de(e.massstab, 6)));
+        if p.freier_massstab {
+            ui.label(
+                RichText::new("Der Maßstab stammt aus der Helmert-Näherung und wird nicht mitausgeglichen (Ausgleichung: R, H, Orientierung).")
+                    .small()
+                    .color(FARBE_HINWEIS_GRAU),
+            );
+        }
         let beschriftung = format!("{:<w$}", format!("Standardabw. {}:", p.sigma_bez()), w = BESCHRIFTUNG_BREITE);
         zeile(
             ui,
@@ -781,6 +1052,46 @@ impl ErgebnisDialog {
                 )
             },
         );
+    }
+
+    /// Konfidenzellipse des Standpunkts sowie die getrennte Bewertung „Berechnung möglich“ / „Übernahme“.
+    fn zeichne_bewertung(&self, ui: &mut egui::Ui, projekt: &Projekt) {
+        let e = &self.ergebnis;
+        let zeile = |ui: &mut egui::Ui, text: String| {
+            ui.label(RichText::new(text).monospace());
+        };
+        match &e.konfidenz {
+            Some(k) => {
+                let theta_gon = k.theta_rad.rem_euclid(std::f64::consts::PI) * RAD_ZU_GON;
+                zeile(
+                    ui,
+                    format!(
+                        "Konfidenzellipse {} %:   a = {} mm   b = {} mm   Richtung der großen Achse = {} gon",
+                        de(k.niveau * PROZENT, 0),
+                        de(k.a_mm, 2),
+                        de(k.b_mm, 2),
+                        de(theta_gon, 2)
+                    ),
+                );
+                zeile(
+                    ui,
+                    format!(
+                        "Lagegenauigkeit:         σR = {} mm   σH = {} mm   ({}, Maßstab fest)",
+                        de(k.sigma_r_mm, 2),
+                        de(k.sigma_h_mm, 2),
+                        if k.a_priori { "a priori m0" } else { "a posteriori s0" }
+                    ),
+                );
+            }
+            None => zeile(ui, "Konfidenzellipse:        nicht bestimmbar (Direktlösung, r = 0)".to_string()),
+        }
+        let freigabe = bewerte_freigabe(e, self.punkte.len(), projekt);
+        ui.label(RichText::new("Berechnung:             möglich").monospace().color(FARBE_FREIGABE_FREI));
+        let text = match freigabe.grund() {
+            Some(grund) => format!("Übernahme:              {} – {grund}", freigabe.status()),
+            None => format!("Übernahme:              {}", freigabe.status()),
+        };
+        ui.label(RichText::new(text).monospace().strong().color(freigabe.farbe()));
     }
 
     /// Residuentabelle; `true`, wenn ein Haken geändert wurde (dann ist neu zu rechnen).

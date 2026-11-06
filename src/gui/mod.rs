@@ -17,6 +17,8 @@ mod freie_stationierung;
 mod geraet;
 mod hauptfenster;
 mod kommunikation;
+mod libelle;
+mod stationierungs_hinweis;
 mod projekt_dialog;
 mod projektdaten_ansicht;
 mod rechenparameter_ansicht;
@@ -32,13 +34,11 @@ use crate::update;
 enum Ansicht {
     Start,
     Projekt(projekt_dialog::ProjektDialog),
-    FreieStationierung(Box<freie_stationierung::FreieStationierungAnsicht>),
     Projektdaten(projektdaten_ansicht::ProjektdatenAnsicht),
     Rechenparameter(rechenparameter_ansicht::RechenparameterAnsicht),
     Kommunikation(kommunikation::KommunikationAnsicht),
     Berechnungen(berechnungen::BerechnungenAnsicht),
     Absteckung(absteckung::AbsteckungAnsicht),
-    Polarpunkte(Box<polarpunkte::PolarpunkteAnsicht>),
     Datenmanager(Box<daten_editor::DatenEditorAnsicht>),
     Konvertierung(Box<konvertierung::KonvertierungAnsicht>),
     Testmessungen(Box<testmessungen::TestmessungenAnsicht>),
@@ -54,6 +54,14 @@ pub struct FeldbuchApp {
     ansicht: Ansicht,
     /// Der DXF-Viewer läuft als eigenes Fenster (wie das Dialogfenster der Originalversion).
     dxf_viewer: Option<Box<dxf_viewer::DxfViewer>>,
+    /// Freie Stationierung als eigenes Fenster.
+    freie_stationierung: Option<Box<freie_stationierung::FreieStationierungAnsicht>>,
+    /// Polarpunkte als eigenes Fenster.
+    polarpunkte: Option<Box<polarpunkte::PolarpunkteAnsicht>>,
+    /// Die Rückfrage "Programm beenden?" ist geöffnet.
+    beenden_rueckfrage: bool,
+    /// Das Beenden wurde bestätigt.
+    beenden_bestaetigt: bool,
     meldungen: Vec<String>,
     /// Laufende Suche nach Updates (Ergebnisempfänger, vom Benutzer ausgelöst).
     update_suche: Option<(std::sync::mpsc::Receiver<update_dialog::SuchErgebnis>, bool)>,
@@ -62,6 +70,8 @@ pub struct FeldbuchApp {
     update_pruefen_wunsch: bool,
     /// Die Startgröße (Full HD oder maximiert) wurde bereits festgelegt.
     startgroesse_gesetzt: bool,
+    /// Das Hauptfenster wurde für den geöffneten DXF-Viewer minimiert (wird beim Schließen wiederhergestellt).
+    hauptfenster_minimiert: bool,
 }
 
 /// Gewünschte Fenstergröße (Innenfläche) beim Start in Punkten: Full HD.
@@ -70,6 +80,69 @@ const START_GROESSE: egui::Vec2 = egui::Vec2::new(1920.0, 1080.0);
 const RAHMEN_RESERVE: egui::Vec2 = egui::Vec2::new(16.0, 40.0);
 /// Platz für die Taskleiste.
 const TASKLEISTE_RESERVE: f32 = 48.0;
+
+/// Fenstergröße der Freien Stationierung (Innenfläche) in Punkten.
+const FENSTER_FREIE_STATIONIERUNG: [f32; 2] = [1000.0, 780.0];
+/// Fenstergröße der Polarpunkte (Innenfläche) in Punkten.
+const FENSTER_POLARPUNKTE: [f32; 2] = [1150.0, 780.0];
+/// Mindestgröße der Modulfenster.
+const FENSTER_MIN: [f32; 2] = [760.0, 480.0];
+
+/// Zeigt ein Modul als eigenes Fenster. `inhalt` liefert `true`, wenn das Modul sich selbst schließen will.
+/// Der Rückgabewert ist `false`, wenn das Fenster geschlossen wurde.
+fn zeige_fenster(
+    ctx: &egui::Context,
+    kennung: &str,
+    titel: &str,
+    groesse: [f32; 2],
+    mut inhalt: impl FnMut(&mut egui::Ui) -> bool,
+) -> bool {
+    let id = egui::ViewportId::from_hash_of(kennung);
+    let builder = egui::ViewportBuilder::default()
+        .with_title(titel)
+        .with_inner_size(groesse)
+        .with_min_inner_size(FENSTER_MIN);
+    let mut offen = true;
+    ctx.show_viewport_immediate(id, builder, |ui, _klasse| {
+        egui::CentralPanel::default().show(ui, |ui| {
+            if inhalt(ui) {
+                offen = false;
+            }
+        });
+        if ui.ctx().input(|i| i.viewport().close_requested()) {
+            offen = false;
+        }
+    });
+    offen
+}
+
+/// Legt die Größe des aktuellen Fensters (Viewport) fest: Full HD, wenn es samt Rahmen und Taskleiste auf den
+/// Bildschirm passt, sonst maximiert. Gibt `false` zurück, solange die Bildschirmgröße noch unbekannt ist
+/// (dann im nächsten Frame erneut aufrufen). Gilt für das Hauptfenster und den DXF-Viewer.
+pub(crate) fn setze_startgroesse_fenster(ctx: &egui::Context) -> bool {
+    let (monitor, innen, aussen) = ctx.input(|i| {
+        let v = i.viewport();
+        (v.monitor_size, v.inner_rect, v.outer_rect)
+    });
+    let Some(monitor) = monitor else {
+        ctx.request_repaint();
+        return false;
+    };
+    let rahmen = match (innen, aussen) {
+        (Some(innen), Some(aussen)) if aussen.size().x >= innen.size().x => aussen.size() - innen.size(),
+        _ => RAHMEN_RESERVE,
+    };
+    let aussen_groesse = START_GROESSE + rahmen;
+    if monitor.x >= aussen_groesse.x && monitor.y - TASKLEISTE_RESERVE >= aussen_groesse.y {
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(START_GROESSE));
+        let links = ((monitor.x - aussen_groesse.x) / 2.0).max(0.0);
+        let oben = ((monitor.y - TASKLEISTE_RESERVE - aussen_groesse.y) / 2.0).max(0.0);
+        ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(links, oben)));
+    } else {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+    }
+    true
+}
 
 impl FeldbuchApp {
     pub fn neu() -> Self {
@@ -107,43 +180,30 @@ impl FeldbuchApp {
             geraet,
             ansicht: Ansicht::Start,
             dxf_viewer: None,
+            freie_stationierung: None,
+            polarpunkte: None,
+            beenden_rueckfrage: false,
+            beenden_bestaetigt: false,
             meldungen,
             update_suche,
             update_dialog: None,
             update_pruefen_wunsch: false,
             startgroesse_gesetzt: false,
+            hauptfenster_minimiert: false,
         }
     }
 
-    /// Legt beim Start die Fenstergröße fest: Full HD, wenn es samt Rahmen und Taskleiste auf den Bildschirm passt,
-    /// sonst maximiert. Gilt für das Hauptfenster und damit für alle darin angezeigten Module.
+    /// Legt beim Start die Fenstergröße des Hauptfensters fest (siehe [`setze_startgroesse_fenster`]).
     fn setze_startgroesse(&mut self, ctx: &egui::Context) {
-        if self.startgroesse_gesetzt {
-            return;
+        if !self.startgroesse_gesetzt {
+            self.startgroesse_gesetzt = setze_startgroesse_fenster(ctx);
         }
-        let (monitor, innen, aussen) = ctx.input(|i| {
-            let v = i.viewport();
-            (v.monitor_size, v.inner_rect, v.outer_rect)
-        });
-        let Some(monitor) = monitor else {
-            // Bildschirmgröße noch nicht bekannt: im nächsten Frame erneut versuchen
-            ctx.request_repaint();
-            return;
-        };
-        self.startgroesse_gesetzt = true;
-        let rahmen = match (innen, aussen) {
-            (Some(innen), Some(aussen)) if aussen.size().x >= innen.size().x => aussen.size() - innen.size(),
-            _ => RAHMEN_RESERVE,
-        };
-        let aussen_groesse = START_GROESSE + rahmen;
-        if monitor.x >= aussen_groesse.x && monitor.y - TASKLEISTE_RESERVE >= aussen_groesse.y {
-            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(START_GROESSE));
-            let links = ((monitor.x - aussen_groesse.x) / 2.0).max(0.0);
-            let oben = ((monitor.y - TASKLEISTE_RESERVE - aussen_groesse.y) / 2.0).max(0.0);
-            ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(links, oben)));
-        } else {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
-        }
+    }
+
+    /// Holt das minimierte Hauptfenster zurück und gibt ihm den Fokus.
+    fn stelle_hauptfenster_wieder_her(ctx: &egui::Context) {
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
     }
 
     /// Fenstertitel passend zum Projekt.
@@ -152,6 +212,80 @@ impl FeldbuchApp {
             format!("Feldbuch  –  {}", self.projekt.einstellungen.projekt_name)
         } else {
             "Feldbuch".to_string()
+        }
+    }
+
+    /// Öffnet das Fenster der Freien Stationierung (falls es nicht schon offen ist).
+    pub(crate) fn oeffne_freie_stationierung(&mut self) {
+        if self.freie_stationierung.is_none() {
+            self.freie_stationierung = Some(Box::new(freie_stationierung::FreieStationierungAnsicht::neu(&self.projekt)));
+        }
+    }
+
+    /// Öffnet das Fenster der Polarpunkte (falls es nicht schon offen ist).
+    pub(crate) fn oeffne_polarpunkte(&mut self) {
+        if self.polarpunkte.is_none() {
+            self.polarpunkte = Some(Box::new(polarpunkte::PolarpunkteAnsicht::neu(&self.projekt)));
+        }
+    }
+
+    /// Zeigt Freie Stationierung und Polarpunkte als eigene Fenster; Schließen des Fensters beendet nur das Modul.
+    fn zeige_modulfenster(&mut self, ctx: &egui::Context) {
+        if let Some(ansicht) = self.freie_stationierung.as_mut() {
+            let projekt = &mut self.projekt;
+            let offen = zeige_fenster(ctx, "freie_stationierung", "Freie Stationierung", FENSTER_FREIE_STATIONIERUNG, |ui| {
+                ansicht.zeichne(ui, projekt);
+                false
+            });
+            if !offen {
+                self.freie_stationierung = None;
+            }
+        }
+        if let Some(ansicht) = self.polarpunkte.as_mut() {
+            let projekt = &mut self.projekt;
+            let offen = zeige_fenster(ctx, "polarpunkte", "Polarpunkte", FENSTER_POLARPUNKTE, |ui| ansicht.zeichne(ui, projekt));
+            if !offen {
+                self.polarpunkte = None;
+            }
+        }
+    }
+
+    /// Fragt beim Schließen des Hauptfensters nach, ob das Programm wirklich beendet werden soll.
+    fn pruefe_beenden(&mut self, ctx: &egui::Context) {
+        let schliessen_gewuenscht = ctx.input(|i| i.viewport().close_requested());
+        if schliessen_gewuenscht && !self.beenden_bestaetigt {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.beenden_rueckfrage = true;
+            Self::stelle_hauptfenster_wieder_her(ctx);
+        }
+        if !self.beenden_rueckfrage {
+            return;
+        }
+        let mut antwort = None;
+        egui::Window::new("Programm beenden?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label("Soll Feldbuch-NT wirklich beendet werden?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(egui::RichText::new("Ja, beenden").strong()).clicked() {
+                        antwort = Some(true);
+                    }
+                    if ui.button("Nein").clicked() {
+                        antwort = Some(false);
+                    }
+                });
+            });
+        match antwort {
+            Some(true) => {
+                self.beenden_bestaetigt = true;
+                self.beenden_rueckfrage = false;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Some(false) => self.beenden_rueckfrage = false,
+            None => {}
         }
     }
 
@@ -167,7 +301,10 @@ impl FeldbuchApp {
 
     /// Läuft gerade etwas, das ein Update nicht unterbrechen darf (DXF-Viewer oder ein anderes Modul als Hauptmenü/Info)?
     fn update_blockiert(&self) -> bool {
-        self.dxf_viewer.is_some() || !matches!(self.ansicht, Ansicht::Start | Ansicht::Info)
+        self.dxf_viewer.is_some()
+            || self.freie_stationierung.is_some()
+            || self.polarpunkte.is_some()
+            || !matches!(self.ansicht, Ansicht::Start | Ansicht::Info)
     }
 
     /// Wertet das Ergebnis einer Update-Suche aus. Beim Start bleibt alles still, bei manueller Suche gibt es immer eine Rückmeldung.
@@ -283,6 +420,8 @@ impl eframe::App for FeldbuchApp {
             self.meldungen.push(fehler);
         }
         self.zeige_meldungen(&ctx);
+        // Die Neigungsabfrage (Libelle) läuft nur, solange die Kommunikationsmaske sichtbar ist
+        self.geraet.live_neigung_aktiv = matches!(self.ansicht, Ansicht::Kommunikation(_));
         hauptfenster::zeichne(self, ui);
         self.bearbeite_update(&ctx);
 
@@ -298,14 +437,31 @@ impl eframe::App for FeldbuchApp {
         if self.dxf_viewer.is_none() {
             self.geraet.live_hz_aktiv = false;
         }
+        // Hauptfenster: beim Öffnen des Viewers minimieren, nach dem Schließen wiederherstellen
+        if self.dxf_viewer.is_some() && !self.hauptfenster_minimiert {
+            self.hauptfenster_minimiert = true;
+            ctx.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Minimized(true));
+        } else if self.dxf_viewer.is_none() && self.hauptfenster_minimiert {
+            self.hauptfenster_minimiert = false;
+            Self::stelle_hauptfenster_wieder_her(&ctx);
+        }
         match wunsch {
-            Some(dxf_viewer::Wunsch::FreieStationierung) => {
-                self.ansicht = Ansicht::FreieStationierung(Box::new(freie_stationierung::FreieStationierungAnsicht::neu(&self.projekt)));
+            Some(dxf_viewer::Wunsch::FreieStationierung) => self.oeffne_freie_stationierung(),
+            Some(dxf_viewer::Wunsch::Polarpunkte) => self.oeffne_polarpunkte(),
+            Some(dxf_viewer::Wunsch::Aufnahmetest) => {
+                // Der Aufnahmetest läuft im Hauptfenster: dieses sichtbar machen
+                Self::stelle_hauptfenster_wieder_her(&ctx);
+                self.oeffne_aufnahmetest(None);
             }
-            Some(dxf_viewer::Wunsch::Aufnahmetest) => self.oeffne_aufnahmetest(None),
-            Some(dxf_viewer::Wunsch::Anfahren(nr)) => self.oeffne_aufnahmetest(Some(&nr)),
+            Some(dxf_viewer::Wunsch::Anfahren(nr)) => {
+                Self::stelle_hauptfenster_wieder_her(&ctx);
+                self.oeffne_aufnahmetest(Some(&nr));
+            }
             None => {}
         }
+
+        self.zeige_modulfenster(&ctx);
+        self.pruefe_beenden(&ctx);
     }
 
     fn on_exit(&mut self) {

@@ -35,6 +35,11 @@ const LIVE_INTERVALL: std::time::Duration = std::time::Duration::from_millis(500
 /// Nach dieser Zeit gilt eine unbeantwortete Hz-Abfrage als verloren.
 const LIVE_ANTWORT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(crate::tachymeter::hilfen::WINKEL_ANTWORT_TIMEOUT_MS);
 
+/// Abstand der Neigungsabfragen für die Libelle.
+const NEIGUNG_INTERVALL: std::time::Duration = std::time::Duration::from_millis(400);
+/// Nach dieser Zeit ohne neue Neigung gilt die Anzeige als veraltet.
+const NEIGUNG_VERALTET: std::time::Duration = std::time::Duration::from_millis(3000);
+
 /// Zustand des Messgeräts.
 pub struct Geraet {
     pub verbindung: Verbindung,
@@ -72,9 +77,20 @@ pub struct Geraet {
     pub live_hz_aktiv: bool,
     /// Zuletzt gemessene Horizontalrichtung [gon].
     pub live_hz: Option<f64>,
+    /// Zuletzt gemessener Vertikalwinkel [gon] (nur wenn `live_v_aktiv`, bei GeoCOM immer).
+    pub live_v: Option<f64>,
+    /// Zusätzlich zu Hz auch V abfragen (Messdaten-Dialog).
+    pub live_v_aktiv: bool,
     live_wartet: bool,
     live_gesendet: Instant,
     live_naechste: Instant,
+    /// Die Libelle ist sichtbar und möchte die Kompensatorneigung sehen.
+    pub live_neigung_aktiv: bool,
+    /// Zuletzt gelesene Neigung (Quer, Längs) [rad] und Zeitpunkt; `None` = Gerät liefert keine Neigung.
+    neigung: Option<((f64, f64), Instant)>,
+    neigung_wartet: bool,
+    neigung_gesendet: Instant,
+    neigung_naechste: Instant,
     /// Laufendes motorisches Anfahren.
     pub anfahren: Option<Anfahren>,
     /// Ergebnis des letzten Anfahrens, bis die Oberfläche es abholt.
@@ -114,9 +130,16 @@ impl Geraet {
             messung_ausstehend: None,
             live_hz_aktiv: false,
             live_hz: None,
+            live_v: None,
+            live_v_aktiv: false,
             live_wartet: false,
             live_gesendet: Instant::now(),
             live_naechste: Instant::now(),
+            live_neigung_aktiv: false,
+            neigung: None,
+            neigung_wartet: false,
+            neigung_gesendet: Instant::now(),
+            neigung_naechste: Instant::now(),
             anfahren: None,
             anfahren_ergebnis: None,
             letzte_messung: None,
@@ -398,9 +421,22 @@ impl Geraet {
                 Ereignis::Zeile(zeile) => {
                     // Antwort auf die Hz-Abfrage der Zielrichtung: still verarbeiten (kein Protokoll-Rauschen)
                     if self.live_wartet && !self.beschaeftigt() {
-                        if let Some(hz) = self.live_hz_aus(&zeile) {
+                        if let Some((hz, v)) = self.live_winkel_aus(&zeile) {
                             self.live_hz = Some(hz);
+                            self.live_v = v;
                             self.live_wartet = false;
+                            LiveWinkelSperre::anfrage_beendet();
+                            continue;
+                        }
+                    }
+                    // Antwort auf die Neigungsabfrage der Libelle: still verarbeiten
+                    if self.neigung_wartet && !self.beschaeftigt() {
+                        if let Some(m) = geocom::parse_antwort(&zeile, geocom::RPC_TMC_GET_ANGLE1) {
+                            self.neigung = match (m.kreuz_neigung_rad, m.laengs_neigung_rad) {
+                                (Some(q), Some(l)) if m.typ != crate::tachymeter::messung::MessungsTyp::Fehler => Some(((q, l), jetzt)),
+                                _ => None,
+                            };
+                            self.neigung_wartet = false;
                             LiveWinkelSperre::anfrage_beendet();
                             continue;
                         }
@@ -430,6 +466,9 @@ impl Geraet {
                     self.laser_an = false;
                     self.live_wartet = false;
                     self.live_hz = None;
+                    self.live_v = None;
+                    self.neigung = None;
+                    self.neigung_wartet = false;
                     LiveWinkelSperre::anfrage_beendet();
                     if self.messung.take().is_some() || self.messung_ausstehend.take().is_some() {
                         self.messung_ergebnis = Some(MessErgebnis::Fehler("Verbindung während der Messung getrennt.".to_string()));
@@ -449,8 +488,8 @@ impl Geraet {
                     // Die Protokolldatei enthält immer die Rohbytes, die Anzeige nur auf Wunsch
                     let richtung = if gesendet { "TX" } else { "RX" };
                     let zeile = format!("{richtung} {}   |{}|", hex(&daten), sichtbar(&daten));
-                    if self.live_wartet && !self.beschaeftigt() {
-                        // Hz-Abfrage der Zielrichtung: nicht protokollieren
+                    if (self.live_wartet || self.neigung_wartet) && !self.beschaeftigt() {
+                        // Hz- bzw. Neigungsabfrage: nicht protokollieren
                     } else if self.hex_anzeige {
                         self.schreibe(zeile);
                     } else {
@@ -465,6 +504,44 @@ impl Geraet {
         self.treibe_messung(jetzt);
         self.treibe_anfahren(jetzt);
         self.treibe_live(jetzt);
+        self.treibe_neigung(jetzt);
+    }
+
+    /// Aktuelle Kompensatorneigung (Quer, Längs) [rad]; `None`, wenn das Gerät keine liefert oder die Werte veraltet sind.
+    pub fn neigung(&self) -> Option<(f64, f64)> {
+        self.neigung
+            .filter(|(_, zeit)| zeit.elapsed() < NEIGUNG_VERALTET)
+            .map(|(werte, _)| werte)
+    }
+
+    /// Fragt die Neigung zyklisch ab (nur GeoCOM, nur solange die Libelle sichtbar ist).
+    fn treibe_neigung(&mut self, jetzt: Instant) {
+        if self.neigung_wartet && jetzt.saturating_duration_since(self.neigung_gesendet) >= LIVE_ANTWORT_TIMEOUT {
+            self.neigung_wartet = false;
+            self.neigung = None;
+            LiveWinkelSperre::anfrage_beendet();
+        }
+        if !self.live_neigung_aktiv || !self.ist_verbunden() || self.protokoll() != Protokoll::GeoCom {
+            self.neigung = None;
+            return;
+        }
+        if self.neigung_wartet
+            || self.live_wartet
+            || self.beschaeftigt()
+            || LiveWinkelSperre::gesperrt()
+            || jetzt < self.neigung_naechste
+            || LiveWinkelSperre::antwort_offen()
+        {
+            return;
+        }
+        self.neigung_wartet = true;
+        self.neigung_gesendet = jetzt;
+        self.neigung_naechste = jetzt + NEIGUNG_INTERVALL;
+        LiveWinkelSperre::anfrage_gesendet();
+        if self.verbindung.senden(crate::tachymeter::messablauf::BEFEHL_KOMPENSATOR).is_err() {
+            self.neigung_wartet = false;
+            LiveWinkelSperre::anfrage_beendet();
+        }
     }
 
     /// Sendet anstehende Befehle des Anfahrens und übernimmt das Ergebnis.
@@ -493,12 +570,13 @@ impl Geraet {
     }
 
     /// Horizontalrichtung aus einer Antwortzeile der Live-Abfrage.
-    fn live_hz_aus(&self, zeile: &str) -> Option<f64> {
-        match self.protokoll() {
-            Protokoll::GeoCom => geocom::parse_antwort(zeile, geocom::RPC_TMC_GET_ANGLE)?.hz_gon,
-            Protokoll::GsiOnline => gsi::parse_online_zeile(zeile)?.hz_gon,
-            _ => None,
-        }
+    fn live_winkel_aus(&self, zeile: &str) -> Option<(f64, Option<f64>)> {
+        let m = match self.protokoll() {
+            Protokoll::GeoCom => geocom::parse_antwort(zeile, geocom::RPC_TMC_GET_ANGLE)?,
+            Protokoll::GsiOnline => gsi::parse_online_zeile(zeile)?,
+            _ => return None,
+        };
+        Some((m.hz_gon?, m.v_gon))
     }
 
     /// Startet eine ausstehende Messung, treibt die laufende voran und übergibt das Ergebnis.
@@ -555,6 +633,7 @@ impl Geraet {
         }
         if !self.live_hz_aktiv || !self.ist_verbunden() {
             self.live_hz = None;
+            self.live_v = None;
             return;
         }
         if self.live_wartet
@@ -565,7 +644,9 @@ impl Geraet {
         {
             return;
         }
-        let Some(befehl) = Befehlsgeber::fuer(self.protokoll()).hz_winkel_befehl() else {
+        let geber = Befehlsgeber::fuer(self.protokoll());
+        let befehl = if self.live_v_aktiv { geber.winkel_befehl() } else { geber.hz_winkel_befehl() };
+        let Some(befehl) = befehl else {
             return;
         };
         self.live_wartet = true;

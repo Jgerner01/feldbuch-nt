@@ -221,6 +221,34 @@ impl Default for PunktResiduum {
     }
 }
 
+/// Konfidenzellipse der Standpunktlage (R, H), berechnet aus der Kovarianzmatrix der Lageausgleichung.
+/// Der Maßstab ist darin nicht enthalten: er stammt aus der Helmert-Näherung und wird nicht mitausgeglichen.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct Konfidenzellipse {
+    /// Große Halbachse [mm] beim Konfidenzniveau.
+    #[serde(rename = "a_mm")]
+    pub a_mm: f64,
+    /// Kleine Halbachse [mm] beim Konfidenzniveau.
+    #[serde(rename = "b_mm")]
+    pub b_mm: f64,
+    /// Richtung der großen Halbachse, von der R-Achse zur H-Achse gezählt [rad].
+    #[serde(rename = "Theta_rad")]
+    pub theta_rad: f64,
+    /// Standardabweichung der Rechtswertkoordinate [mm].
+    #[serde(rename = "SigmaR_mm")]
+    pub sigma_r_mm: f64,
+    /// Standardabweichung der Hochwertkoordinate [mm].
+    #[serde(rename = "SigmaH_mm")]
+    pub sigma_h_mm: f64,
+    /// Konfidenzniveau (0..1).
+    #[serde(rename = "Niveau")]
+    pub niveau: f64,
+    /// Kovarianz mit a-priori-Genauigkeit m0 (ohne Redundanz), sonst mit der a-posteriori-Standardabweichung s0.
+    #[serde(rename = "APriori")]
+    pub a_priori: bool,
+}
+
 /// Ergebnis einer (freien) Stationierung.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
@@ -253,6 +281,9 @@ pub struct StationierungsErgebnis {
     pub warnung_hoehe: String,
     #[serde(rename = "Residuen")]
     pub residuen: Vec<PunktResiduum>,
+    /// Konfidenzellipse des Standpunkts; `None` bei Direktlösung (2 Punkte) oder singulärer Normalmatrix.
+    #[serde(rename = "Konfidenz")]
+    pub konfidenz: Option<Konfidenzellipse>,
 }
 
 impl Default for StationierungsErgebnis {
@@ -271,6 +302,7 @@ impl Default for StationierungsErgebnis {
             ist_lokales_system: false,
             warnung_hoehe: String::new(),
             residuen: Vec::new(),
+            konfidenz: None,
         }
     }
 }

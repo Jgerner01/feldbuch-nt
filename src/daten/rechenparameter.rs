@@ -59,6 +59,43 @@ impl PdfParameter {
     }
 }
 
+/// Vorgaben für den DXF-Export des DXF-Viewers (Maßstab, Symbol- und Textgröße auf dem Papier).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DxfParameter {
+    /// Nenner des Zielmaßstabs 1 : n.
+    pub massstab: f64,
+    /// Symbolgröße auf dem Papier [mm].
+    pub symbol_mm: f64,
+    /// Textgröße auf dem Papier [mm].
+    pub text_mm: f64,
+}
+
+/// Grenzen des Exportmaßstabs.
+pub const DXF_MASSSTAB_BEREICH: (f64, f64) = (100.0, 50_000.0);
+/// Grenzen der Symbol- und Textgröße [mm].
+pub const DXF_GROESSE_BEREICH_MM: (f64, f64) = (0.5, 10.0);
+
+impl Default for DxfParameter {
+    fn default() -> Self {
+        Self { massstab: 1000.0, symbol_mm: 1.5, text_mm: 2.0 }
+    }
+}
+
+impl DxfParameter {
+    /// Ungültige Werte durch Standardwerte ersetzen, gültige in die Grenzen zwingen.
+    pub fn normalisiert(&self) -> Self {
+        let standard = Self::default();
+        let begrenzt = |wert: f64, ersatz: f64, grenzen: (f64, f64)| {
+            if wert.is_finite() { wert.clamp(grenzen.0, grenzen.1) } else { ersatz }
+        };
+        Self {
+            massstab: begrenzt(self.massstab, standard.massstab, DXF_MASSSTAB_BEREICH).round(),
+            symbol_mm: begrenzt(self.symbol_mm, standard.symbol_mm, DXF_GROESSE_BEREICH_MM),
+            text_mm: begrenzt(self.text_mm, standard.text_mm, DXF_GROESSE_BEREICH_MM),
+        }
+    }
+}
+
 /// Rechenparameter der Stationierung und der Polarpunkte.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rechenparameter {
@@ -84,6 +121,7 @@ pub struct Rechenparameter {
     pub zentrierfehler_ziel_mm: f64,
     pub zentrierfehler_standpunkt_mm: f64,
     pub pdf: PdfParameter,
+    pub dxf: DxfParameter,
 }
 
 impl Default for Rechenparameter {
@@ -103,6 +141,7 @@ impl Default for Rechenparameter {
             zentrierfehler_ziel_mm: ZENTRIERFEHLER_ZIEL_STANDARD_MM,
             zentrierfehler_standpunkt_mm: ZENTRIERFEHLER_STANDPUNKT_STANDARD_MM,
             pdf: PdfParameter::default(),
+            dxf: DxfParameter::default(),
         }
     }
 }
@@ -193,6 +232,7 @@ impl RechenparameterManager {
         }
         let p = &self.params;
         let pdf = p.pdf.normalisiert();
+        let dxf = p.dxf.normalisiert();
         let wahr = |b: bool| if b { "true" } else { "false" }.to_string();
         let eintraege: Vec<(&str, String)> = vec![
             ("FehlergrenzCC_Winkel", f(p.fehlergrenze_cc_winkel, 1)),
@@ -213,6 +253,9 @@ impl RechenparameterManager {
             ("PdfRand_mm", f(pdf.rand_mm, 1)),
             ("PdfLinieMin_mm", f(pdf.linie_min_mm, 2)),
             ("PdfSymbolMin_mm", f(pdf.symbol_min_mm, 1)),
+            ("DxfMassstab", f(dxf.massstab, 0)),
+            ("DxfSymbol_mm", f(dxf.symbol_mm, 1)),
+            ("DxfText_mm", f(dxf.text_mm, 1)),
         ];
         datei_speicher::schreibe_text(&self.pfad, &xml_einfach::schreibe(WURZEL, &eintraege))
     }
@@ -253,6 +296,11 @@ fn parse_parameter(doc: &XmlDokument) -> Rechenparameter {
             linie_min_mm: zahl("PdfLinieMin_mm", standard.pdf.linie_min_mm),
             symbol_min_mm: zahl("PdfSymbolMin_mm", standard.pdf.symbol_min_mm),
         }.normalisiert(),
+        dxf: DxfParameter {
+            massstab: zahl("DxfMassstab", standard.dxf.massstab),
+            symbol_mm: zahl("DxfSymbol_mm", standard.dxf.symbol_mm),
+            text_mm: zahl("DxfText_mm", standard.dxf.text_mm),
+        }.normalisiert(),
     }
 }
 
@@ -271,6 +319,7 @@ mod tests {
         m.params.polar_massstab_modus = MassstabModus::Vorgegeben;
         m.params.polar_massstab_wert = 1.000123;
         m.params.pdf = PdfParameter { massstab: 500.0, querformat: true, rand_mm: 12.0, linie_min_mm: 0.35, symbol_min_mm: 3.0 };
+        m.params.dxf = DxfParameter { massstab: 2500.0, symbol_mm: 2.5, text_mm: 3.0 };
         m.speichern().unwrap();
 
         let neu = RechenparameterManager::initialisiere(&pfad);
@@ -280,6 +329,7 @@ mod tests {
         assert!((neu.params.polar_massstab_wert - 1.000123).abs() < 1e-9);
         assert_eq!(neu.params.sigma_bez(), "2·s₀");
         assert_eq!(neu.params.pdf, m.params.pdf);
+        assert_eq!(neu.params.dxf, m.params.dxf);
         assert!((neu.params.sigma_wert(1.5) - 3.0).abs() < 1e-12);
         let _ = fs::remove_dir_all(dir);
     }
@@ -297,6 +347,7 @@ mod tests {
         let doc = xml_einfach::lese(&format!("<{WURZEL}><Berechnung3D>false</Berechnung3D></{WURZEL}>")).unwrap();
         let p = parse_parameter(&doc);
         assert_eq!(p.pdf, PdfParameter::default());
+        assert_eq!(p.dxf, DxfParameter::default());
         assert!(!p.berechnung_3d);
     }
 

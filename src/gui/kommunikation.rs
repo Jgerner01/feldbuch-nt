@@ -48,6 +48,7 @@ pub struct KommunikationAnsicht {
     analyse: Arc<Mutex<AnalyseZustand>>,
     analyse_abbruch: Arc<AtomicBool>,
     war_verbindet: bool,
+    libelle: super::libelle::Libelle,
 }
 
 impl KommunikationAnsicht {
@@ -185,17 +186,21 @@ impl KommunikationAnsicht {
                 }
             });
             ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
-                let farbe = if verbunden { FARBE_VERBUNDEN } else { FARBE_GETRENNT };
-                ui.painter().rect_filled(rect, 0.0, farbe);
-                let text = if verbunden {
-                    format!("Verbunden  ({})", geraet.einstellung.port)
-                } else {
-                    "Getrennt".to_string()
-                };
-                ui.label(RichText::new(text).strong().color(if verbunden { Color32::from_rgb(0, 100, 0) } else { Color32::from_rgb(160, 40, 40) }));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Links Status und Verbinden-Knopf, rechts am Rand die Libelle
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), egui::Sense::hover());
+                        let farbe = if verbunden { FARBE_VERBUNDEN } else { FARBE_GETRENNT };
+                        ui.painter().rect_filled(rect, 0.0, farbe);
+                        let text = if verbunden {
+                            format!("Verbunden  ({})", geraet.einstellung.port)
+                        } else {
+                            "Getrennt".to_string()
+                        };
+                        ui.label(RichText::new(text).strong().color(if verbunden { Color32::from_rgb(0, 100, 0) } else { Color32::from_rgb(160, 40, 40) }));
+                    });
+                    ui.add_space(6.0);
                     let beschriftung = if geraet.verbindet() {
                         "Abbrechen"
                     } else if verbunden {
@@ -209,14 +214,18 @@ impl KommunikationAnsicht {
                     if ui.add(knopf).clicked() {
                         self.verbinden_umschalten(geraet);
                     }
+                    if geraet.verbindet() {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Verbinde … (höchstens 10 s)");
+                        });
+                    }
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    let neigung = if verbunden { geraet.neigung() } else { None };
+                    self.libelle.zeichne(ui, neigung);
                 });
             });
-            if geraet.verbindet() {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label("Verbinde … (höchstens 10 s)");
-                });
-            }
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 let laeuft = geraet.test.is_some();

@@ -24,6 +24,23 @@ const KOPFZEILE: &str = "PunktNr,R,H,Hoehe,HZ,V,Strecke,Zielhoehe";
 const FARBE_OK: Color32 = Color32::from_rgb(40, 150, 60);
 const FARBE_WARNUNG: Color32 = Color32::from_rgb(200, 130, 40);
 const FARBE_FEHLER: Color32 = Color32::from_rgb(200, 60, 40);
+/// Anzahl Zeichen, die ein Eingabefeld mindestens aufnehmen muss.
+const FELD_ZEICHEN: f32 = 9.0;
+/// Breite eines Zeichens der Monospace-Schrift im Verhältnis zur Schriftgröße.
+const ZEICHEN_BREITE_FAKTOR: f32 = 0.6;
+/// Innenabstand links und rechts im Eingabefeld.
+const FELD_INNENABSTAND: f32 = 16.0;
+/// Ab dieser Winkeländerung gegenüber der Messung gilt Hz/V als getrennt erfasst [mgon].
+const WINKEL_SCHWELLE_MGON: f64 = 2.0;
+/// Vollkreis [gon] und Umrechnung gon → mgon.
+const VOLLKREIS_GON: f64 = 400.0;
+const MGON_JE_GON: f64 = 1000.0;
+
+/// Differenz zweier Richtungen [mgon], auf ±200 gon normiert.
+fn winkel_differenz_mgon(a_gon: f64, b_gon: f64) -> f64 {
+    let halb = VOLLKREIS_GON / 2.0;
+    ((a_gon - b_gon + halb).rem_euclid(VOLLKREIS_GON) - halb) * MGON_JE_GON
+}
 
 /// Zustand des Dialogs.
 #[derive(Clone, Debug)]
@@ -43,9 +60,24 @@ pub(super) struct MessdatenEingabe {
     pub wartet: bool,
     pub info: String,
     pub info_farbe: Option<Color32>,
+    /// Hz und V [gon] der letzten Messung (Bezug für die Erkennung getrennter Erfassung).
+    pub mess_hz: Option<f64>,
+    pub mess_v: Option<f64>,
+    /// Zuletzt aus der Live-Abfrage in die Felder übernommene Werte (Hz, V [gon]).
+    pub folge_hz: Option<f64>,
+    pub folge_v: Option<f64>,
 }
 
 impl MessdatenEingabe {
+    /// Hinweistext, wenn sich Hz oder V am Gerät seit der Messung um mehr als 2 mgon geändert haben.
+    pub fn getrennt_hinweis(&self, live_hz: Option<f64>, live_v: Option<f64>) -> Option<String> {
+        let (mess_hz, mess_v) = (self.mess_hz?, self.mess_v?);
+        let dhz = winkel_differenz_mgon(live_hz?, mess_hz);
+        let dv = live_v.map_or(0.0, |v| winkel_differenz_mgon(v, mess_v));
+        (dhz.abs() > WINKEL_SCHWELLE_MGON || dv.abs() > WINKEL_SCHWELLE_MGON)
+            .then(|| format!("⚠ Winkel seit Messung geändert (ΔHz {dhz:+.1}, ΔV {dv:+.1} mgon) – getrennt gemessen"))
+    }
+
     pub fn neu(r: f64, h: f64, punkt_nr: &str, hoehe: f64, code: &str, zielhoehe: &str) -> Self {
         Self {
             r,
@@ -61,6 +93,10 @@ impl MessdatenEingabe {
             wartet: false,
             info: String::new(),
             info_farbe: None,
+            mess_hz: None,
+            mess_v: None,
+            folge_hz: None,
+            folge_v: None,
         }
     }
 
@@ -74,6 +110,10 @@ impl MessdatenEingabe {
         match (m.hz_gon, m.v_gon, m.schraegstrecke_m) {
             (Some(hz), Some(v), Some(s)) => {
                 self.aktiv = true;
+                self.mess_hz = Some(hz);
+                self.mess_v = Some(v);
+                self.folge_hz = Some(hz);
+                self.folge_v = Some(v);
                 self.hz = f(hz, 4);
                 self.v = f(v, 4);
                 self.strecke = f(s, 3);
@@ -157,6 +197,21 @@ impl DxfViewer {
         let mut umschalten = false;
         let verbunden = geraet.ist_verbunden();
         let beschaeftigt = geraet.beschaeftigt();
+        // Solange der Dialog offen ist, fragt das Gerät Hz und V zyklisch ab
+        geraet.live_v_aktiv = true;
+        let (live_hz, live_v) = (geraet.live_hz, geraet.live_v);
+        // Nach einer Messung laufen Hz und V mit, wenn sich die Gerätewerte ändern
+        if !d.wartet && d.mess_hz.is_some() {
+            if let Some(hz) = live_hz.filter(|hz| d.folge_hz != Some(*hz)) {
+                d.hz = f(hz, 4);
+                d.folge_hz = Some(hz);
+            }
+            if let Some(v) = live_v.filter(|v| d.folge_v != Some(*v)) {
+                d.v = f(v, 4);
+                d.folge_v = Some(v);
+            }
+        }
+        let hinweis = if d.wartet { None } else { d.getrennt_hinweis(live_hz, live_v) };
         if d.wartet {
             if let Some(text) = geraet.messung_status() {
                 d.info = text.to_string();
@@ -170,9 +225,11 @@ impl DxfViewer {
             ui.add_space(4.0);
             egui::Grid::new("messdaten_felder").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
                 let mut manuell = false;
+                let schrift_groesse = egui::TextStyle::Monospace.resolve(ui.style()).size;
+                let feld_groesse = Vec2::new(FELD_ZEICHEN * schrift_groesse * ZEICHEN_BREITE_FAKTOR + FELD_INNENABSTAND, ui.spacing().interact_size.y);
                 let mut feld = |ui: &mut egui::Ui, titel: &str, text: &mut String, einheit: &str, messwert: bool| {
                     ui.label(titel);
-                    let antwort = ui.add(egui::TextEdit::singleline(text).desired_width(110.0).font(egui::TextStyle::Monospace));
+                    let antwort = ui.add_sized(feld_groesse, egui::TextEdit::singleline(text).font(egui::TextStyle::Monospace));
                     if messwert && antwort.changed() {
                         manuell = true;
                     }
@@ -216,6 +273,10 @@ impl DxfViewer {
                     aktion = Some(false);
                 }
             });
+            if let Some(text) = &hinweis {
+                ui.add_space(4.0);
+                ui.colored_label(FARBE_WARNUNG, text);
+            }
         });
 
         if umschalten {
@@ -308,6 +369,20 @@ mod tests {
         d.aktiv = true;
         assert!(!d.kann_uebernehmen());
         assert_eq!(d.hoehe, "5.000");
+    }
+
+    #[test]
+    fn getrennte_erfassung_wird_erkannt() {
+        let mut d = MessdatenEingabe::neu(1.0, 2.0, "A", 0.0, "", "0.000");
+        assert!(d.getrennt_hinweis(Some(10.0), Some(100.0)).is_none());
+        d.uebernimm_messung(&voll());
+        let (hz, v) = (d.mess_hz.unwrap(), d.mess_v.unwrap());
+        assert!(d.getrennt_hinweis(Some(hz + 0.0015), Some(v)).is_none());
+        assert!(d.getrennt_hinweis(Some(hz + 0.0030), Some(v)).is_some());
+        assert!(d.getrennt_hinweis(Some(hz), Some(v - 0.0030)).is_some());
+        // Übergang über den Nullpunkt: 399.9990 gegen 0.0005 sind nur 1,5 mgon
+        d.mess_hz = Some(399.999);
+        assert!(d.getrennt_hinweis(Some(0.0005), Some(v)).is_none());
     }
 
     #[test]

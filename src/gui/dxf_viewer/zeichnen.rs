@@ -70,7 +70,21 @@ const ROT_FARBEN: KnopfFarben = farben((150, 38, 38), (255, 255, 255), (120, 28,
 /// Inhalt eines Seitenleistenknopfes.
 enum Inhalt {
     Bild(egui::ImageSource<'static>),
+    /// Bild, das den Knopf bis auf einen schmalen Rand ausfüllt.
+    BildVoll(egui::ImageSource<'static>),
     Text(&'static str, f32),
+}
+
+/// Abstand des vollflächigen Bildes zum Knopfrand [pt].
+const BILD_VOLL_RAND: f32 = 2.0;
+
+/// Icon der Module Freie Stationierung und Polarpunkte: füllt den ganzen Knopf.
+fn modul_bild(name: &str) -> Inhalt {
+    use egui::include_image;
+    Inhalt::BildVoll(match name {
+        "freie_stationierung" => include_image!("../../../icons/freie_stationierung.png"),
+        _ => include_image!("../../../icons/polarpunkte.png"),
+    })
 }
 
 fn bild(name: &str) -> Inhalt {
@@ -92,7 +106,13 @@ fn bild(name: &str) -> Inhalt {
 
 fn seitenknopf(ui: &mut egui::Ui, inhalt: Inhalt, f: KnopfFarben, tooltip: &str) -> bool {
     let groesse = Vec2::splat(KNOPF_GROESSE);
+    if let Inhalt::BildVoll(quelle) = inhalt {
+        let antwort = ui.add_sized(groesse, egui::Button::new("").fill(f.fill).stroke(Stroke::new(1.0, f.rand)));
+        egui::Image::new(quelle).paint_at(ui, antwort.rect.shrink(BILD_VOLL_RAND));
+        return antwort.on_hover_text(tooltip).clicked();
+    }
     let knopf = match inhalt {
+        Inhalt::BildVoll(_) => unreachable!(),
         Inhalt::Bild(quelle) => egui::Button::image(egui::Image::new(quelle).fit_to_exact_size(Vec2::splat(26.0))),
         Inhalt::Text(text, groesse_pt) => {
             egui::Button::new(egui::RichText::new(text).strong().size(groesse_pt).color(f.fore))
@@ -168,7 +188,7 @@ impl DxfViewer {
             }
             if ui
                 .checkbox(&mut self.residuen_sichtbar, text("Residuen"))
-                .on_hover_text("Residuen + Fehlerellipsen ein-/ausblenden\nWenn aktiv: Mausrad skaliert die Ellipsen")
+                .on_hover_text("Residuen, Residuenellipsen und Konfidenzellipse des Standpunkts ein-/ausblenden\nWenn aktiv: Mausrad skaliert die Ellipsen")
                 .changed()
             {
                 projekt.einstellungen.residual_visible = self.residuen_sichtbar;
@@ -243,10 +263,6 @@ impl DxfViewer {
                     self.dxf_sichtbar = !self.dxf_sichtbar;
                 }
                 ui.add_space(6.0);
-                if seitenknopf(ui, bild("dxf_export"), farben(BASIS, (200, 205, 225), BASIS_RAND), "Als DXF exportieren") {
-                    self.oeffne_export_dialog();
-                }
-                ui.add_space(6.0);
                 if seitenknopf(ui, bild("new"), farben(BASIS, (200, 205, 225), BASIS_RAND), "DXF leeren") {
                     self.dialog = Some(Dialog::DxfLeeren);
                 }
@@ -302,8 +318,12 @@ impl DxfViewer {
                     self.wunsch = Some(Wunsch::Aufnahmetest);
                 }
                 ui.add_space(6.0);
-                if seitenknopf(ui, Inhalt::Text("⊕F", 11.0), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Freie Stationierung") {
+                if seitenknopf(ui, modul_bild("freie_stationierung"), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Freie Stationierung") {
                     self.wunsch = Some(Wunsch::FreieStationierung);
+                }
+                ui.add_space(6.0);
+                if seitenknopf(ui, modul_bild("polarpunkte"), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Polarpunkte") {
+                    self.wunsch = Some(Wunsch::Polarpunkte);
                 }
                 ui.add_space(6.0);
                 if seitenknopf(

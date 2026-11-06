@@ -34,7 +34,6 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
             Ansicht::Projekt(dialog) => {
                 zurueck = dialog.zeichne(ui, &mut app.projekt);
             }
-            Ansicht::FreieStationierung(ansicht) => ansicht.zeichne(ui, &mut app.projekt),
             Ansicht::Projektdaten(ansicht) => ansicht.zeichne(ui, &mut app.projekt),
             Ansicht::Rechenparameter(ansicht) => ansicht.zeichne(ui, &mut app.projekt),
             Ansicht::Kommunikation(ansicht) => {
@@ -48,9 +47,6 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
             }
             Ansicht::Konvertierung(ansicht) => {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &app.projekt));
-            }
-            Ansicht::Polarpunkte(ansicht) => {
-                zurueck = ansicht.zeichne(ui, &mut app.projekt);
             }
             Ansicht::Aufnahmetest(ansicht) => {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.geraet));
@@ -134,7 +130,12 @@ fn zeichne_start(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
     let mut gewaehlt: Option<&str> = None;
     let mut knopf = |ui: &mut egui::Ui, modul: &Modul, breite: f32, hoehe: f32| {
         let text = egui::RichText::new(modul.name).color(egui::Color32::WHITE).size(modul.schriftgroesse);
-        let button = egui::Button::new(text).fill(modul.farbe).min_size(egui::Vec2::new(breite, hoehe));
+        let button = match modul_icon(modul.name) {
+            Some(icon) => egui::Button::image_and_text(egui::Image::new(icon).fit_to_exact_size(egui::Vec2::splat(hoehe - ICON_RAND)), text),
+            None => egui::Button::new(text),
+        }
+        .fill(modul.farbe)
+        .min_size(egui::Vec2::new(breite, hoehe));
         if ui.add(button).clicked() {
             gewaehlt = Some(modul.name);
         }
@@ -196,6 +197,18 @@ const MODUL_ZEILEN: [[Modul; 2]; 5] = [
     ],
 ];
 
+/// Abstand des Modul-Icons zum Knopfrand (Summe oben und unten) in Punkten.
+const ICON_RAND: f32 = 10.0;
+
+/// Icon eines Moduls, falls vorhanden.
+fn modul_icon(name: &str) -> Option<egui::ImageSource<'static>> {
+    match name {
+        "Freie Stationierung" => Some(egui::include_image!("../../icons/freie_stationierung.png")),
+        "Polarpunkte" => Some(egui::include_image!("../../icons/polarpunkte.png")),
+        _ => None,
+    }
+}
+
 /// Öffnet das Modul mit diesem Namen.
 fn oeffne_modul(app: &mut FeldbuchApp, name: &str) {
     protokoll::log("FORM", &format!("Modul geöffnet: {name}"));
@@ -206,8 +219,14 @@ fn oeffne_modul(app: &mut FeldbuchApp, name: &str) {
         }
         "Projekt" => Ansicht::Projekt(projekt_dialog::ProjektDialog::neu()),
         "Projektdaten" => Ansicht::Projektdaten(projektdaten_ansicht::ProjektdatenAnsicht::default()),
-        "Freie Stationierung" => Ansicht::FreieStationierung(Box::new(super::freie_stationierung::FreieStationierungAnsicht::neu(&app.projekt))),
-        "Polarpunkte" => Ansicht::Polarpunkte(Box::new(super::polarpunkte::PolarpunkteAnsicht::neu(&app.projekt))),
+        "Freie Stationierung" => {
+            app.oeffne_freie_stationierung();
+            return;
+        }
+        "Polarpunkte" => {
+            app.oeffne_polarpunkte();
+            return;
+        }
         "Berechnungen" => Ansicht::Berechnungen(Default::default()),
         "Absteckung" => Ansicht::Absteckung(Default::default()),
         "Datenmanager" => Ansicht::Datenmanager(Default::default()),

@@ -5,6 +5,7 @@
 use eframe::egui;
 
 use crate::daten::projekt::Projekt;
+use crate::daten::rechenparameter::{DXF_GROESSE_BEREICH_MM, DXF_MASSSTAB_BEREICH};
 use crate::rechnen::polar::MassstabModus;
 
 /// Größte Schrittweite der Zahlenfelder.
@@ -31,7 +32,7 @@ impl RechenparameterAnsicht {
         });
 
         bereich(ui, "Stationierung und Standardabweichung", egui::Color32::from_rgb(55, 120, 80), |ui| {
-            ui.label("Freier Maßstab");
+            ui.label("Freier Maßstab (Helmert-Näherung, nicht ausgeglichen)");
             ui.checkbox(&mut p.freier_massstab, "");
             ui.end_row();
             ui.label("3D-Berechnung");
@@ -98,6 +99,32 @@ impl RechenparameterAnsicht {
             ui.end_row();
             ui.label("Maßstabsleiste");
             ui.label("Wird immer mit ausgegeben");
+            ui.end_row();
+        });
+        bereich(ui, "DXF-Viewer – DXF-Export", egui::Color32::from_rgb(60, 100, 160), |ui| {
+            ui.label("Zielmaßstab 1 :");
+            ui.add(
+                egui::DragValue::new(&mut p.dxf.massstab)
+                    .range(DXF_MASSSTAB_BEREICH.0..=DXF_MASSSTAB_BEREICH.1)
+                    .speed(10.0)
+                    .fixed_decimals(0),
+            );
+            ui.end_row();
+            ui.label("Symbolgröße auf dem Papier [mm]");
+            ui.add(
+                egui::DragValue::new(&mut p.dxf.symbol_mm)
+                    .range(DXF_GROESSE_BEREICH_MM.0..=DXF_GROESSE_BEREICH_MM.1)
+                    .speed(0.1)
+                    .fixed_decimals(1),
+            );
+            ui.end_row();
+            ui.label("Textgröße auf dem Papier [mm]");
+            ui.add(
+                egui::DragValue::new(&mut p.dxf.text_mm)
+                    .range(DXF_GROESSE_BEREICH_MM.0..=DXF_GROESSE_BEREICH_MM.1)
+                    .speed(0.1)
+                    .fixed_decimals(1),
+            );
             ui.end_row();
         });
         ui.label("PDF-Ausschnitt im DXF-Viewer einschalten. Mindestgrößen gelten auf dem Papier.");

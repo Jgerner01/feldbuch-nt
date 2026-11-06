@@ -1,14 +1,17 @@
 // Zweck:    Freie Stationierung nach Grillmayer & Blauensteiner (VGI 4/2022): Helmert-Näherung
-//           (Methode 3.1) und vollständige gewichtete Ausgleichung (Methode 3.2), Festpunktzwang.
+//           (Methode 3.1) für Näherungskoordinaten, Orientierung und Maßstab, danach gewichtete Lageausgleichung
+//           (Methode 3.2) mit den Unbekannten R, H und Orientierung. Der Maßstab wird NICHT mitausgeglichen,
+//           er bleibt der Wert der Helmert-Näherung. Festpunktzwang.
+//           Aus der Normalmatrix der Lageausgleichung folgt die Konfidenzellipse des Standpunkts.
 //           Beobachtungen (Richtung/Strecke/Höhe) sind je Punkt einzeln aktivierbar.
-//           Sonderfall n = 2: direkte Helmert-Lösung ohne Ausgleichung (r = 0).
+//           Sonderfall n = 2: direkte Helmert-Lösung ohne Ausgleichung (r = 0, keine Konfidenzellipse).
 // Hardware: keine
 // Autor:    Johann Gerner
 
 use std::f64::consts::PI;
 
 use crate::daten::modelle::{
-    InstrumentParameter, PunktResiduum, StationierungsErgebnis, StationierungsPunkt,
+    InstrumentParameter, Konfidenzellipse, PunktResiduum, StationierungsErgebnis, StationierungsPunkt,
 };
 
 /// Umrechnung gon → rad.
@@ -45,6 +48,11 @@ const HOEHEN_GEWICHT_EPS: f64 = 1e-9;
 const HOEHEN_GRENZE_FAKTOR: f64 = 3.0;
 /// Millimeter pro Meter.
 const MM_PRO_M: f64 = 1000.0;
+/// Konfidenzniveau der Standpunkt-Ellipse.
+const KONFIDENZ_NIVEAU: f64 = 0.95;
+
+/// Ergebnis der Lageausgleichung: Quer- und Längsresiduen [m], Iterationen, Konvergenz, letzte Normalmatrix.
+type Ausgleichung = (Vec<f64>, Vec<f64>, usize, bool, Option<[[f64; 3]; 3]>);
 
 /// Optionen der Berechnung (Standardwerte wie in der C#-Version).
 #[derive(Clone, Debug)]
@@ -133,7 +141,7 @@ pub fn berechnen(
 
     // Schritt 2: Ausgleichung oder Direktlösung
     let (mut r_fs, mut h_fs) = (r0, h0);
-    let (v_quer_m, v_str_m, iterationen, konvergiert) = if n >= 3 {
+    let (v_quer_m, v_str_m, iterationen, konvergiert, kov_normal) = if n >= 3 {
         voll_ausgleichung(punkte, &hz_rad, &dh, &param, &akt_hz, &akt_str, &mut r_fs, &mut h_fs, &mut o0)
     } else {
         let mut v_quer = vec![0.0; n];
@@ -145,7 +153,7 @@ pub fn berechnen(
             v_quer[i] = norm_winkel(d_r.atan2(d_h) - hz_rad[i] - o0) * s0i;
             v_str[i] = dh[i] - s0i;
         }
-        (v_quer, v_str, 0, true)
+        (v_quer, v_str, 0, true, None)
     };
 
     // Schritt 3: Standardabweichung der Gewichtseinheit
@@ -170,6 +178,7 @@ pub fn berechnen(
         }
     }
     let s0_mm = if r > 0 { (vtpv / f64::from(r)).sqrt() } else { 0.0 };
+    let konfidenz = kov_normal.and_then(|normal| konfidenz_ellipse(&normal, param.m0_mm, s0_mm, r));
 
     // Schritt 4: Höhenberechnung
     let mut h_mittel = 0.0;
@@ -256,6 +265,52 @@ pub fn berechnen(
         ist_lokales_system: false,
         warnung_hoehe: warn_hoehe,
         residuen,
+        konfidenz,
+    })
+}
+
+/// Konfidenzfaktor k der zweidimensionalen Ellipse beim Niveau `KONFIDENZ_NIVEAU`.
+/// A priori (`None`, σ0 bekannt): k² = χ²(2; 1−α) = −2·ln α.
+/// A posteriori (`Some(r)`, s0 aus r Freiheitsgraden): k² = 2·F(2, r; 1−α) = r·(α^(−2/r) − 1).
+fn konfidenzfaktor(redundanz: Option<i32>) -> f64 {
+    let alpha = 1.0 - KONFIDENZ_NIVEAU;
+    match redundanz {
+        None => (-2.0 * alpha.ln()).sqrt(),
+        Some(r) => {
+            let r = f64::from(r.max(1));
+            (r * (alpha.powf(-2.0 / r) - 1.0)).sqrt()
+        }
+    }
+}
+
+/// Konfidenzellipse der Standpunktlage aus der Normalmatrix N der Lageausgleichung (Unbekannte R, H, Orientierung).
+/// Kovarianzmatrix K = σ0² · N⁻¹; σ0 = s0 (a posteriori) bei Redundanz > 0, sonst die a-priori-Genauigkeit m0.
+fn konfidenz_ellipse(normal: &[[f64; 3]; 3], m0_mm: f64, s0_mm: f64, redundanz: i32) -> Option<Konfidenzellipse> {
+    let spalte = |j: usize| {
+        let mut einheit = [0.0_f64; 3];
+        einheit[j] = 1.0;
+        gauss_elim(normal, &einheit)
+    };
+    let (c0, c1) = (spalte(0)?, spalte(1)?);
+    let (q_rr, q_hh, q_rh) = (c0[0], c1[1], 0.5 * (c0[1] + c1[0]));
+    if !(q_rr > 0.0 && q_hh > 0.0) {
+        return None;
+    }
+    let a_priori = redundanz <= 0;
+    let sigma0_mm = if a_priori { m0_mm } else { s0_mm };
+    let varianz0 = sigma0_mm * sigma0_mm;
+    let (k_rr, k_hh, k_rh) = (varianz0 * q_rr, varianz0 * q_hh, varianz0 * q_rh);
+    let mittel = 0.5 * (k_rr + k_hh);
+    let radius = (0.25 * (k_rr - k_hh).powi(2) + k_rh * k_rh).sqrt();
+    let faktor = konfidenzfaktor(if a_priori { None } else { Some(redundanz) });
+    Some(Konfidenzellipse {
+        a_mm: faktor * (mittel + radius).sqrt(),
+        b_mm: faktor * (mittel - radius).max(0.0).sqrt(),
+        theta_rad: 0.5 * (2.0 * k_rh).atan2(k_rr - k_hh),
+        sigma_r_mm: k_rr.sqrt(),
+        sigma_h_mm: k_hh.sqrt(),
+        niveau: KONFIDENZ_NIVEAU,
+        a_priori,
     })
 }
 
@@ -343,8 +398,9 @@ fn helmert_transformation(
     Ok((r_fs, h_fs, o0, m))
 }
 
-/// Vollständige gewichtete Ausgleichung (Methode 3.2).
+/// Gewichtete Lageausgleichung (Methode 3.2) mit den Unbekannten R, H und Orientierung; der Maßstab ist nicht dabei.
 /// Inaktive Beobachtungen erhalten das Gewicht 0, ihre Residuen werden dennoch berechnet.
+/// Liefert zusätzlich die Normalmatrix der letzten Iteration (für die Kovarianz).
 #[allow(clippy::too_many_arguments)]
 fn voll_ausgleichung(
     punkte: &[StationierungsPunkt],
@@ -356,7 +412,7 @@ fn voll_ausgleichung(
     r_fs: &mut f64,
     h_fs: &mut f64,
     o0: &mut f64,
-) -> (Vec<f64>, Vec<f64>, usize, bool) {
+) -> Ausgleichung {
     let n = punkte.len();
     let m_obs = 2 * n;
     let m0_m = param.m0_mm / MM_PRO_M;
@@ -365,6 +421,7 @@ fn voll_ausgleichung(
 
     let mut iterationen = 0;
     let mut konvergiert = false;
+    let mut letzte_normal: Option<[[f64; 3]; 3]> = None;
 
     for iter in 0..MAX_ITERATIONEN {
         let mut a = vec![[0.0_f64; 3]; m_obs];
@@ -411,8 +468,10 @@ fn voll_ausgleichung(
         }
 
         let Some(dx) = gauss_elim(&normal, &b_vec) else {
+            letzte_normal = None;
             break;
         };
+        letzte_normal = Some(normal);
         *r_fs += dx[0];
         *h_fs += dx[1];
         *o0 = norm_winkel(*o0 + dx[2]);
@@ -437,7 +496,7 @@ fn voll_ausgleichung(
         v_quer[i] = norm_winkel(d_r.atan2(d_h) - hz_rad[i] - *o0) * s0;
         v_str[i] = dh[i] - s0;
     }
-    (v_quer, v_str, iterationen, konvergiert)
+    (v_quer, v_str, iterationen, konvergiert, letzte_normal)
 }
 
 /// Normiert einen Winkel auf (−π, π].
@@ -485,6 +544,30 @@ fn gauss_elim(a: &[[f64; 3]; 3], b: &[f64; 3]) -> Option<[f64; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn konfidenzfaktor_a_priori_und_a_posteriori() {
+        // χ²(2; 0,95) = 5,991 → k = 2,4477
+        assert!((konfidenzfaktor(None) - 2.447_746_8).abs() < 1e-6);
+        // F(2, 10; 0,95) = 4,103 → k = sqrt(2 · 4,103) = 2,8646
+        assert!((konfidenzfaktor(Some(10)) - 2.864_6).abs() < 1e-3);
+        // Viele Freiheitsgrade nähern sich dem a-priori-Wert
+        assert!((konfidenzfaktor(Some(1_000_000)) - konfidenzfaktor(None)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn konfidenzellipse_aus_normalmatrix() {
+        // N = diag(4, 1, 1) → Q = diag(0,25; 1; 1); m0 = 2 mm → σR = 1 mm, σH = 2 mm; große Achse in H-Richtung
+        let normal = [[4.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+        let k = konfidenz_ellipse(&normal, 2.0, 0.0, 0).unwrap();
+        assert!(k.a_priori);
+        let faktor = konfidenzfaktor(None);
+        assert!((k.sigma_r_mm - 1.0).abs() < 1e-9 && (k.sigma_h_mm - 2.0).abs() < 1e-9);
+        assert!((k.a_mm - faktor * 2.0).abs() < 1e-9 && (k.b_mm - faktor).abs() < 1e-9);
+        assert!((k.theta_rad - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+        // Singuläre Normalmatrix: keine Ellipse
+        assert!(konfidenz_ellipse(&[[0.0; 3]; 3], 2.0, 0.0, 0).is_none());
+    }
 
     /// Wahre Station für die Testdaten.
     const STAND_R: f64 = 1000.0;

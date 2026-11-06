@@ -14,7 +14,7 @@ use crate::grundlagen::format::de;
 const BOGEN_SCHRITT_GRAD: f64 = 3.0;
 /// Mindestanzahl Segmente eines Bogens.
 const BOGEN_MIN_SEGMENTE: usize = 8;
-/// Punkte der Fehlerellipse.
+/// Punkte der Residuen- und Konfidenzellipse.
 const ELLIPSEN_PUNKTE: usize = 36;
 /// Strichlänge gepunkteter Kreise [px].
 const PUNKT_STRICH_PX: f32 = 1.5;
@@ -32,6 +32,8 @@ const FARBE_BESCHRIFTUNG: Color32 = Color32::from_rgb(0, 160, 60);
 const FARBE_MARKER: Color32 = Color32::from_rgb(200, 140, 30);
 /// Farbe der gemessenen Neupunkte (blau).
 const FARBE_GEMESSEN: Color32 = Color32::from_rgb(20, 80, 200);
+/// Farbe der Konfidenzellipse des Standpunkts.
+const FARBE_KONFIDENZ: Color32 = Color32::from_rgb(200, 40, 40);
 /// Beschriftungsfarbe der gemessenen Neupunkte (dunkelblau).
 const FARBE_GEMESSEN_TEXT: Color32 = Color32::from_rgb(10, 60, 160);
 
@@ -118,8 +120,10 @@ pub enum Art {
     Gemessen(NeupunktErgebnis),
     /// Residual-Marker eines Anschlusspunkts.
     Residual { res: PunktResiduum, wx: f64, wy: f64 },
-    /// Skalierbare Fehlerellipse.
-    Ellipse { nr: String, r: f64, h: f64, v_strecke_mm: f64, v_quer_mm: f64, phi: f64, skalierung: f64 },
+    /// Skalierbare Ellipse. `konfidenz = false`: Residuenellipse eines Anschlusspunkts (Halbachsen = Längs- und Querresiduum,
+    /// keine statistische Aussage); `konfidenz = true`: Konfidenzellipse des Standpunkts aus der Kovarianzmatrix
+    /// (Halbachsen a und b in `v_strecke_mm` und `v_quer_mm`, Richtung der großen Achse in `phi`).
+    Ellipse { nr: String, r: f64, h: f64, v_strecke_mm: f64, v_quer_mm: f64, phi: f64, skalierung: f64, konfidenz: bool },
     /// Beschriftung eines DXF-Punktes mit Punktnummer.
     Marker { nr: String, wx: f64, wy: f64 },
     /// Standpunkt im lokalen System (Ursprung).
@@ -332,8 +336,15 @@ impl DxfEntity {
                 "Anschlusspunkt {}  vQuer={} mm  vStr={} mm  D={} m",
                 res.punkt_nr, vorzeichen(res.v_quer_mm), vorzeichen(res.v_strecke_mm), de(res.strecke_h, 1)
             ),
+            Art::Ellipse { nr, v_strecke_mm, v_quer_mm, konfidenz: true, .. } => {
+                format!("Konfidenzellipse Standpunkt {nr}  a={} mm  b={} mm", de(*v_strecke_mm, 2), de(*v_quer_mm, 2))
+            }
             Art::Ellipse { nr, v_strecke_mm, v_quer_mm, .. } => {
-                format!("Fehlerellipse {nr}  vL={} mm  vQ={} mm", vorzeichen(*v_strecke_mm), vorzeichen(*v_quer_mm))
+                format!(
+                    "Residuenellipse {nr}  vL={} mm  vQ={} mm  (aus Residuen, keine Konfidenzellipse)",
+                    vorzeichen(*v_strecke_mm),
+                    vorzeichen(*v_quer_mm)
+                )
             }
             Art::Marker { nr, wx, wy } => format!("DXF-Punkt {nr}  R={}  H={}", de(*wx, 3), de(*wy, 3)),
             Art::LokalerStandpunkt { name } => {
@@ -402,8 +413,8 @@ impl DxfEntity {
             Art::Import { nr, wx, wy, hoehe } => zeichne_import(maler, ts(*wx, *wy), nr, *hoehe),
             Art::Gemessen(e) => zeichne_gemessen(maler, ts(e.r, e.h), e),
             Art::Residual { res, wx, wy } => zeichne_residual(maler, ts(*wx, *wy), res),
-            Art::Ellipse { r, h, v_strecke_mm, v_quer_mm, phi, skalierung, .. } => {
-                zeichne_ellipse(maler, a, *r, *h, *v_strecke_mm, *v_quer_mm, *phi, *skalierung);
+            Art::Ellipse { r, h, v_strecke_mm, v_quer_mm, phi, skalierung, konfidenz, .. } => {
+                zeichne_ellipse(maler, a, (*r, *h), (*v_strecke_mm, *v_quer_mm), *phi, *skalierung, *konfidenz);
             }
             Art::Marker { nr, wx, wy } => zeichne_marker(maler, ts(*wx, *wy), nr),
             Art::LokalerStandpunkt { name } => zeichne_lokaler_standpunkt(maler, ts(0.0, 0.0), name),
@@ -592,7 +603,7 @@ fn zeichne_residual(maler: &Painter, c: Pos2, res: &PunktResiduum) {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn zeichne_ellipse(maler: &Painter, a: &Ansicht, r: f64, h: f64, v_str: f64, v_quer: f64, phi: f64, skal: f64) {
+fn zeichne_ellipse(maler: &Painter, a: &Ansicht, (r, h): (f64, f64), (v_str, v_quer): (f64, f64), phi: f64, skal: f64, konfidenz: bool) {
     let min_r = 0.5 / a.scale;
     let ha = (v_str.abs() * 0.001 * skal).max(min_r);
     let hb = (v_quer.abs() * 0.001 * skal).max(min_r);
@@ -605,7 +616,7 @@ fn zeichne_ellipse(maler: &Painter, a: &Ansicht, r: f64, h: f64, v_str: f64, v_q
         })
         .collect();
     punkte.push(punkte[0]);
-    let stift = Stroke::new(1.5, FARBE_GEMESSEN);
+    let stift = Stroke::new(1.5, if konfidenz { FARBE_KONFIDENZ } else { FARBE_GEMESSEN });
     maler.add(Shape::line(punkte, stift));
     let c = a.zu_bildschirm(r, h);
     let d = 3.5;

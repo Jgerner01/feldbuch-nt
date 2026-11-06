@@ -10,6 +10,8 @@ use crate::daten::modelle::{StationierungsErgebnis, StationierungsPunkt};
 use crate::daten::rechenparameter::Rechenparameter;
 use crate::grundlagen::format::f;
 
+/// Umrechnung des Konfidenzniveaus (Anteil) in Prozent.
+const PROZENT: f64 = 100.0;
 /// Anzahl der Punkte, bei der die Direktlösung (Ähnlichkeitstransformation) gilt.
 const ZWEI_PUNKTE: usize = 2;
 
@@ -27,6 +29,21 @@ fn s0_info(erg: &StationierungsErgebnis, punkte: usize, par: &Rechenparameter) -
     } else {
         "Standardabw. s0:  -  (Redundanz r = 0, eindeutig bestimmt)".to_string()
     }
+}
+
+/// Konfidenzellipse des Standpunkts für das Protokoll (leer, wenn nicht bestimmt).
+fn konfidenz_info(erg: &StationierungsErgebnis) -> String {
+    erg.konfidenz
+        .as_ref()
+        .map(|k| {
+            format!(
+                "     Konfidenzellipse {} %:  a = {} mm  b = {} mm  [Massstab nicht ausgeglichen]",
+                f(k.niveau * PROZENT, 0),
+                f(k.a_mm, 2),
+                f(k.b_mm, 2)
+            )
+        })
+        .unwrap_or_default()
 }
 
 /// Protokoll der Freien Stationierung.
@@ -50,8 +67,15 @@ pub fn protokoll(
         ("H", f(erg.h, 3)),
         ("Hoehe", if erg.berechnung_3d { f(erg.hoehe, 3) } else { STRICH.to_string() }),
         ("Orientierung", f(erg.orientierung_gon, 4)),
-        ("Massstab", if par.freier_massstab { f(erg.massstab, 6) } else { "1.000000  [fixiert]".to_string() }),
-        ("S0Info", s0_info(erg, punkte.len(), par)),
+        (
+            "Massstab",
+            if par.freier_massstab {
+                format!("{}  [Helmert-Naeherung, nicht ausgeglichen]", f(erg.massstab, 6))
+            } else {
+                "1.000000  [fixiert]".to_string()
+            },
+        ),
+        ("S0Info", format!("{}{}", s0_info(erg, punkte.len(), par), konfidenz_info(erg))),
     ]);
     let wert = |aktiv: bool, v: f64| if aktiv && !v.is_nan() { signiert(v, 1) } else { STRICH.to_string() };
     let nicht_null = |v: f64, stellen: usize| if v != 0.0 { f(v, stellen) } else { STRICH.to_string() };
@@ -125,7 +149,7 @@ mod tests {
         assert_eq!(z[2]["vQuer"], "-", "ohne Residuum");
         assert_eq!(z[0]["Hoehe"], "-");
         assert!(p.felder["S0Info"].contains("Redundanz r:  3") && p.felder["S0Info"].contains("konvergiert"));
-        assert_eq!(p.felder["Massstab"], "1.000012");
+        assert_eq!(p.felder["Massstab"], "1.000012  [Helmert-Naeherung, nicht ausgeglichen]");
         assert_eq!(p.felder["Hoehe"], "-", "2D");
     }
 

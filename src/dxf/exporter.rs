@@ -13,7 +13,7 @@ const ACI_BLAU: i32 = 5;
 const ACI_BRAUN: i32 = 30;
 /// Millimeter je Meter (Maßstabsumrechnung).
 const MM_PRO_M: f64 = 1000.0;
-/// Stützpunkte der als Polylinie geschriebenen Fehlerellipse.
+/// Stützpunkte der als Polylinie geschriebenen Ellipse.
 const ELLIPSEN_PUNKTE: usize = 36;
 /// Faktor für Länge und Innenabstand der Standpunktkreuze.
 const KREUZ_ARM: f64 = 1.6;
@@ -25,16 +25,23 @@ const NEUE_ZEILE: &str = "\r\n";
 /// Name für unbekannte Quellen und Standpunkte.
 const UNBEKANNT: &str = "Unbekannt";
 
-/// Fehlerellipse: Mittelpunkt, Halbachsen-Residuen [mm], Richtung [rad] und Skalierung.
+/// Ellipse: Mittelpunkt, Halbachsen [mm], Richtung [rad] und Skalierung.
+/// `konfidenz = false`: Residuenellipse (Halbachsen = Längs- und Querresiduum, keine statistische Aussage);
+/// `konfidenz = true`: Konfidenzellipse des Standpunkts aus der Kovarianzmatrix (a, b in `v_strecke_mm`, `v_quer_mm`).
 #[derive(Clone, Copy, Debug)]
-pub struct Fehlerellipse {
+pub struct Ellipse {
     pub r: f64,
     pub h: f64,
     pub v_strecke_mm: f64,
     pub v_quer_mm: f64,
     pub phi_rad: f64,
     pub skalierung: f64,
+    pub konfidenz: bool,
 }
+
+/// Layer der Residuenellipsen und der Konfidenzellipse.
+const LAYER_RESIDUENELLIPSEN: &str = "Residuenellipsen";
+const LAYER_KONFIDENZELLIPSE: &str = "Konfidenzellipse";
 
 /// Größenangaben des Exports.
 #[derive(Clone, Copy, Debug)]
@@ -122,7 +129,7 @@ impl Schreiber {
     }
 
     /// Ellipse als geschlossene Polylinie (AC1009 kennt kein ELLIPSE-Element).
-    fn ellipse(&mut self, e: &Fehlerellipse, layer: &str) {
+    fn ellipse(&mut self, e: &Ellipse, layer: &str) {
         let a = e.v_strecke_mm.abs() * 0.001 * e.skalierung;
         let b = e.v_quer_mm.abs() * 0.001 * e.skalierung;
         let (cos_phi, sin_phi) = (e.phi_rad.cos(), e.phi_rad.sin());
@@ -172,7 +179,7 @@ pub fn erzeuge(
     import: &[ImportPunkt],
     gemessen: &[NeupunktErgebnis],
     einstellung: &Einstellung,
-    ellipsen: &[Fehlerellipse],
+    ellipsen: &[Ellipse],
 ) -> String {
     let mut layer: Vec<(String, i32)> = Vec::new();
     if feldbuch.iter().any(|p| p.typ == TYP_STANDPUNKT) {
@@ -191,8 +198,11 @@ pub fn erzeuge(
         let pfx = format!("Gemessen_{sp}");
         layer.extend([(format!("{pfx}_Symbol"), ACI_BLAU), (format!("{pfx}_Nummer"), ACI_BLAU), (format!("{pfx}_Hoehe"), ACI_BRAUN)]);
     }
-    if !ellipsen.is_empty() {
-        layer.push(("Fehlerellipsen".into(), ACI_BLAU));
+    if ellipsen.iter().any(|e| !e.konfidenz) {
+        layer.push((LAYER_RESIDUENELLIPSEN.into(), ACI_BLAU));
+    }
+    if ellipsen.iter().any(|e| e.konfidenz) {
+        layer.push((LAYER_KONFIDENZELLIPSE.into(), ACI_ROT));
     }
 
     let mut s = Schreiber { text: String::with_capacity(16 * 1024) };
@@ -261,7 +271,7 @@ pub fn erzeuge(
         s.punkt(einstellung, (p.r, p.h), &p.punkt_nr, p.ist_3d.then_some(p.hoehe), (&format!("{pfx}_Symbol"), &format!("{pfx}_Nummer"), &format!("{pfx}_Hoehe")));
     }
     for e in ellipsen {
-        s.ellipse(e, "Fehlerellipsen");
+        s.ellipse(e, if e.konfidenz { LAYER_KONFIDENZELLIPSE } else { LAYER_RESIDUENELLIPSEN });
     }
     s.gruppe(0, "ENDSEC");
     s.gruppe(0, "EOF");
@@ -300,14 +310,14 @@ mod tests {
         let feldbuch = [fb("S1", "Standpunkt", 0.0, false), fb("N1", "Neupunkt", 12.5, true)];
         let import = [ImportPunkt { punkt_nr: "I1".into(), r: 1.0, h: 2.0, hoehe: 3.0, quelle: "Plan Nord.kor".into(), ..ImportPunkt::default() }];
         let gemessen = [NeupunktErgebnis { punkt_nr: "G1".into(), r: 5.0, h: 6.0, standpunkt_nr: String::new(), ..NeupunktErgebnis::default() }];
-        let ellipsen = [Fehlerellipse { r: 0.0, h: 0.0, v_strecke_mm: 5.0, v_quer_mm: 3.0, phi_rad: 0.5, skalierung: 100.0 }];
+        let ellipsen = [Ellipse { r: 0.0, h: 0.0, v_strecke_mm: 5.0, v_quer_mm: 3.0, phi_rad: 0.5, skalierung: 100.0, konfidenz: false }];
         let dxf = erzeuge(&feldbuch, &import, &gemessen, &Einstellung::default(), &ellipsen);
         assert!(dxf.starts_with("  0\r\nSECTION\r\n  2\r\nHEADER\r\n"));
         assert!(dxf.trim_end().ends_with("EOF"));
         assert_eq!(zaehle(&dxf, "AC1009"), 1);
         // Layer: 3 + 3 + 3 + 3 + 1 Ellipsen + Layer "0" = 14
         assert!(dxf.contains(" 70\r\n14\r\n"));
-        assert!(dxf.contains("Koordinaten_Plan_Nord_Symbol") && dxf.contains("Gemessen_Unbekannt_Nummer") && dxf.contains("Fehlerellipsen"));
+        assert!(dxf.contains("Koordinaten_Plan_Nord_Symbol") && dxf.contains("Gemessen_Unbekannt_Nummer") && dxf.contains("Residuenellipsen"));
         // 4 Kreise (S1, N1, I1, G1), Standpunktkreuz = 4 Linien, Ellipse = 36 Stützpunkte
         assert_eq!(zaehle(&dxf, "CIRCLE"), 4);
         assert_eq!(zaehle(&dxf, "LINE"), 4);

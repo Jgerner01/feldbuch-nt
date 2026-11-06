@@ -74,7 +74,7 @@ pub struct Szene {
     pub formen: Vec<DruckForm>,
 }
 
-/// Papiergröße der Punktzeichen; echte Geometrie und Fehlerellipsen bleiben maßstäblich.
+/// Papiergröße der Punktzeichen; echte Geometrie und Ellipsen bleiben maßstäblich.
 fn symbol_spanne(e: &DxfEntity) -> Option<f32> {
     use super::entity::KatasterPunktTyp;
     Some(match &e.art {
@@ -247,7 +247,7 @@ pub fn erzeuge(
             );
             let text = if let Some(f) = ellipsen {
                 format!(
-                    "{}  |  Fehlerellipsen × {}",
+                    "{}  |  Residuen-/Konfidenzellipsen × {}",
                     titel,
                     crate::grundlagen::format::de(f, 1)
                 )
@@ -885,6 +885,7 @@ mod tests {
                     v_quer_mm: 10.0,
                     phi: 0.3,
                     skalierung: 1000.0,
+                    konfidenz: false,
                 },
             },
         ];

@@ -33,6 +33,8 @@ const VOLLKREIS_GON: f64 = 400.0;
 const GON_ZU_RAD: f64 = std::f64::consts::PI / 200.0;
 /// Länge der Zielrichtungslinie als Anteil der kleineren Zeichenflächenseite.
 const ZIEL_LINIE_ANTEIL: f32 = 0.45;
+/// Zeilenabstand der beiden Winkelwerte am Ende der Zielrichtung [px].
+const ZIEL_TEXT_ZEILE_PX: f32 = 13.0;
 /// Farbe der Zielrichtung.
 const ZIEL_FARBE: Color32 = Color32::from_rgb(220, 30, 30);
 /// Strichlänge und Lücke der gestrichelten Zielrichtung [px].
@@ -44,9 +46,24 @@ const PRISMEN: [(&str, f64, &str); 5] = [
     ("GPR1 / GPH1P", 0.0, "Standard-Vollprisma"),
     ("GRZ4 / GRZ122", 0.0, "360°-Rundprisma"),
     ("GMP111 / GMP101", -17.5, "Miniaturprisma"),
-    ("GPH3P / GPR3", 0.0, "Dreifach-Prismensatz"),
     ("Folie / Kleintarget", 34.4, "Reflexfolie (EDM Tape)"),
+    ("Reflektorlos", 0.0, "Messung ohne Prisma (RL)"),
 ];
+
+/// Abbildung zum Prismentyp (rechts im Auswahlknopf).
+fn prisma_bild(name: &str) -> egui::ImageSource<'static> {
+    match name {
+        "GPR1 / GPH1P" => egui::include_image!("../../../icons/prisma_standard.png"),
+        "GRZ4 / GRZ122" => egui::include_image!("../../../icons/prisma_360.png"),
+        "GMP111 / GMP101" => egui::include_image!("../../../icons/prisma_mini.png"),
+        "Folie / Kleintarget" => egui::include_image!("../../../icons/prisma_folie.png"),
+        _ => egui::include_image!("../../../icons/prisma_reflektorlos.png"),
+    }
+}
+/// Kantenlänge der Abbildung im Auswahlknopf [px].
+const PRISMA_BILD_PX: f32 = 40.0;
+/// Abstand der Abbildung zum rechten Knopfrand [px].
+const PRISMA_BILD_RAND: f32 = 8.0;
 /// Zulässiger Bereich der Prismenkonstante [mm].
 const PRISMA_GRENZE_MM: f64 = 50.0;
 /// Name bei manuell eingegebener Konstante.
@@ -54,7 +71,7 @@ const PRISMA_MANUELL: &str = "Manuell";
 /// Toleranz beim Vergleich der Konstanten [mm].
 const PRISMA_TOLERANZ_MM: f64 = 1e-6;
 /// Abstand der Dialogtasten [px].
-const PRISMA_KNOPF: Vec2 = Vec2::new(150.0, 44.0);
+const PRISMA_KNOPF: Vec2 = Vec2::new(150.0, 52.0);
 
 fn vorzeichen_text(mm: f64) -> String {
     if mm > 0.0 { format!("+{}", f(mm, 1)) } else { f(mm, 1) }
@@ -64,11 +81,20 @@ fn finde_prisma(mm: f64) -> Option<usize> {
     PRISMEN.iter().position(|p| (p.1 - mm).abs() < PRISMA_TOLERANZ_MM)
 }
 
+/// Gespeicherter Prismenname hat Vorrang, weil mehrere Typen die Konstante 0,0 mm haben.
+fn finde_prisma_nach_name(name: &str, mm: f64) -> Option<usize> {
+    PRISMEN
+        .iter()
+        .position(|p| p.0 == name && (p.1 - mm).abs() < PRISMA_TOLERANZ_MM)
+        .or_else(|| finde_prisma(mm))
+}
+
 impl DxfViewer {
     /// Öffnet die Prismenauswahl mit der aktuellen Konstante.
     pub(super) fn oeffne_prisma_dialog(&mut self, projekt: &Projekt) {
         let aktuell = projekt.einstellungen.prisma_konstante_mm;
-        self.dialog = Some(Dialog::Prisma { auswahl: finde_prisma(aktuell), konstante: f(aktuell, 1) });
+        let auswahl = finde_prisma_nach_name(&projekt.einstellungen.prisma_name, aktuell);
+        self.dialog = Some(Dialog::Prisma { auswahl, konstante: f(aktuell, 1) });
     }
 
     pub(super) fn zeichne_prisma_dialog(
@@ -93,7 +119,16 @@ impl DxfViewer {
                         .fill(fill)
                         .stroke(Stroke::new(1.0, rand))
                         .min_size(Vec2::new(PRISMA_KNOPF.x * 2.0, PRISMA_KNOPF.y));
-                    if ui.add(knopf).clicked() {
+                    let antwort = ui.add(knopf);
+                    let bild_rect = egui::Rect::from_min_size(
+                        egui::pos2(
+                            antwort.rect.right() - PRISMA_BILD_RAND - PRISMA_BILD_PX,
+                            antwort.rect.center().y - PRISMA_BILD_PX / 2.0,
+                        ),
+                        Vec2::splat(PRISMA_BILD_PX),
+                    );
+                    egui::Image::new(prisma_bild(name)).paint_at(ui, bild_rect);
+                    if antwort.clicked() {
                         auswahl = Some(i);
                         konstante = f(*mm, 1);
                     }
@@ -131,13 +166,30 @@ impl DxfViewer {
 
     /// Wird jeden Bildaufbau aufgerufen: Live-Hz anfordern, Status und Messergebnis übernehmen.
     pub(super) fn bediene_geraet(&mut self, projekt: &mut Projekt, geraet: &mut Geraet) {
+        // Wurde die Stationierung außerhalb des Viewers geändert (Fenster Freie Stationierung), Anzeigen erneuern
+        if self.gesehene_station_version != projekt.station_version {
+            self.gesehene_station_version = projekt.station_version;
+            self.baue_overlay(projekt);
+            self.baue_neupunkte_overlay(projekt);
+        }
         geraet.live_hz_aktiv = true;
+        // V wird nur für die getrennte Messung (hier) und den Messdaten-Dialog (schaltet selbst ein) abgefragt
+        geraet.live_v_aktiv = self.getrennt_messung.is_some();
         self.ziel_hz = geraet.live_hz;
         if let Some(text) = geraet.messung_status() {
             self.status = text.to_string();
         }
         let ergebnis = geraet.nimm_messergebnis().and_then(|e| self.messergebnis_fuer_dialog(e));
         match ergebnis {
+            Some(MessErgebnis::Messung(m)) if self.neupunkt_modus && self.getrennt_modus => {
+                // Getrennte Messung: nur die Strecke merken, Hz/V folgen beim Übernehmen
+                if m.schraegstrecke_m.is_some() {
+                    self.getrennt_messung = Some(*m);
+                    self.status = "Strecke gemessen – Ziel anpeilen und „Übernehmen“ drücken.".to_string();
+                } else {
+                    self.status = "Messung unvollständig (Strecke fehlt).".to_string();
+                }
+            }
             Some(MessErgebnis::Messung(m)) => self.verarbeite_messung(projekt, geraet, &m),
             Some(MessErgebnis::Fehler(text)) => self.status = format!("Messung fehlgeschlagen: {text}"),
             None => {}
@@ -151,6 +203,21 @@ impl DxfViewer {
             Ok(()) => self.status = "Messung startet …".to_string(),
             Err(fehler) => self.status = fehler,
         }
+    }
+
+    /// „Übernehmen“ der getrennten Messung: Strecke aus der Messung, Hz und V von den aktuellen Gerätewerten.
+    pub(super) fn uebernimm_getrennte_messung(&mut self, projekt: &mut Projekt, geraet: &Geraet) {
+        let Some(mut m) = self.getrennt_messung.clone() else {
+            return;
+        };
+        let (Some(hz), Some(v)) = (geraet.live_hz, geraet.live_v) else {
+            self.status = "Keine aktuellen Hz/V vom Gerät – bitte kurz warten oder Verbindung prüfen.".to_string();
+            return;
+        };
+        m.hz_gon = Some(hz);
+        m.v_gon = Some(v);
+        self.getrennt_messung = None;
+        self.verarbeite_messung(projekt, geraet, &m);
     }
 
     fn lese_exzentrizitaet(text: &str) -> f64 {
@@ -348,10 +415,8 @@ impl DxfViewer {
                     return;
                 }
                 self.baue_residual_overlay(projekt, &erg);
+                // Die Neupunkte hat das Projekt bereits mit der neuen Stationierung neu berechnet
                 let params = projekt.rechenparameter.params.clone();
-                if let Err(fehler) = projekt.neupunkte.berechne_neu(&erg, &standpunkt, &params, instr_hoehe) {
-                    fehler_log::log("DxfViewer.verarbeite_stationierung", &format!("Neuberechnung: {fehler}"));
-                }
                 self.baue_neupunkte_overlay(projekt);
                 messdaten::schreibe_standpunktinfo(
                     &projekt.einstellungen,
@@ -406,7 +471,10 @@ impl DxfViewer {
         let richtung = (hz + ori).rem_euclid(VOLLKREIS_GON);
         let winkel = richtung * GON_ZU_RAD;
         let start = ansicht.zu_bildschirm(r, h);
-        let laenge = self.canvas_groesse.x.min(self.canvas_groesse.y) * ZIEL_LINIE_ANTEIL;
+        // Textposition wie bisher; die Linie läuft darüber hinaus bis sicher über den Bildschirmrand
+        let text_abstand = self.canvas_groesse.x.min(self.canvas_groesse.y) * ZIEL_LINIE_ANTEIL;
+        let mitte_zeichenflaeche = Pos2::new(self.canvas_groesse.x / 2.0, self.canvas_groesse.y / 2.0);
+        let laenge = self.canvas_groesse.length() * 2.0 + (start - mitte_zeichenflaeche).length();
         let einheit = Vec2::new(winkel.sin() as f32, -(winkel.cos() as f32));
         let stift = Stroke::new(1.5, ZIEL_FARBE);
         let mut pos = 0.0;
@@ -415,8 +483,11 @@ impl DxfViewer {
             maler.line_segment([start + einheit * pos, start + einheit * ende], stift);
             pos += ZIEL_STRICH_PX + ZIEL_LUECKE_PX;
         }
-        let text = format!("Hz {}  t {}", f(hz, 4), f(richtung, 4));
-        let text_pos: Pos2 = start + einheit * laenge;
-        maler.text(text_pos, Align2::CENTER_BOTTOM, text, FontId::monospace(11.0), ZIEL_FARBE);
+        // Hz und t untereinander
+        let text_pos: Pos2 = start + einheit * text_abstand;
+        let schrift = FontId::monospace(11.0);
+        maler.text(text_pos, Align2::CENTER_BOTTOM, format!("t  {}", f(richtung, 4)), schrift.clone(), ZIEL_FARBE);
+        let obere_zeile = text_pos - Vec2::new(0.0, ZIEL_TEXT_ZEILE_PX);
+        maler.text(obere_zeile, Align2::CENTER_BOTTOM, format!("Hz {}", f(hz, 4)), schrift, ZIEL_FARBE);
     }
 }

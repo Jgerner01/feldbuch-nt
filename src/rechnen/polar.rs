@@ -228,6 +228,7 @@ pub fn orientierung_aus_einem_ziel(
         ist_lokales_system: false,
         warnung_hoehe: String::new(),
         residuen: vec![residuum],
+        konfidenz: None,
     })
 }
 

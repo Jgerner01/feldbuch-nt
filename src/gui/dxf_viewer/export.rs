@@ -6,18 +6,23 @@ use eframe::egui::{self, Align2, RichText, Vec2};
 
 use super::{Dialog, DxfViewer};
 use crate::daten::projekt::Projekt;
+use crate::daten::rechenparameter::{DXF_GROESSE_BEREICH_MM as GROESSE_BEREICH_MM, DXF_MASSSTAB_BEREICH as MASSSTAB_BEREICH, DxfParameter};
 use crate::dxf::entity::Art;
-use crate::dxf::exporter::{self, Einstellung, Fehlerellipse};
+use crate::dxf::exporter::{self, Einstellung, Ellipse};
 use crate::grundlagen::datei_speicher;
 use crate::grundlagen::format::{f, parse_zahl};
 
-/// Grenzen der Eingaben (wie im Original).
-const MASSSTAB_BEREICH: (f64, f64) = (100.0, 50_000.0);
-const GROESSE_BEREICH_MM: (f64, f64) = (0.5, 10.0);
+/// Breite des Maßstab-Eingabefelds (vierstellige Zahlen passen bequem hinein).
+const MASSSTAB_FELD_BREITE: f32 = 90.0;
+/// Höhe der Eingabefelder.
+const FELD_HOEHE: f32 = 24.0;
+/// Breite der Eingabefelder für Symbol- und Textgröße.
+const GROESSE_FELD_BREITE: f32 = 80.0;
 
 impl DxfViewer {
-    pub(super) fn oeffne_export_dialog(&mut self) {
-        let standard = Einstellung::default();
+    /// Öffnet den Dialog mit den zuletzt in den Rechenparametern abgelegten Werten (sonst Standardwerte).
+    pub(super) fn oeffne_export_dialog(&mut self, projekt: &Projekt) {
+        let standard = projekt.rechenparameter.params.dxf.normalisiert();
         self.dialog = Some(Dialog::DxfExport {
             massstab: f(standard.massstab, 0),
             symbol: f(standard.symbol_mm, 1),
@@ -25,43 +30,50 @@ impl DxfViewer {
         });
     }
 
-    /// Fehlerellipsen, die mit exportiert werden (nur bei sichtbaren Residuen).
-    fn export_ellipsen(&self) -> Vec<Fehlerellipse> {
+    /// Residuen- und Konfidenzellipsen, die mit exportiert werden (nur bei sichtbaren Residuen).
+    fn export_ellipsen(&self) -> Vec<Ellipse> {
         if !self.residuen_sichtbar {
             return Vec::new();
         }
         self.ellipsen
             .iter()
             .filter_map(|e| match &e.art {
-                Art::Ellipse { r, h, v_strecke_mm, v_quer_mm, phi, skalierung, .. } => {
-                    Some(Fehlerellipse { r: *r, h: *h, v_strecke_mm: *v_strecke_mm, v_quer_mm: *v_quer_mm, phi_rad: *phi, skalierung: *skalierung })
-                }
+                Art::Ellipse { r, h, v_strecke_mm, v_quer_mm, phi, skalierung, konfidenz, .. } => Some(Ellipse {
+                    r: *r,
+                    h: *h,
+                    v_strecke_mm: *v_strecke_mm,
+                    v_quer_mm: *v_quer_mm,
+                    phi_rad: *phi,
+                    skalierung: *skalierung,
+                    konfidenz: *konfidenz,
+                }),
                 _ => None,
             })
             .collect()
     }
 
     /// Zeichnet den Dialog; liefert den Dialog zurück, wenn er offen bleibt.
-    pub(super) fn zeichne_export_dialog(&mut self, ctx: &egui::Context, projekt: &Projekt, mut massstab: String, mut symbol: String, mut text: String) {
+    pub(super) fn zeichne_export_dialog(&mut self, ctx: &egui::Context, projekt: &mut Projekt, mut massstab: String, mut symbol: String, mut text: String) {
+        let standard = DxfParameter::default();
         let einstellung = Einstellung {
-            massstab: parse_zahl(&massstab).unwrap_or(1000.0).clamp(MASSSTAB_BEREICH.0, MASSSTAB_BEREICH.1).round(),
-            symbol_mm: parse_zahl(&symbol).unwrap_or(1.5).clamp(GROESSE_BEREICH_MM.0, GROESSE_BEREICH_MM.1),
-            text_mm: parse_zahl(&text).unwrap_or(2.0).clamp(GROESSE_BEREICH_MM.0, GROESSE_BEREICH_MM.1),
+            massstab: parse_zahl(&massstab).unwrap_or(standard.massstab).clamp(MASSSTAB_BEREICH.0, MASSSTAB_BEREICH.1).round(),
+            symbol_mm: parse_zahl(&symbol).unwrap_or(standard.symbol_mm).clamp(GROESSE_BEREICH_MM.0, GROESSE_BEREICH_MM.1),
+            text_mm: parse_zahl(&text).unwrap_or(standard.text_mm).clamp(GROESSE_BEREICH_MM.0, GROESSE_BEREICH_MM.1),
         };
         let mut aktion: Option<bool> = None;
         egui::Window::new("DXF-Export").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
             ui.label("Alle Punkte (berechnet, eingelesen, gemessen) werden als DXF-Datei geschrieben.");
             egui::Grid::new("dxf_export_felder").num_columns(3).show(ui, |ui| {
                 ui.label("Maßstab 1 :");
-                ui.add(egui::TextEdit::singleline(&mut massstab).desired_width(80.0));
+                ui.add_sized([MASSSTAB_FELD_BREITE, FELD_HOEHE], egui::TextEdit::singleline(&mut massstab));
                 ui.label(format!("({} … {})", f(MASSSTAB_BEREICH.0, 0), f(MASSSTAB_BEREICH.1, 0)));
                 ui.end_row();
                 ui.label("Symbolgröße:");
-                ui.add(egui::TextEdit::singleline(&mut symbol).desired_width(80.0));
+                ui.add(egui::TextEdit::singleline(&mut symbol).desired_width(GROESSE_FELD_BREITE));
                 ui.label("mm auf dem Papier");
                 ui.end_row();
                 ui.label("Textgröße:");
-                ui.add(egui::TextEdit::singleline(&mut text).desired_width(80.0));
+                ui.add(egui::TextEdit::singleline(&mut text).desired_width(GROESSE_FELD_BREITE));
                 ui.label("mm auf dem Papier");
                 ui.end_row();
             });
@@ -82,7 +94,15 @@ impl DxfViewer {
         match aktion {
             None => self.dialog = Some(Dialog::DxfExport { massstab, symbol, text }),
             Some(false) => {}
-            Some(true) => self.exportiere_dxf(projekt, &einstellung),
+            Some(true) => {
+                // Werte in den Rechenparametern ablegen, damit sie beim nächsten Export wieder vorbelegt sind
+                projekt.rechenparameter.params.dxf =
+                    DxfParameter { massstab: einstellung.massstab, symbol_mm: einstellung.symbol_mm, text_mm: einstellung.text_mm };
+                if let Err(e) = projekt.rechenparameter.speichern() {
+                    self.status = format!("DXF-Vorgaben konnten nicht gespeichert werden: {e}");
+                }
+                self.exportiere_dxf(projekt, &einstellung);
+            }
         }
     }
 
@@ -119,7 +139,7 @@ impl DxfViewer {
                     feldbuch.len(),
                     import.len(),
                     gemessen.len(),
-                    if ellipsen.is_empty() { String::new() } else { format!("  {} Fehlerellipse(n)\n", ellipsen.len()) },
+                    if ellipsen.is_empty() { String::new() } else { format!("  {} Ellipse(n) (Residuen- bzw. Konfidenzellipsen)\n", ellipsen.len()) },
                     pfad.display()
                 ),
             ),

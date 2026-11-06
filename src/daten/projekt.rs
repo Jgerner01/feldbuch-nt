@@ -51,6 +51,62 @@ pub struct StationsdatenDatei {
     pub messungen: Vec<StationierungsPunkt>,
     #[serde(rename = "Ergebnis", default)]
     pub ergebnis: Option<StationierungsErgebnis>,
+    /// Aktivierung der Richtungen je Messung (gleiche Reihenfolge wie `messungen`); leer in alten Dateien = alle aktiv.
+    #[serde(rename = "AktivRichtung", default)]
+    pub aktiv_richtung: Vec<bool>,
+    /// Aktivierung der Strecken je Messung.
+    #[serde(rename = "AktivStrecke", default)]
+    pub aktiv_strecke: Vec<bool>,
+    /// Aktivierung der Höhen je Messung.
+    #[serde(rename = "AktivHoehe", default)]
+    pub aktiv_hoehe: Vec<bool>,
+}
+
+/// Aktivierung der Beobachtungen je Anschlusspunkt (Reihenfolge wie die Messungen).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Aktivierung {
+    pub richtung: Vec<bool>,
+    pub strecke: Vec<bool>,
+    pub hoehe: Vec<bool>,
+}
+
+impl StationsdatenDatei {
+    /// Bringt die Aktivierungslisten auf die Zahl der Messungen: neue Messungen sind aktiv, überzählige Einträge entfallen.
+    /// Liefert `true`, wenn eine bereits gespeicherte, nicht leere Liste nicht zur Messungszahl passte.
+    pub fn gleiche_aktivierung_an(&mut self) -> bool {
+        let n = self.messungen.len();
+        let mut abweichung = false;
+        for liste in [&mut self.aktiv_richtung, &mut self.aktiv_strecke, &mut self.aktiv_hoehe] {
+            if !liste.is_empty() && liste.len() != n {
+                abweichung = true;
+            }
+            liste.resize(n, true);
+        }
+        abweichung
+    }
+
+    /// Aktivierung aller Beobachtungen (nach Angleichung an die Messungszahl).
+    pub fn aktivierung(&self) -> Aktivierung {
+        let mut kopie = self.clone();
+        kopie.gleiche_aktivierung_an();
+        Aktivierung { richtung: kopie.aktiv_richtung, strecke: kopie.aktiv_strecke, hoehe: kopie.aktiv_hoehe }
+    }
+
+    /// Entfernt alle Messungen mit der Punktnummer samt ihrer Aktivierungseinträge.
+    pub fn entferne_messung(&mut self, punkt_nr: &str) {
+        self.gleiche_aktivierung_an();
+        let mut i = 0;
+        while i < self.messungen.len() {
+            if self.messungen[i].punkt_nr == punkt_nr {
+                self.messungen.remove(i);
+                self.aktiv_richtung.remove(i);
+                self.aktiv_strecke.remove(i);
+                self.aktiv_hoehe.remove(i);
+            } else {
+                i += 1;
+            }
+        }
+    }
 }
 
 /// Ergebnis einer Festpunktübernahme.
@@ -58,6 +114,18 @@ pub struct StationsdatenDatei {
 pub struct UebernahmeErgebnis {
     pub neu: usize,
     pub ersetzt: usize,
+}
+
+/// Änderung der Stationierung eines Standpunkts samt Folgen für die Neupunkte (für die Rückmeldung an den Benutzer).
+#[derive(Clone, Debug)]
+pub struct StationierungsAenderung {
+    pub standpunkt_nr: String,
+    pub alt: StationierungsErgebnis,
+    pub neu: StationierungsErgebnis,
+    /// Anzahl der Neupunkte des Standpunkts, die beim Übernehmen neu berechnet werden.
+    pub neupunkte: usize,
+    /// Davon im Polarmodul berechnete Punkte.
+    pub davon_polarpunkte: usize,
 }
 
 /// Das aktive Projekt mit allen Datenverwaltungen.
@@ -70,6 +138,8 @@ pub struct Projekt {
     pub importpunkte: ImportPunkteManager,
     pub station: StationsdatenDatei,
     station_pfad: PathBuf,
+    /// Zähler, der bei jeder Neuberechnung der Neupunkte nach einer Stationierung steigt (Anzeigen aktualisieren).
+    pub station_version: u64,
 }
 
 impl Projekt {
@@ -89,6 +159,7 @@ impl Projekt {
             importpunkte: ImportPunkteManager::default(),
             station: StationsdatenDatei::default(),
             station_pfad: PathBuf::new(),
+            station_version: 0,
         };
         projekt.manager_initialisieren();
         projekt
@@ -311,19 +382,60 @@ impl Projekt {
         datei_speicher::pruefe_schreibzugriff(&self.station_pfad).map_err(|e| e.to_string())?;
         self.station.ergebnis = None;
         self.station.messungen.push(punkt);
-        self.neuberechnen()
+        let ergebnis = self.neuberechnen()?;
+        if ergebnis.is_some() {
+            self.neupunkte_nach_stationierung();
+        }
+        Ok(ergebnis)
+    }
+
+    /// Berechnet die Neupunkte des aktiven Standpunkts mit der neuen Stationierung neu und speichert sie.
+    fn neupunkte_nach_stationierung(&mut self) {
+        if !self.hat_gueltige_station() {
+            return;
+        }
+        let Some(neu) = self.station.ergebnis.clone() else {
+            return;
+        };
+        let standpunkt_nr = self.station.standpunkt_nr.clone();
+        let params = self.rechenparameter.params.clone();
+        if let Err(e) = self.neupunkte.berechne_neu(&neu, &standpunkt_nr, &params, self.station.instrumenten_hoehe) {
+            fehler_log::log("Projekt.neupunkte_nach_stationierung", &format!("Neuberechnung der Neupunkte: {e}"));
+        }
+        self.station_version += 1;
+    }
+
+    /// Vergleicht ein noch nicht übernommenes Stationierungsergebnis mit der bisherigen Stationierung des Standpunkts.
+    /// `None`, wenn es keine brauchbare bisherige Stationierung gibt (erste Stationierung).
+    pub fn aenderung_vorschau(&self, standpunkt_nr: &str, neu: &StationierungsErgebnis) -> Option<StationierungsAenderung> {
+        let alt = self.alte_stationierung(standpunkt_nr).filter(|a| !a.ist_lokales_system && pruefe_station(a).is_ok())?;
+        let (neupunkte, davon_polarpunkte) = self.neupunkte.zaehle(standpunkt_nr);
+        Some(StationierungsAenderung { standpunkt_nr: standpunkt_nr.to_string(), alt, neu: neu.clone(), neupunkte, davon_polarpunkte })
+    }
+
+    /// Bisheriges Stationierungsergebnis des Standpunkts (aktiver Stand oder gespeicherte Stationsdatei).
+    fn alte_stationierung(&self, standpunkt_nr: &str) -> Option<StationierungsErgebnis> {
+        if self.station.standpunkt_nr == standpunkt_nr {
+            self.station.ergebnis.clone()
+        } else {
+            self.lese_station_datei(standpunkt_nr).and_then(|d| d.ergebnis)
+        }
     }
 
     /// Entfernt einen Anschlusspunkt aus dem Stack und berechnet neu.
     pub fn entfernen_und_berechnen(&mut self, punkt_nr: &str) -> Result<Option<StationierungsErgebnis>, String> {
         datei_speicher::pruefe_schreibzugriff(&self.station_pfad).map_err(|e| e.to_string())?;
         self.station.ergebnis = None;
-        self.station.messungen.retain(|p| p.punkt_nr != punkt_nr);
+        self.station.entferne_messung(punkt_nr);
         if self.station.messungen.len() < MIN_ANSCHLUSSPUNKTE {
             self.station_speichern().map_err(|e| e.to_string())?;
             return Ok(None);
         }
-        self.neuberechnen()
+        let ergebnis = self.neuberechnen()?;
+        if ergebnis.is_some() {
+            self.neupunkte_nach_stationierung();
+        }
+        Ok(ergebnis)
     }
 
     fn neuberechnen(&mut self) -> Result<Option<StationierungsErgebnis>, String> {
@@ -331,9 +443,20 @@ impl Projekt {
             self.station_speichern().map_err(|e| e.to_string())?;
             return Ok(None);
         }
+        // Die gespeicherte Beobachtungsauswahl gilt auch für spätere Neuberechnungen; passt sie nicht, wird sie angeglichen
+        if self.station.gleiche_aktivierung_an() {
+            fehler_log::log(
+                "Projekt.neuberechnen",
+                "Aktivierungslisten passten nicht zur Zahl der Messungen: angeglichen (neue Beobachtungen aktiv).",
+            );
+        }
+        let aktivierung = self.station.aktivierung();
         let par = &self.rechenparameter.params;
         let optionen = Optionen {
             freier_massstab: par.freier_massstab,
+            aktiv_richtung: Some(aktivierung.richtung),
+            aktiv_strecke: Some(aktivierung.strecke),
+            aktiv_hoehe: Some(aktivierung.hoehe),
             berechnung_3d: par.berechnung_3d,
             fehlergrenze_mm_hoehe: par.fehlergrenze_mm_hoehe,
             ..Optionen::default()
@@ -388,12 +511,13 @@ impl Projekt {
         self.projektdaten.set_value(KATEGORIE_STATIONIERUNG, "Standardabweichung", &text)
     }
 
-    /// Übernimmt das Ergebnis einer manuellen Stationierung in den aktiven Stationsdatensatz.
+    /// Übernimmt das Ergebnis einer manuellen Stationierung samt Beobachtungsauswahl in den aktiven Stationsdatensatz.
     pub fn set_ergebnis_manuell(
         &mut self,
         standpunkt_nr: &str,
         instr_hoehe: f64,
         punkte: Vec<StationierungsPunkt>,
+        aktivierung: Aktivierung,
         ergebnis: StationierungsErgebnis,
     ) -> Result<(), String> {
         let ziel = self.einstellungen.get_pfad(&format!("Station-{standpunkt_nr}.json"));
@@ -405,6 +529,10 @@ impl Projekt {
         self.station.standpunkt_nr = standpunkt_nr.to_string();
         self.station.instrumenten_hoehe = instr_hoehe;
         self.station.messungen = punkte;
+        self.station.aktiv_richtung = aktivierung.richtung;
+        self.station.aktiv_strecke = aktivierung.strecke;
+        self.station.aktiv_hoehe = aktivierung.hoehe;
+        self.station.gleiche_aktivierung_an();
         self.station.ergebnis = Some(ergebnis);
         self.station.datum = heute_text();
         self.station_pfad = ziel;
@@ -417,9 +545,10 @@ impl Projekt {
         standpunkt_nr: &str,
         instr_hoehe: f64,
         punkte: Vec<StationierungsPunkt>,
+        aktivierung: Aktivierung,
         ergebnis: StationierungsErgebnis,
     ) -> Result<(), String> {
-        self.set_ergebnis_manuell(standpunkt_nr, instr_hoehe, punkte, ergebnis.clone())?;
+        self.set_ergebnis_manuell(standpunkt_nr, instr_hoehe, punkte, aktivierung, ergebnis.clone())?;
         self.feldbuchpunkte
             .add_or_update(FeldbuchPunkt {
                 punkt_nr: standpunkt_nr.to_string(),
@@ -452,6 +581,7 @@ impl Projekt {
             "RECHNUNG",
             &format!("Freie Stationierung übernommen: {standpunkt_nr}, s0 = {} mm", f(ergebnis.s0_mm, 2)),
         );
+        self.neupunkte_nach_stationierung();
         Ok(())
     }
 
@@ -493,6 +623,7 @@ mod tests {
             importpunkte: ImportPunkteManager::default(),
             station: StationsdatenDatei::default(),
             station_pfad: PathBuf::new(),
+            station_version: 0,
         };
         p.manager_initialisieren();
         (p, dir)
@@ -527,6 +658,74 @@ mod tests {
         assert_eq!(p.station.messungen.len(), 2);
         assert!(p.hat_gueltige_station());
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn weiterer_anschlusspunkt_rechnet_neupunkte_neu_und_vorschau_vergleicht() {
+        let (mut p, dir) = projekt_in("neuberechnung");
+        p.neuer_standpunkt("S1", 1.5).unwrap();
+        p.hinzufuegen_und_berechnen(anschluss("A", 0.0, 100.0, 0.0, 100.0)).unwrap();
+        p.hinzufuegen_und_berechnen(anschluss("B", 100.0, 0.0, 100.0, 100.0)).unwrap();
+        let version = p.station_version;
+        // Ein ungenau gemessener dritter Punkt verschiebt den Standpunkt leicht
+        p.hinzufuegen_und_berechnen(anschluss("C", 0.0, -100.0, 200.0, 100.05)).unwrap().unwrap();
+        assert!(p.station_version > version);
+        // Vorschau für eine noch nicht übernommene Stationierung: Vergleich mit der gespeicherten
+        let mut neu = p.station.ergebnis.clone().unwrap();
+        neu.h += 0.01;
+        let vorschau = p.aenderung_vorschau("S1", &neu).expect("Vergleich mit bisheriger Stationierung");
+        assert!((vorschau.neu.h - vorschau.alt.h - 0.01).abs() < 1e-9);
+        assert!(p.aenderung_vorschau("ANDERER", &neu).is_none());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn aktivierung_wird_gespeichert_und_bei_neuberechnung_angewendet() {
+        let (mut p, dir) = projekt_in("aktiv");
+        p.neuer_standpunkt("S1", 1.5).unwrap();
+        let punkte = vec![
+            anschluss("A", 0.0, 100.0, 0.0, 100.0),
+            anschluss("B", 100.0, 0.0, 100.0, 100.0),
+            anschluss("C", 0.0, -100.0, 200.0, 100.0),
+            anschluss("D", -100.0, 0.0, 300.0, 100.0),
+        ];
+        let akt = Aktivierung { richtung: vec![true; 4], strecke: vec![true, true, false, true], hoehe: vec![true; 4] };
+        let optionen = Optionen {
+            aktiv_richtung: Some(akt.richtung.clone()),
+            aktiv_strecke: Some(akt.strecke.clone()),
+            aktiv_hoehe: Some(akt.hoehe.clone()),
+            berechnung_3d: false,
+            ..Optionen::default()
+        };
+        let erg = freie_stationierung::berechnen(&punkte, 1.5, &optionen).unwrap();
+        assert!(erg.konfidenz.is_some(), "Konfidenzellipse bei n >= 3");
+        p.uebernehme_manuelle_stationierung("S1", 1.5, punkte, akt.clone(), erg).unwrap();
+
+        // Die Auswahl steht in der gespeicherten Stationsdatei
+        assert_eq!(p.lese_station_datei("S1").unwrap().aktivierung(), akt);
+
+        // Ein weiterer Punkt: die frühere Auswahl bleibt erhalten, der neue Punkt ist aktiv
+        let neu = p.hinzufuegen_und_berechnen(anschluss("E", 70.7107, 70.7107, 50.0, 100.0)).unwrap().unwrap();
+        assert!(!neu.residuen[2].strecke_aktiv);
+        assert!(neu.residuen[4].strecke_aktiv);
+        assert_eq!(p.station.aktiv_strecke, vec![true, true, false, true, true]);
+
+        // Punkt entfernen: Auswahl wird mit entfernt
+        p.entfernen_und_berechnen("A").unwrap();
+        assert_eq!(p.station.aktiv_strecke, vec![true, false, true, true]);
+        assert_eq!(p.station.messungen.len(), 4);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn aktivierung_alter_dateien_ohne_listen_ist_komplett_aktiv() {
+        let mut daten = StationsdatenDatei { messungen: vec![anschluss("A", 0.0, 0.0, 0.0, 1.0), anschluss("B", 1.0, 1.0, 0.0, 1.0)], ..Default::default() };
+        assert!(!daten.gleiche_aktivierung_an());
+        assert_eq!(daten.aktivierung().richtung, vec![true, true]);
+        // Passt eine gespeicherte Liste nicht zur Messungszahl, wird das gemeldet und angeglichen
+        daten.aktiv_strecke = vec![false];
+        assert!(daten.gleiche_aktivierung_an());
+        assert_eq!(daten.aktiv_strecke, vec![false, true]);
     }
 
     #[test]

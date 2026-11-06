@@ -21,7 +21,9 @@ Write-Host "Baue Feldbuch-NT $version (Release) ..."
 cargo build --release
 if ($LASTEXITCODE -ne 0) { throw "cargo build ist fehlgeschlagen." }
 
-$exe = "target\release\feldbuch-nt.exe"
+# Zielordner von cargo: CARGO_TARGET_DIR, sonst "target" (sonst läge eine veraltete EXE im Projektordner)
+$zielordner = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { "target" }
+$exe = Join-Path $zielordner "release\feldbuch-nt.exe"
 if (-not (Test-Path $exe)) { throw "$exe wurde nicht erzeugt." }
 
 New-Item -ItemType Directory -Force -Path $Ausgabe | Out-Null

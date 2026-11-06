@@ -350,6 +350,18 @@ impl NeupunkteManager {
         self.speichern().inspect_err(|_| self.daten = vorher)
     }
 
+    /// (Anzahl Neupunkte, davon Polarpunkte) eines Standpunkts.
+    pub fn zaehle(&self, standpunkt_nr: &str) -> (usize, usize) {
+        let alle = self.daten.rohdaten.iter().filter(|r| r.standpunkt_nr == standpunkt_nr).count();
+        let polar = self
+            .daten
+            .koordinaten
+            .iter()
+            .filter(|e| e.standpunkt_nr == standpunkt_nr && e.quelle == QUELLE_POLAR)
+            .count();
+        (alle, polar)
+    }
+
     pub fn finde_koordinate(&self, punkt_nr: &str, standpunkt_nr: &str) -> Option<&NeupunktErgebnis> {
         self.daten
             .koordinaten
@@ -357,37 +369,40 @@ impl NeupunkteManager {
             .find(|e| e.punkt_nr == punkt_nr && e.standpunkt_nr == standpunkt_nr)
     }
 
-    /// Berechnet alle Neupunkte eines Standpunkts mit neuer Stationierung neu.
-    /// Im Polarmodul berechnete Punkte behalten ihre Koordinaten.
+    /// Berechnet alle Neupunkte eines Standpunkts (auch die im Polarmodul berechneten) mit der neuen
+    /// Stationierung neu und speichert die Datei.
+    /// Liefert (Anzahl neu berechneter Punkte, davon Polarpunkte).
     pub fn berechne_neu(
         &mut self,
         station: &StationierungsErgebnis,
         standpunkt_nr: &str,
         params: &Rechenparameter,
         instr_hoehe: f64,
-    ) -> io::Result<()> {
+    ) -> io::Result<(usize, usize)> {
         datei_speicher::pruefe_schreibzugriff(&self.pfad)?;
         neupunkt::pruefe_station(station).map_err(io::Error::other)?;
         let vorher = self.daten.clone();
-        let polar_nr: std::collections::HashSet<&str> = self
+        let polar_nr: std::collections::HashSet<String> = self
             .daten
             .koordinaten
             .iter()
             .filter(|e| e.standpunkt_nr == standpunkt_nr && e.quelle == QUELLE_POLAR)
-            .map(|e| e.punkt_nr.as_str())
+            .map(|e| e.punkt_nr.clone())
             .collect();
-        let neue = neupunkt::berechne_alle(
-            self.daten.rohdaten.iter().filter(|r| !polar_nr.contains(r.punkt_nr.as_str())),
-            station,
-            standpunkt_nr,
-            params,
-            instr_hoehe,
-        );
-        self.daten
-            .koordinaten
-            .retain(|e| !(e.standpunkt_nr == standpunkt_nr && e.quelle != QUELLE_POLAR));
+        let mut neue = neupunkt::berechne_alle(&self.daten.rohdaten, station, standpunkt_nr, params, instr_hoehe);
+        // Polarpunkte bleiben als solche gekennzeichnet
+        for e in neue.iter_mut().filter(|e| polar_nr.contains(&e.punkt_nr)) {
+            e.quelle = QUELLE_POLAR.to_string();
+        }
+        let neu_nr: std::collections::HashSet<&str> = neue.iter().map(|e| e.punkt_nr.as_str()).collect();
+        // Alte Koordinaten des Standpunkts entfallen; nicht berechenbare Polarpunkte behalten ihren letzten Wert
+        self.daten.koordinaten.retain(|e| {
+            !(e.standpunkt_nr == standpunkt_nr && (e.quelle != QUELLE_POLAR || neu_nr.contains(e.punkt_nr.as_str())))
+        });
+        let anzahl = (neue.len(), neue.iter().filter(|e| e.quelle == QUELLE_POLAR).count());
         self.daten.koordinaten.extend(neue);
-        self.speichern().inspect_err(|_| self.daten = vorher)
+        self.speichern().inspect_err(|_| self.daten = vorher)?;
+        Ok(anzahl)
     }
 
     /// Entfernt Rohdaten (und Koordinaten) aller Punkte, die das Prädikat erfüllen.
@@ -509,7 +524,7 @@ mod tests {
     }
 
     #[test]
-    fn neupunkte_polarpunkte_bleiben_bei_neuberechnung() {
+    fn neupunkte_polarpunkte_werden_mit_neu_berechnet() {
         let dir = test_ordner("np");
         let mut m = NeupunkteManager::initialisiere(&dir.join("P-Neupunkte.json"));
         let roh = NeupunktRohdaten {
@@ -531,9 +546,12 @@ mod tests {
         };
         m.hinzufuegen_oder_ersetzen(roh, polar).unwrap();
         let station = StationierungsErgebnis { konvergiert: true, massstab: 1.0, ..Default::default() };
-        m.berechne_neu(&station, "S1", &Rechenparameter::default(), 0.0).unwrap();
+        let anzahl = m.berechne_neu(&station, "S1", &Rechenparameter::default(), 0.0).unwrap();
+        assert_eq!(anzahl, (1, 1));
         assert_eq!(m.koordinaten().len(), 1);
-        assert_eq!(m.koordinaten()[0].r, 123.0);
+        // Neu aus den Rohdaten berechnet, aber weiterhin als Polarpunkt gekennzeichnet
+        assert_ne!(m.koordinaten()[0].r, 123.0);
+        assert_eq!(m.koordinaten()[0].quelle, QUELLE_POLAR);
 
         let neu = NeupunkteManager::initialisiere(&dir.join("P-Neupunkte.json"));
         assert_eq!(neu.rohdaten().len(), 1);

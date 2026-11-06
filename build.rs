@@ -8,10 +8,6 @@ fn main() {
     let buildnummer: u32 = include_str!("BUILDNUMMER").trim().parse().expect("BUILDNUMMER muss eine positive ganze Zahl enthalten");
     assert!(buildnummer > 0, "BUILDNUMMER muss größer als null sein");
     println!("cargo:rustc-env=FELDBUCH_BUILD_NUMMER={buildnummer}");
-    println!("cargo:rerun-if-changed=BUILDNUMMER");
-    let buildnummer: u32 = include_str!("BUILDNUMMER").trim().parse().expect("BUILDNUMMER muss eine positive ganze Zahl enthalten");
-    assert!(buildnummer > 0, "BUILDNUMMER muss größer als null sein");
-    println!("cargo:rustc-env=FELDBUCH_BUILD_NUMMER={buildnummer}");
     println!("cargo:rerun-if-changed=icons/app.ico");
     #[cfg(windows)]
     {

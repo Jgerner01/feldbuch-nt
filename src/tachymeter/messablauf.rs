@@ -18,7 +18,7 @@ use super::testmessung::SCHRITT_TIMEOUT;
 pub const ZUSATZ_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Befehle der Zusatzschritte.
-const BEFEHL_KOMPENSATOR: &str = "%R1Q,2003,0:1";
+pub const BEFEHL_KOMPENSATOR: &str = "%R1Q,2003,0:1";
 const BEFEHL_ATM: &str = "%R1Q,2029,0:";
 const BEFEHL_EDM: &str = "%R1Q,2021,0:";
 const BEFEHL_PRISMA: &str = "%R1Q,2023,0:";

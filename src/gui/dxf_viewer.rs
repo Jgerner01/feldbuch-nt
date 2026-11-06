@@ -44,6 +44,13 @@ const TOOLBAR_HOEHE: f32 = 46.0;
 const STATUS_HOEHE: f32 = 40.0;
 const SEITE_BREITE: f32 = 46.0;
 const KNOPF_GROESSE: f32 = 36.0;
+/// Breite des Modus-Knopfs (in beiden Zuständen gleich) und Abstand zum DXF-Knopf.
+const MODUS_KNOPF_BREITE: f32 = 100.0;
+const MODUS_KNOPF_ABSTAND: f32 = 12.0;
+/// Breite des Messen-Knopfs (bzw. „Übernehmen“).
+const MESSEN_KNOPF_BREITE: f32 = 80.0;
+/// Breite des Umschalters für die getrennte Messung.
+const GETRENNT_KNOPF_BREITE: f32 = 54.0;
 const STATUS_LABEL_BREITE: f32 = 480.0;
 /// Fensterstartgröße des Viewers.
 const FENSTER_GROESSE: [f32; 2] = [1200.0, 780.0];
@@ -57,6 +64,8 @@ const MIN_MASSSTAB: f64 = 1e-9;
 const KEIN_MAX_MASSSTAB: f64 = 1e9;
 /// Pixel pro Zoll des Originals; Maßstab 1:1 entspricht 96 dpi.
 const DPI: f64 = 96.0;
+/// Umrechnung des Konfidenzniveaus (Anteil) in Prozent für die Beschriftung.
+const KONFIDENZ_PROZENT: f64 = 100.0;
 /// Meter pro Zoll.
 const M_PRO_ZOLL: f64 = 0.0254;
 /// Rand beim Einpassen.
@@ -142,6 +151,8 @@ struct LoeschZiele {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Wunsch {
     FreieStationierung,
+    /// Polarpunkte öffnen.
+    Polarpunkte,
     /// Aufnahmetest öffnen.
     Aufnahmetest,
     /// Aufnahmetest öffnen und den Punkt mit dieser Nummer anfahren.
@@ -188,6 +199,12 @@ pub struct DxfViewer {
     status: String,
     lokales_system: bool,
     neupunkt_modus: bool,
+    /// Getrennte Messung im Neupunktmodus: erst Strecke messen, dann Ziel anpeilen und Hz/V übernehmen.
+    getrennt_modus: bool,
+    /// Stand von `Projekt::station_version`, für den die Anzeigen zuletzt gebaut wurden.
+    gesehene_station_version: u64,
+    /// Strecke der getrennten Messung, bis Hz/V übernommen werden.
+    getrennt_messung: Option<crate::tachymeter::messung::TachymeterMessung>,
     neupunkt_zaehler: i32,
     txt_standpunkt: String,
     txt_instr_hoehe: String,
@@ -210,6 +227,8 @@ pub struct DxfViewer {
     dialog: Option<Dialog>,
     wunsch: Option<Wunsch>,
     war_fokussiert: bool,
+    /// Die Startgröße (Full HD oder maximiert) des Viewer-Fensters wurde bereits festgelegt.
+    startgroesse_gesetzt: bool,
     offen: bool,
 }
 
@@ -252,6 +271,9 @@ impl Default for DxfViewer {
             status: "DXF-Datei öffnen …".to_string(),
             lokales_system: false,
             neupunkt_modus: false,
+            getrennt_modus: false,
+            gesehene_station_version: 0,
+            getrennt_messung: None,
             neupunkt_zaehler: 1,
             txt_standpunkt: String::new(),
             txt_instr_hoehe: "0.000".to_string(),
@@ -270,6 +292,7 @@ impl Default for DxfViewer {
             dialog: None,
             wunsch: None,
             war_fokussiert: true,
+            startgroesse_gesetzt: false,
             offen: true,
         }
     }
@@ -415,7 +438,7 @@ impl DxfViewer {
             self.residuen.push(DxfEntity::overlay("Residual", Art::Residual { res: res.clone(), wx: r, wy: h }));
             let phi = (h - ergebnis.h).atan2(r - ergebnis.r);
             self.ellipsen.push(DxfEntity::overlay(
-                "FehlerEllipse",
+                "ResiduenEllipse",
                 Art::Ellipse {
                     nr: res.punkt_nr.clone(),
                     r,
@@ -424,6 +447,23 @@ impl DxfViewer {
                     v_quer_mm: res.v_quer_mm,
                     phi,
                     skalierung: self.ellipsen_skalierung,
+                    konfidenz: false,
+                },
+            ));
+        }
+        // Konfidenzellipse des Standpunkts aus der Kovarianzmatrix der Lageausgleichung
+        if let Some(k) = &ergebnis.konfidenz {
+            self.ellipsen.push(DxfEntity::overlay(
+                "KonfidenzEllipse",
+                Art::Ellipse {
+                    nr: format!("{} ({} %)", projekt.station.standpunkt_nr, f(k.niveau * KONFIDENZ_PROZENT, 0)),
+                    r: ergebnis.r,
+                    h: ergebnis.h,
+                    v_strecke_mm: k.a_mm,
+                    v_quer_mm: k.b_mm,
+                    phi: k.theta_rad,
+                    skalierung: self.ellipsen_skalierung,
+                    konfidenz: true,
                 },
             ));
         }
@@ -441,7 +481,7 @@ impl DxfViewer {
             .ellipsen
             .iter()
             .filter_map(|e| match &e.art {
-                Art::Ellipse { v_strecke_mm, v_quer_mm, .. } => Some(v_strecke_mm.hypot(*v_quer_mm)),
+                Art::Ellipse { v_strecke_mm, v_quer_mm, konfidenz: false, .. } => Some(v_strecke_mm.hypot(*v_quer_mm)),
                 _ => None,
             })
             .filter(|v| *v > 0.0)
@@ -520,6 +560,7 @@ impl DxfViewer {
     }
 
     fn aktualisiere_modus(&mut self) {
+        self.getrennt_messung = None;
         if self.neupunkt_modus && (self.txt_punkt_nr.trim().is_empty() || self.txt_punkt_nr.trim().parse::<i32>().is_ok()) {
             self.txt_punkt_nr = self.neupunkt_zaehler.to_string();
         }
@@ -741,6 +782,9 @@ impl DxfViewer {
             .with_inner_size(FENSTER_GROESSE)
             .with_min_inner_size([760.0, 420.0]);
         ctx.show_viewport_immediate(id, builder, |ui, _klasse| {
+            if !self.startgroesse_gesetzt {
+                self.startgroesse_gesetzt = super::setze_startgroesse_fenster(ui.ctx());
+            }
             // Rückkehr zum Fenster: Stationierung kann sich geändert haben (OnFormActivated)
             let fokus = ui.ctx().input(|i| i.viewport().focused.unwrap_or(true));
             if fokus && !self.war_fokussiert {
@@ -843,12 +887,33 @@ impl DxfViewer {
                 self.toolbar_feld(ui, "eL", 24.0, 54.0, FeldArt::ExzLaengs);
             }
             ui.add_space(6.0);
-            let messen = egui::Button::new(egui::RichText::new("► Messen").strong().size(12.0).color(Color32::WHITE))
-                .fill(Color32::from_rgb(160, 60, 20))
-                .stroke(Stroke::new(1.0, Color32::from_rgb(130, 40, 10)))
-                .min_size(Vec2::new(80.0, KNOPF_GROESSE));
-            if ui.add(messen).on_hover_text("Messung mit Tachymeter auslösen").clicked() {
-                self.messen_geklickt(geraet);
+            if self.neupunkt_modus {
+                let uebernehmen = self.getrennt_messung.is_some();
+                let (text, tip) = if uebernehmen {
+                    ("Übernehmen", "Strecke ist gemessen: Ziel anpeilen, dann Hz/V vom Gerät übernehmen")
+                } else {
+                    ("► Messen", "Messung mit Tachymeter auslösen")
+                };
+                let messen = egui::Button::new(egui::RichText::new(text).strong().size(12.0).color(Color32::WHITE))
+                    .fill(Color32::from_rgb(160, 60, 20))
+                    .stroke(Stroke::new(1.0, Color32::from_rgb(130, 40, 10)))
+                    .min_size(Vec2::new(MESSEN_KNOPF_BREITE, KNOPF_GROESSE));
+                if ui.add(messen).on_hover_text(tip).clicked() {
+                    if uebernehmen {
+                        self.uebernimm_getrennte_messung(projekt, geraet);
+                    } else {
+                        self.messen_geklickt(geraet);
+                    }
+                }
+                ui.add_space(4.0);
+                self.zeichne_getrennt_knopf(ui);
+            } else {
+                // Stationierung: Messen ist nicht möglich, der identische Punkt wird im Plan gewählt
+                ui.add_sized(
+                    [MESSEN_KNOPF_BREITE + 40.0, KNOPF_GROESSE],
+                    egui::Label::new(egui::RichText::new("Identischen Punkt
+auswählen").strong().size(11.0).color(Color32::from_rgb(255, 190, 100))),
+                );
             }
             ui.add_space(6.0);
             trenner(ui);
@@ -857,8 +922,6 @@ impl DxfViewer {
                 self.standpunkt_verlassen(projekt);
             }
             self.toolbar_feld_mit_projekt(ui, projekt, "IH", 22.0, 58.0);
-            ui.add_space(4.0);
-            self.zeichne_modus_knopf(ui);
             ui.add_space(4.0);
             let (farbe, tooltip, info) = self.signal(projekt);
             ui.add_sized(
@@ -923,20 +986,48 @@ impl DxfViewer {
                     self.pdf_mitte = if pdf_aktiv { None } else { Some(self.mitte) };
                     self.pdf_ziehen = false;
                 }
+                let dxf_export = egui::Button::new(RichText::new("DXF").strong().size(11.0).color(Color32::WHITE))
+                    .fill(TOOLBAR_KNOPF)
+                    .stroke(Stroke::new(1.0, TOOLBAR_KNOPF_RAND))
+                    .min_size(Vec2::splat(KNOPF_GROESSE));
+                if ui.add(dxf_export).on_hover_text("Als DXF exportieren").clicked() {
+                    self.oeffne_export_dialog(projekt);
+                }
+                ui.add_space(MODUS_KNOPF_ABSTAND);
+                self.zeichne_modus_knopf(ui);
             });
         });
     }
 
-    fn zeichne_modus_knopf(&mut self, ui: &mut egui::Ui) {
-        let (text, fill, rand, tip) = if self.neupunkt_modus {
-            ("Neupunkt", Color32::from_rgb(20, 80, 200), Color32::from_rgb(10, 60, 160), "Messmodus: Neupunkt (Klick zum Wechseln)")
+    /// Umschalter für die getrennte Messung (grün: Hz, V und Strecke zusammen; orange: Strecke getrennt von Hz/V).
+    fn zeichne_getrennt_knopf(&mut self, ui: &mut egui::Ui) {
+        let (text, fill, rand, tip) = if self.getrennt_modus {
+            ("HzV/S", Color32::from_rgb(210, 110, 20), Color32::from_rgb(240, 150, 50), "Getrennte Messung AN: Strecke messen, dann Hz/V übernehmen (Klick zum Wechseln)")
         } else {
-            ("Stationierung", Color32::from_rgb(42, 130, 65), Color32::from_rgb(28, 100, 45), "Messmodus: Stationierung (Klick zum Wechseln)")
+            ("HzVS", Color32::from_rgb(42, 130, 65), Color32::from_rgb(28, 100, 45), "Hz, V und Strecke werden zusammen gemessen (Klick zum Wechseln)")
         };
         let knopf = egui::Button::new(egui::RichText::new(text).strong().size(11.0).color(Color32::WHITE))
             .fill(fill)
             .stroke(Stroke::new(1.0, rand))
-            .min_size(Vec2::new(100.0, KNOPF_GROESSE));
+            .min_size(Vec2::new(GETRENNT_KNOPF_BREITE, KNOPF_GROESSE));
+        if ui.add(knopf).on_hover_text(tip).clicked() {
+            self.getrennt_modus = !self.getrennt_modus;
+            self.getrennt_messung = None;
+        }
+    }
+
+    fn zeichne_modus_knopf(&mut self, ui: &mut egui::Ui) {
+        let (text, fill, rand, tip) = if self.neupunkt_modus {
+            ("Modus
+Neupunkte", Color32::from_rgb(20, 80, 200), Color32::from_rgb(10, 60, 160), "Messmodus: Neupunkt (Klick zum Wechseln)")
+        } else {
+            ("Modus
+Stationierung", Color32::from_rgb(42, 130, 65), Color32::from_rgb(28, 100, 45), "Messmodus: Stationierung (Klick zum Wechseln)")
+        };
+        let knopf = egui::Button::new(egui::RichText::new(text).strong().size(11.0).color(Color32::WHITE))
+            .fill(fill)
+            .stroke(Stroke::new(1.0, rand))
+            .min_size(Vec2::new(MODUS_KNOPF_BREITE, KNOPF_GROESSE));
         if ui.add(knopf).on_hover_text(tip).clicked() {
             self.neupunkt_modus = !self.neupunkt_modus;
             self.aktualisiere_modus();

@@ -15,3 +15,4 @@ pub mod projekt;
 pub mod projektdaten;
 pub mod punktlisten;
 pub mod rechenparameter;
+pub mod stationierung_csv;
