@@ -11,10 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::daten::einstellungen::Einstellungen;
 use crate::daten::json_speicher;
-use crate::daten::modelle::{
-    FeldbuchPunkt, NeupunktErgebnis, StationierungsErgebnis, StationierungsPunkt, TYP_NEUPUNKT, TYP_STANDPUNKT,
-    heute_text,
-};
+use crate::daten::modelle::{FeldbuchPunkt, NeupunktErgebnis, StationierungsErgebnis, StationierungsPunkt, TYP_NEUPUNKT, TYP_STANDPUNKT, heute_text};
 use crate::daten::projektdaten::ProjektdatenManager;
 use crate::daten::punktlisten::{FeldbuchpunkteManager, ImportPunkteManager, NeupunkteManager};
 use crate::daten::rechenparameter::RechenparameterManager;
@@ -34,13 +31,14 @@ pub const QUELLE_LOKAL: &str = "Lokal";
 /// Mindestanzahl verschiedener Anschlusspunkte für eine gültige Station.
 const MIN_ANSCHLUSSPUNKTE: usize = 2;
 /// Mindestanzahl Spalten der Anschlusspunktedatei (Nr, R, H).
-const MIN_SPALTEN_ANSCHLUSSDATEI: usize = 3;
 /// Dateiname der Anschlusspunkte.
 const ANSCHLUSSPUNKTE_DATEI: &str = "Anschlusspunkte.csv";
 
 /// Inhalt der Datei Station-{Nr}.json.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct StationsdatenDatei {
+    #[serde(rename = "AufstellungId", default)]
+    pub aufstellung_id: String,
     #[serde(rename = "StandpunktNr", default)]
     pub standpunkt_nr: String,
     #[serde(rename = "InstrumentenHoehe", default)]
@@ -87,8 +85,7 @@ impl StationsdatenDatei {
         let Some(ergebnis) = &self.ergebnis else {
             return;
         };
-        let passt = ergebnis.residuen.len() == self.messungen.len()
-            && ergebnis.residuen.iter().zip(&self.messungen).all(|(r, m)| r.punkt_nr == m.punkt_nr);
+        let passt = ergebnis.residuen.len() == self.messungen.len() && ergebnis.residuen.iter().zip(&self.messungen).all(|(r, m)| r.punkt_nr == m.punkt_nr);
         if passt {
             self.aktiv_richtung = ergebnis.residuen.iter().map(|r| r.richtung_aktiv).collect();
             self.aktiv_strecke = ergebnis.residuen.iter().map(|r| r.strecke_aktiv).collect();
@@ -209,10 +206,7 @@ impl Projekt {
         self.importpunkte = ImportPunkteManager::initialisiere(&e.get_pfad("ImportPunkte.json"));
         self.station_zuruecksetzen();
         self.lade_aktuellen_standpunkt();
-        protokoll::konfiguriere(
-            self.einstellungen.protokoll_aktiv,
-            self.einstellungen.ist_geladen().then(|| self.einstellungen.projekt_verzeichnis.clone()),
-        );
+        protokoll::konfiguriere(self.einstellungen.protokoll_aktiv, self.einstellungen.ist_geladen().then(|| self.einstellungen.projekt_verzeichnis.clone()));
     }
 
     /// Wechselt in ein (neues oder bestehendes) Projekt.
@@ -231,7 +225,9 @@ impl Projekt {
 
     /// Pfad der Anschlusspunktedatei im Projektverzeichnis.
     pub fn anschlusspunkte_pfad(&self) -> PathBuf {
-        self.einstellungen.get_pfad(ANSCHLUSSPUNKTE_DATEI)
+        let neu = self.anschlusspunkte_zielpfad();
+        let alt = self.einstellungen.get_pfad(ANSCHLUSSPUNKTE_DATEI);
+        if neu.exists() || !alt.exists() { neu } else { alt }
     }
 
     /// Sucht Koordinaten (R, H, Höhe) zu einer Punktnummer: Importpunkte, Feldbuchpunkte, Anschlusspunkte.csv.
@@ -240,24 +236,19 @@ impl Projekt {
             return None;
         }
         if let Some(p) = self.importpunkte.punkte().iter().find(|p| p.punkt_nr.eq_ignore_ascii_case(punkt_nr)) {
-            return Some((p.r, p.h, p.hoehe));
+            return Some((p.r, p.h, if p.hoehe_vorhanden == Some(false) { f64::NAN } else { p.hoehe }));
         }
         if let Some(p) = self.feldbuchpunkte.punkte().iter().find(|p| p.punkt_nr.eq_ignore_ascii_case(punkt_nr)) {
             return Some((p.r, p.h, p.hoehe));
         }
-        let text = fs::read_to_string(self.anschlusspunkte_pfad()).ok()?;
-        for zeile in text.lines().skip(1) {
-            let t: Vec<&str> = zeile.split(',').collect();
-            if t.len() < MIN_SPALTEN_ANSCHLUSSDATEI || !t[0].trim().eq_ignore_ascii_case(punkt_nr) {
-                continue;
-            }
-            let (Some(r), Some(h)) = (parse_zahl(t[1]), parse_zahl(t[2])) else {
-                continue;
-            };
-            let hoehe = t.get(3).and_then(|x| parse_zahl(x)).unwrap_or(0.0);
-            return Some((r, h, hoehe));
-        }
-        None
+        let d = crate::daten::csv_datei::CsvDatei::laden(&self.anschlusspunkte_pfad()).ok()?;
+        let i = d.zeilen.iter().position(|z| d.zelle(z, "PunktNr").eq_ignore_ascii_case(punkt_nr))?;
+        Some((d.zahl(i, "X").ok()?, d.zahl(i, "Y").ok()?, if d.zelle(&d.zeilen[i], "Z").is_empty() { f64::NAN } else { d.zahl(i, "Z").ok()? }))
+    }
+
+    pub fn anschlusspunkte_zielpfad(&self) -> PathBuf {
+        let name = if self.einstellungen.projekt_name.is_empty() { "Anschlusspunkte".to_string() } else { format!("{}-Anschlusspunkte", self.einstellungen.projekt_name) };
+        self.einstellungen.get_pfad(&format!("{name}-stp.csv"))
     }
 
     // ── Festpunktübernahme ────────────────────────────────────────────────────
@@ -269,19 +260,8 @@ impl Projekt {
 
     /// Gemessene Neupunkte, die übernommen werden können (Koordinaten vorhanden), sortiert.
     pub fn festpunkt_kandidaten(&self) -> Vec<NeupunktErgebnis> {
-        let mut liste: Vec<NeupunktErgebnis> = self
-            .neupunkte
-            .koordinaten()
-            .iter()
-            .filter(|e| !e.punkt_nr.trim().is_empty() && (e.r != 0.0 || e.h != 0.0))
-            .cloned()
-            .collect();
-        liste.sort_by(|a, b| {
-            a.punkt_nr
-                .to_lowercase()
-                .cmp(&b.punkt_nr.to_lowercase())
-                .then_with(|| a.standpunkt_nr.to_lowercase().cmp(&b.standpunkt_nr.to_lowercase()))
-        });
+        let mut liste: Vec<NeupunktErgebnis> = self.neupunkte.koordinaten().iter().filter(|e| !e.punkt_nr.trim().is_empty() && (e.r != 0.0 || e.h != 0.0)).cloned().collect();
+        liste.sort_by(|a, b| a.punkt_nr.to_lowercase().cmp(&b.punkt_nr.to_lowercase()).then_with(|| a.standpunkt_nr.to_lowercase().cmp(&b.standpunkt_nr.to_lowercase())));
         liste
     }
 
@@ -313,11 +293,7 @@ impl Projekt {
     // ── Stationsdaten ─────────────────────────────────────────────────────────
 
     fn neue_station(nr: &str) -> StationsdatenDatei {
-        StationsdatenDatei {
-            standpunkt_nr: nr.to_string(),
-            datum: heute_text(),
-            ..StationsdatenDatei::default()
-        }
+        StationsdatenDatei { aufstellung_id: crate::daten::messdaten::neue_aufstellung_id(nr), standpunkt_nr: nr.to_string(), datum: heute_text(), ..StationsdatenDatei::default() }
     }
 
     /// Instrumentenhöhe der aktiven Station [m].
@@ -328,19 +304,19 @@ impl Projekt {
     /// Setzt die Instrumentenhöhe und speichert die Station.
     pub fn set_instrumenten_hoehe(&mut self, wert: f64) -> io::Result<()> {
         datei_speicher::pruefe_schreibzugriff(&self.station_pfad)?;
+        if !wert.is_finite() || wert < 0.0 {
+            return Err(crate::daten::csv_basis::fehler("Ungültige Instrumentenhöhe."));
+        }
+        if (self.station.instrumenten_hoehe - wert).abs() > 0.0005 {
+            self.station.aufstellung_id = crate::daten::messdaten::neue_aufstellung_id(&self.station.standpunkt_nr);
+        }
         self.station.instrumenten_hoehe = wert;
         self.station_speichern()
     }
 
     /// Konvergierte Stationierung mit mindestens zwei verschiedenen Anschlusspunkten.
     pub fn hat_gueltige_station(&self) -> bool {
-        let verschiedene: std::collections::HashSet<&str> = self
-            .station
-            .messungen
-            .iter()
-            .map(|p| p.punkt_nr.as_str())
-            .filter(|nr| !nr.trim().is_empty())
-            .collect();
+        let verschiedene: std::collections::HashSet<&str> = self.station.messungen.iter().map(|p| p.punkt_nr.as_str()).filter(|nr| !nr.trim().is_empty()).collect();
         ist_verwendbar(self.station.ergebnis.as_ref()) && verschiedene.len() >= MIN_ANSCHLUSSPUNKTE
     }
 
@@ -354,6 +330,9 @@ impl Projekt {
                 Ok(mut daten) => {
                     datei_speicher::laden_erfolgreich(&pfad);
                     daten.standpunkt_nr = standpunkt_nr.to_string();
+                    if daten.aufstellung_id.is_empty() {
+                        daten.aufstellung_id = self.station.aufstellung_id.clone();
+                    }
                     self.station = daten;
                 }
                 Err(fehler) => {
@@ -373,11 +352,7 @@ impl Projekt {
         if let Some(nr) = nr.filter(|n| !n.is_empty()) {
             self.station_laden(&nr);
             if self.station.instrumenten_hoehe == 0.0 {
-                if let Some(ih) = self
-                    .projektdaten
-                    .get_value(KATEGORIE_STATIONIERUNG, "Instrumentenhoehe [m]")
-                    .and_then(parse_zahl)
-                {
+                if let Some(ih) = self.projektdaten.get_value(KATEGORIE_STATIONIERUNG, "Instrumentenhoehe [m]").and_then(parse_zahl) {
                     self.station.instrumenten_hoehe = ih;
                 }
             }
@@ -436,7 +411,7 @@ impl Projekt {
         };
         let standpunkt_nr = self.station.standpunkt_nr.clone();
         let params = self.rechenparameter.params.clone();
-        if let Err(e) = self.neupunkte.berechne_neu(&neu, &standpunkt_nr, &params, self.station.instrumenten_hoehe) {
+        if let Err(e) = self.neupunkte.berechne_neu(&neu, &standpunkt_nr, &params, self.station.instrumenten_hoehe, &self.station.aufstellung_id) {
             fehler_log::log("Projekt.neupunkte_nach_stationierung", &format!("Neuberechnung der Neupunkte: {e}"));
         }
         self.station_version += 1;
@@ -452,11 +427,7 @@ impl Projekt {
 
     /// Bisheriges Stationierungsergebnis des Standpunkts (aktiver Stand oder gespeicherte Stationsdatei).
     fn alte_stationierung(&self, standpunkt_nr: &str) -> Option<StationierungsErgebnis> {
-        if self.station.standpunkt_nr == standpunkt_nr {
-            self.station.ergebnis.clone()
-        } else {
-            self.lese_station_datei(standpunkt_nr).and_then(|d| d.ergebnis)
-        }
+        if self.station.standpunkt_nr == standpunkt_nr { self.station.ergebnis.clone() } else { self.lese_station_datei(standpunkt_nr).and_then(|d| d.ergebnis) }
     }
 
     /// Entfernt einen Anschlusspunkt aus dem Stack und berechnet neu.
@@ -482,10 +453,7 @@ impl Projekt {
         }
         // Die gespeicherte Beobachtungsauswahl gilt auch für spätere Neuberechnungen; passt sie nicht, wird sie angeglichen
         if self.station.gleiche_aktivierung_an() {
-            fehler_log::log(
-                "Projekt.neuberechnen",
-                "Aktivierungslisten passten nicht zur Zahl der Messungen: angeglichen (neue Beobachtungen aktiv).",
-            );
+            fehler_log::log("Projekt.neuberechnen", "Aktivierungslisten passten nicht zur Zahl der Messungen: angeglichen (neue Beobachtungen aktiv).");
         }
         let aktivierung = self.station.aktivierung();
         let par = &self.rechenparameter.params;
@@ -563,6 +531,9 @@ impl Projekt {
             self.station_laden(standpunkt_nr);
         }
         datei_speicher::pruefe_schreibzugriff(&ziel).map_err(|e| e.to_string())?;
+        if self.station.aufstellung_id.is_empty() || self.station.standpunkt_nr != standpunkt_nr {
+            self.station.aufstellung_id = crate::daten::messdaten::neue_aufstellung_id(standpunkt_nr);
+        }
         self.station.standpunkt_nr = standpunkt_nr.to_string();
         self.station.instrumenten_hoehe = instr_hoehe;
         self.station.messungen = punkte;
@@ -584,8 +555,13 @@ impl Projekt {
         punkte: Vec<StationierungsPunkt>,
         aktivierung: Aktivierung,
         ergebnis: StationierungsErgebnis,
+        aufstellung_id: Option<&str>,
     ) -> Result<(), String> {
         self.set_ergebnis_manuell(standpunkt_nr, instr_hoehe, punkte, aktivierung, ergebnis.clone())?;
+        if let Some(id) = aufstellung_id.filter(|s| !s.is_empty()) {
+            self.station.aufstellung_id = id.into();
+            self.station_speichern().map_err(|e| e.to_string())?;
+        }
         self.feldbuchpunkte
             .add_or_update(FeldbuchPunkt {
                 punkt_nr: standpunkt_nr.to_string(),
@@ -614,10 +590,7 @@ impl Projekt {
             )
             .map_err(|e| e.to_string())?;
         self.schreibe_sigma_projektdaten(ergebnis.s0_mm).map_err(|e| e.to_string())?;
-        protokoll::log(
-            "RECHNUNG",
-            &format!("Freie Stationierung übernommen: {standpunkt_nr}, s0 = {} mm", f(ergebnis.s0_mm, 2)),
-        );
+        protokoll::log("RECHNUNG", &format!("Freie Stationierung übernommen: {standpunkt_nr}, s0 = {} mm", f(ergebnis.s0_mm, 2)));
         self.neupunkte_nach_stationierung();
         Ok(())
     }
@@ -631,13 +604,36 @@ impl Projekt {
         self.station_speichern()
     }
 
+    /// Beginnt ausdrücklich eine neue Aufstellung, auch bei gleicher Nummer.
+    /// Die bisherige Stationsdatei bleibt als Archiv erhalten.
+    pub fn neue_aufstellung(&mut self, nr: &str, ih: f64) -> io::Result<()> {
+        if !ih.is_finite() || ih < 0.0 {
+            return Err(crate::daten::csv_basis::fehler("Ungültige Instrumentenhöhe."));
+        }
+        if self.station_pfad.exists() && !self.station.aufstellung_id.is_empty() {
+            let id: String = self.station.aufstellung_id.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) { '_' } else { c }).collect();
+            let archiv = self.station_pfad.with_file_name(format!("Station-{id}.json"));
+            if !archiv.exists() {
+                fs::copy(&self.station_pfad, archiv)?;
+            }
+        }
+        let vorher = self.station.clone();
+        let alter_pfad = self.station_pfad.clone();
+        self.station = Self::neue_station(nr);
+        self.station.instrumenten_hoehe = ih;
+        self.station_pfad = self.einstellungen.get_pfad(&format!("Station-{nr}.json"));
+        self.station_speichern().inspect_err(|_| {
+            self.station = vorher;
+            self.station_pfad = alter_pfad;
+        })
+    }
+
     /// Speichert die aktive Station.
     pub fn station_speichern(&self) -> io::Result<()> {
         if self.station_pfad.as_os_str().is_empty() {
             return Ok(());
         }
-        json_speicher::speichere(&self.station_pfad, &self.station, "StationsdatenManager.speichern")
-            .inspect_err(|e| fehler_log::log("Projekt.station_speichern", &e.to_string()))
+        json_speicher::speichere(&self.station_pfad, &self.station, "StationsdatenManager.speichern").inspect_err(|e| fehler_log::log("Projekt.station_speichern", &e.to_string()))
     }
 }
 
@@ -676,10 +672,7 @@ mod tests {
         p.neuer_standpunkt("S1", 1.5).unwrap();
         // Station bei (0,0), Orientierung 0: Ziel A im Norden, B im Osten, C im Süden
         assert!(p.hinzufuegen_und_berechnen(anschluss("A", 0.0, 100.0, 0.0, 100.0)).unwrap().is_none());
-        let erg = p
-            .hinzufuegen_und_berechnen(anschluss("B", 100.0, 0.0, 100.0, 100.0))
-            .unwrap()
-            .unwrap();
+        let erg = p.hinzufuegen_und_berechnen(anschluss("B", 100.0, 0.0, 100.0, 100.0)).unwrap().unwrap();
         assert!(erg.konvergiert);
         // zwei Punkte, zwei Richtungen + zwei Strecken = 4 Beobachtungen: gültig
         assert!(p.hat_gueltige_station());
@@ -736,7 +729,7 @@ mod tests {
         };
         let erg = freie_stationierung::berechnen(&punkte, 1.5, &optionen).unwrap();
         assert!(erg.konfidenz.is_some(), "Konfidenzellipse bei n >= 3");
-        p.uebernehme_manuelle_stationierung("S1", 1.5, punkte, akt.clone(), erg).unwrap();
+        p.uebernehme_manuelle_stationierung("S1", 1.5, punkte, akt.clone(), erg, None).unwrap();
 
         // Die Auswahl steht in der gespeicherten Stationsdatei
         assert_eq!(p.lese_station_datei("S1").unwrap().aktivierung(), akt);
@@ -759,10 +752,7 @@ mod tests {
         let res = |nr: &str, hz: bool, str_: bool| crate::daten::modelle::PunktResiduum { punkt_nr: nr.into(), richtung_aktiv: hz, strecke_aktiv: str_, ..Default::default() };
         let mut daten = StationsdatenDatei {
             messungen: vec![anschluss("A", 0.0, 0.0, 0.0, 1.0), anschluss("B", 1.0, 1.0, 0.0, 1.0), anschluss("C", 2.0, 2.0, 0.0, 1.0)],
-            ergebnis: Some(StationierungsErgebnis {
-                residuen: vec![res("A", true, true), res("B", true, false), res("C", false, true)],
-                ..Default::default()
-            }),
+            ergebnis: Some(StationierungsErgebnis { residuen: vec![res("A", true, true), res("B", true, false), res("C", false, true)], ..Default::default() }),
             ..Default::default()
         };
         let akt = daten.aktivierung();
@@ -792,9 +782,7 @@ mod tests {
     fn anschlusspunktsuche_reihenfolge() {
         let (mut p, dir) = projekt_in("suche");
         fs::write(p.anschlusspunkte_pfad(), "Nr,R,H,Hoehe\nCSV1,1,2,3\nBEIDE,10,20,30\n").unwrap();
-        p.feldbuchpunkte
-            .add_or_update(FeldbuchPunkt { punkt_nr: "BEIDE".into(), r: 100.0, h: 200.0, hoehe: 300.0, ..Default::default() })
-            .unwrap();
+        p.feldbuchpunkte.add_or_update(FeldbuchPunkt { punkt_nr: "BEIDE".into(), r: 100.0, h: 200.0, hoehe: 300.0, ..Default::default() }).unwrap();
         assert_eq!(p.finde_anschlusspunkt("csv1"), Some((1.0, 2.0, 3.0)));
         assert_eq!(p.finde_anschlusspunkt("BEIDE"), Some((100.0, 200.0, 300.0)));
         assert_eq!(p.finde_anschlusspunkt("fehlt"), None);

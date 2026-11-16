@@ -89,6 +89,7 @@ const S0_BEDINGT_MM: f64 = 5.0;
 /// Schwelle s0 [mm] für „schwach".
 const S0_SCHWACH_MM: f64 = 15.0;
 
+mod auswahl;
 mod export;
 mod pdf_export;
 mod messdaten_eingabe;
@@ -230,6 +231,8 @@ pub struct DxfViewer {
     /// Die Startgröße (Full HD oder maximiert) des Viewer-Fensters wurde bereits festgelegt.
     startgroesse_gesetzt: bool,
     offen: bool,
+    /// Auswahlmodus für die Konvertierung (eigene Instanz, nur grafische Funktionen).
+    auswahl_modus: Option<Box<auswahl::AuswahlModus>>,
 }
 
 impl Default for DxfViewer {
@@ -294,6 +297,7 @@ impl Default for DxfViewer {
             war_fokussiert: true,
             startgroesse_gesetzt: false,
             offen: true,
+            auswahl_modus: None,
         }
     }
 }
@@ -669,6 +673,10 @@ impl DxfViewer {
     }
 
     fn fit_to_view(&mut self) {
+        // Auswahlmodus: auf die wählbaren Punkte einpassen (ohne Punkte auf die Zeichnung)
+        if self.ist_auswahl() && self.auswahl_einpassen(None) {
+            return;
+        }
         let liste = self.alle_sichtbaren_fuer_fit();
         let Some(bb) = liste.iter().map(|e| e.bounds()).reduce(|a, b| a.erweitert(&b)) else {
             return;
@@ -776,7 +784,8 @@ impl DxfViewer {
         if !self.initialisiert {
             self.initialisiere(projekt);
         }
-        let id = egui::ViewportId::from_hash_of("dxf_viewer");
+        // Der Auswahlmodus ist eine eigene Instanz in eigenem Fenster
+        let id = egui::ViewportId::from_hash_of(if self.ist_auswahl() { "dxf_viewer_auswahl" } else { "dxf_viewer" });
         let builder = egui::ViewportBuilder::default()
             .with_title(self.fenstertitel())
             .with_inner_size(FENSTER_GROESSE)
@@ -785,19 +794,27 @@ impl DxfViewer {
             if !self.startgroesse_gesetzt {
                 self.startgroesse_gesetzt = super::setze_startgroesse_fenster(ui.ctx());
             }
-            // Rückkehr zum Fenster: Stationierung kann sich geändert haben (OnFormActivated)
-            let fokus = ui.ctx().input(|i| i.viewport().focused.unwrap_or(true));
-            if fokus && !self.war_fokussiert {
-                self.bei_aktivierung(projekt);
+            if !self.ist_auswahl() {
+                // Rückkehr zum Fenster: Stationierung kann sich geändert haben (OnFormActivated)
+                let fokus = ui.ctx().input(|i| i.viewport().focused.unwrap_or(true));
+                if fokus && !self.war_fokussiert {
+                    self.bei_aktivierung(projekt);
+                }
+                self.war_fokussiert = fokus;
+                self.bediene_geraet(projekt, geraet);
             }
-            self.war_fokussiert = fokus;
-
-            self.bediene_geraet(projekt, geraet);
             self.zeichne(ui, projekt, geraet);
             ui.ctx().request_repaint_after(REPAINT_INTERVALL);
 
             if ui.ctx().input(|i| i.viewport().close_requested()) {
-                self.beim_schliessen(projekt);
+                if self.ist_auswahl() {
+                    self.auswahl_schliessen_angefragt(ui.ctx());
+                } else {
+                    self.beim_schliessen(projekt);
+                    self.offen = false;
+                }
+            }
+            if self.auswahl_entschieden() {
                 self.offen = false;
             }
         });
@@ -805,7 +822,9 @@ impl DxfViewer {
     }
 
     fn fenstertitel(&self) -> String {
-        if self.dxf_pfad.is_empty() {
+        if self.ist_auswahl() {
+            "DXF-Viewer – Auswahl für die Konvertierung".to_string()
+        } else if self.dxf_pfad.is_empty() {
             "DXF-Viewer".to_string()
         } else {
             let name = Path::new(&self.dxf_pfad).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -851,15 +870,24 @@ impl DxfViewer {
         let voll = ui.max_rect();
         ui.painter().rect_filled(voll, 0.0, FENSTER_FARBE);
 
+        // Im Auswahlmodus sind Messen, Berechnen und Import gesperrt (ausgegraut)
+        let frei = !self.ist_auswahl();
         egui::Panel::top("dxf_toolbar")
             .exact_size(TOOLBAR_HOEHE)
             .frame(egui::Frame::new().fill(TOOLBAR_FARBE))
-            .show(ui, |ui| self.zeichne_toolbar(ui, projekt, geraet));
+            .show(ui, |ui| {
+                ui.add_enabled_ui(frei, |ui| self.zeichne_toolbar(ui, projekt, geraet));
+            });
+        if !frei {
+            egui::Panel::top("dxf_auswahl_leiste")
+                .frame(egui::Frame::new().fill(auswahl::LEISTE_FARBE).inner_margin(egui::Margin::symmetric(8, 6)))
+                .show(ui, |ui| self.zeichne_auswahl_leiste(ui));
+        }
 
         egui::Panel::bottom("dxf_status")
             .exact_size(STATUS_HOEHE)
             .frame(egui::Frame::new().fill(STATUS_FARBE))
-            .show(ui, |ui| self.zeichne_statusleiste(ui, projekt));
+            .show(ui, |ui| if frei { self.zeichne_statusleiste(ui, projekt) } else { self.zeichne_auswahl_status(ui) });
 
         egui::Panel::right("dxf_seite")
             .exact_size(SEITE_BREITE)
@@ -875,6 +903,7 @@ impl DxfViewer {
             .show(ui, |ui| self.zeichne_canvas(ui, projekt));
 
         self.zeichne_dialog(ui.ctx().clone(), projekt, geraet);
+        self.zeichne_auswahl_frage(&ui.ctx().clone());
     }
 
     // ── Toolbar ───────────────────────────────────────────────────────────────

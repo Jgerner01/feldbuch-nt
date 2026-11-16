@@ -17,9 +17,44 @@ const CODE_FARBE: i32 = 62;
 
 /// Liest alle unterstützten Entities aus einer DXF-Datei.
 pub fn lese(pfad: &Path) -> Result<Vec<DxfEntity>, String> {
+    Ok(parse_entities(&lese_datei_gruppen(pfad)?))
+}
+
+/// Eine Entity des ENTITIES-Abschnitts mit allen Gruppencodes (z. B. für Höhen, die die Ansicht nicht braucht).
+#[derive(Clone, Debug)]
+pub struct RohEntity {
+    /// Entity-Typ, z. B. "LINE", "LWPOLYLINE", "VERTEX".
+    pub typ: String,
+    /// Alle Gruppencode/Wert-Paare in Dateireihenfolge.
+    pub gruppen: Vec<(i32, String)>,
+}
+
+impl RohEntity {
+    /// Layername ("0", wenn keiner angegeben ist).
+    pub fn layer(&self) -> &str {
+        hole(&self.gruppen, CODE_LAYER).unwrap_or("0")
+    }
+
+    /// Text des letzten Werts zu einem Gruppencode.
+    pub fn text(&self, code: i32) -> Option<&str> {
+        hole(&self.gruppen, code)
+    }
+
+    /// Zahl zum Gruppencode; `None`, wenn der Code fehlt oder keine Zahl enthält.
+    pub fn zahl(&self, code: i32) -> Option<f64> {
+        hole(&self.gruppen, code).and_then(|t| t.trim().parse().ok())
+    }
+}
+
+/// Liest alle Entities des ENTITIES-Abschnitts als Rohdaten.
+pub fn lese_roh(pfad: &Path) -> Result<Vec<RohEntity>, String> {
+    let gruppen = lese_datei_gruppen(pfad)?;
+    Ok(entity_bloecke(&gruppen).into_iter().map(|(typ, props)| RohEntity { typ: typ.to_string(), gruppen: props.to_vec() }).collect())
+}
+
+fn lese_datei_gruppen(pfad: &Path) -> Result<Vec<(i32, String)>, String> {
     let bytes = fs::read(pfad).map_err(|e| format!("DXF-Datei konnte nicht geöffnet werden: {e}"))?;
-    let text = dekodiere(&bytes);
-    Ok(parse_entities(&lese_gruppen(&text)))
+    Ok(lese_gruppen(&dekodiere(&bytes)))
 }
 
 /// Erkennt UTF-8, UTF-16 LE sowie die deklarierte Windows-1252-Kodierung älterer DXFs.
@@ -56,6 +91,11 @@ fn lese_gruppen(text: &str) -> Vec<(i32, String)> {
 }
 
 fn parse_entities(gruppen: &[(i32, String)]) -> Vec<DxfEntity> {
+    entity_bloecke(gruppen).into_iter().filter_map(|(typ, props)| parse_entity(typ, props)).collect()
+}
+
+/// Zerlegt den ENTITIES-Abschnitt in (Typ, Gruppencodes) je Entity.
+fn entity_bloecke(gruppen: &[(i32, String)]) -> Vec<(&str, &[(i32, String)])> {
     let mut ergebnis = Vec::new();
     let mut in_entities = false;
     let mut i = 0;
@@ -90,9 +130,7 @@ fn parse_entities(gruppen: &[(i32, String)]) -> Vec<DxfEntity> {
             while i < gruppen.len() && gruppen[i].0 != 0 {
                 i += 1;
             }
-            if let Some(entity) = parse_entity(typ, &gruppen[start..i]) {
-                ergebnis.push(entity);
-            }
+            ergebnis.push((typ, &gruppen[start..i]));
         } else {
             i += 1;
         }

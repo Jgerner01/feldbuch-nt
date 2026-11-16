@@ -11,17 +11,6 @@ use crate::daten::messdaten::{TYP_ANSCHLUSSPUNKT, TYP_NEUPUNKT};
 use crate::grundlagen::format::parse_zahl;
 
 /// Spaltenindizes der Messdatei.
-const SPALTE_PUNKTNR: usize = 0;
-const SPALTE_HZ: usize = 1;
-const SPALTE_V: usize = 2;
-const SPALTE_STRECKE: usize = 3;
-const SPALTE_ZIELH: usize = 4;
-const SPALTE_CODE: usize = 5;
-const SPALTE_ZEIT: usize = 6;
-const SPALTE_EXZ_L: usize = 7;
-const SPALTE_EXZ_Q: usize = 8;
-const SPALTE_SP: usize = 9;
-const SPALTE_TYP: usize = 10;
 
 const KOMMENTAR_STATIONIERUNG: &str = "# STATIONIERUNG:";
 const KOMMENTAR_SP_SCHLUESSEL: &str = "SP=";
@@ -29,6 +18,9 @@ const KOMMENTAR_SP_SCHLUESSEL: &str = "SP=";
 /// Eine Messzeile der dat.csv.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PolarMessung {
+    pub exz_unbekannt: bool,
+    pub aufstellung_id: String,
+    pub instrumenten_hoehe: Option<f64>,
     /// 0-basierter Zeilenindex in der Datei (für das Rückschreiben).
     pub zeilen_index: usize,
     pub punkt_nr: String,
@@ -48,6 +40,9 @@ pub struct PolarMessung {
 }
 
 impl PolarMessung {
+    pub fn gruppe(&self) -> String {
+        if self.aufstellung_id.is_empty() { self.standpunkt_nr.clone() } else { format!("{} [{}]", self.standpunkt_nr, self.aufstellung_id) }
+    }
     pub fn ist_anschlusspunkt(&self) -> bool {
         self.typ == TYP_ANSCHLUSSPUNKT
     }
@@ -66,108 +61,84 @@ impl PolarMessdaten {
     pub fn standpunkte(&self) -> Vec<String> {
         let mut liste: Vec<String> = Vec::new();
         for m in &self.messungen {
-            if !m.standpunkt_nr.is_empty() && !liste.contains(&m.standpunkt_nr) {
-                liste.push(m.standpunkt_nr.clone());
+            let gruppe = m.gruppe();
+            if !m.standpunkt_nr.is_empty() && !liste.contains(&gruppe) {
+                liste.push(gruppe);
             }
         }
         liste
     }
 }
 
-/// Liest eine Datei; `ist_koordinatenpunkt` leitet den Typ für alte Dateien ab.
+/// Liest Messwerte nach Namen; ungültige Werte melden statt still überspringen.
 pub fn lese(pfad: &Path, ist_koordinatenpunkt: impl Fn(&str) -> bool) -> io::Result<PolarMessdaten> {
     let text = fs::read_to_string(pfad)?;
-    let zeilen: Vec<String> = text.lines().map(str::to_string).collect();
-    Ok(parse(&zeilen, ist_koordinatenpunkt))
+    parse(&text.lines().map(str::to_string).collect::<Vec<_>>(), ist_koordinatenpunkt)
 }
 
-/// Parst die Zeilen einer dat.csv (ohne Dateizugriff testbar).
-pub fn parse(zeilen: &[String], ist_koordinatenpunkt: impl Fn(&str) -> bool) -> PolarMessdaten {
-    let mut daten = PolarMessdaten::default();
-    let mut sektion = String::new();
-    let mut daten_kopf = false;
-    let mut kommentare: Vec<(usize, String)> = Vec::new();
-
-    for (i, roh) in zeilen.iter().enumerate() {
-        let zeile = roh.trim();
-        if zeile.is_empty() || zeile == "---" {
-            continue;
-        }
-        if zeile.to_uppercase().starts_with(&KOMMENTAR_STATIONIERUNG.to_uppercase()) {
+pub fn parse(zeilen: &[String], ist_koordinatenpunkt: impl Fn(&str) -> bool) -> io::Result<PolarMessdaten> {
+    let d = crate::daten::csv_datei::CsvDatei::parse(&zeilen.join("\n"))?;
+    let mut daten = PolarMessdaten { kopf_standpunkt_nr: d.standpunkt_nr.clone(), kopf_instr_hoehe: parse_zahl(&d.instr_hoehe).unwrap_or(0.0), messungen: Vec::new() };
+    let mut kommentare = Vec::new();
+    for (i, zeile) in zeilen.iter().enumerate() {
+        if zeile.trim().to_uppercase().starts_with(KOMMENTAR_STATIONIERUNG) {
             let sp = lese_sp_aus_kommentar(zeile);
             if !sp.is_empty() {
                 kommentare.push((i, sp));
             }
-            continue;
         }
-        if zeile.starts_with('#') {
-            sektion = zeile.trim_start_matches('#').trim().to_uppercase();
-            daten_kopf = false;
-            continue;
+    }
+    for (i, z) in d.zeilen.iter().enumerate() {
+        let nr = d.zelle(z, "PunktNr");
+        if nr.is_empty() {
+            return Err(crate::daten::csv_basis::fehler(format!("Datensatz {}: PunktNr fehlt.", i + 1)));
         }
-        if sektion == "METADATA" {
-            let Some(dp) = zeile.find(':') else {
-                continue;
-            };
-            let schluessel = zeile[..dp].trim().to_lowercase();
-            let wert = zeile[dp + 1..].trim();
-            if schluessel == "standpunktnr" {
-                daten.kopf_standpunkt_nr = wert.to_string();
-            } else if schluessel == "instrumentenhoehe" {
-                if let Some(ih) = parse_zahl(wert) {
-                    daten.kopf_instr_hoehe = ih;
-                }
-            }
-            continue;
+        let typ = d.zelle(z, "Typ").to_uppercase();
+        let geschaetzt = typ.is_empty();
+        if !typ.is_empty() && typ != TYP_ANSCHLUSSPUNKT && typ != TYP_NEUPUNKT {
+            return Err(crate::daten::csv_basis::fehler(format!("Datensatz {}: unbekannter Messtyp {typ}.", i + 1)));
         }
-        if sektion != "DATEN" {
-            continue;
+        let exz = |name: &str| if d.zelle(z, name).is_empty() { Ok(0.0) } else { d.zahl(i, name) };
+        let ih = if d.zelle(z, "InstrumentenHoehe_m").is_empty() { parse_zahl(&d.instr_hoehe) } else { Some(d.zahl(i, "InstrumentenHoehe_m")?) };
+        if ih.is_some_and(|h| h < 0.0) {
+            return Err(crate::daten::csv_basis::fehler(format!("Datensatz {}: negative Instrumentenhöhe.", i + 1)));
         }
-        if !daten_kopf {
-            daten_kopf = true;
-            continue;
+        let strecke = d.zahl(i, "Strecke_m")?;
+        if strecke < 0.0 {
+            return Err(crate::daten::csv_basis::fehler(format!("Datensatz {}: negative Schrägstrecke.", i + 1)));
         }
-        if let Some(m) = lese_zeile(i, zeile, &ist_koordinatenpunkt) {
-            daten.messungen.push(m);
-        }
+        daten.messungen.push(PolarMessung {
+            zeilen_index: d.zeilennummern[i] - 1,
+            exz_unbekannt: d.zelle(z, "ExzLaengs_m").is_empty() || d.zelle(z, "ExzQuer_m").is_empty(),
+            punkt_nr: nr.into(),
+            hz_gon: d.zahl(i, "HZ_gon")?,
+            v_gon: d.zahl(i, "V_gon")?,
+            strecke_m: strecke,
+            zielhoehe_m: d.zahl(i, "Zielhoehe_m")?,
+            code: d.zelle(z, "Code").into(),
+            zeitstempel: d.zelle(z, "Zeitstempel").into(),
+            exz_laengs_m: exz("ExzLaengs_m")?,
+            exz_quer_m: exz("ExzQuer_m")?,
+            standpunkt_nr: d.zelle(z, "StandpunktNr").into(),
+            aufstellung_id: if d.zelle(z, "AufstellungId").is_empty() { d.meta("AufstellungId").unwrap_or("").into() } else { d.zelle(z, "AufstellungId").into() },
+            instrumenten_hoehe: ih,
+            typ: if geschaetzt { if ist_koordinatenpunkt(nr) { TYP_ANSCHLUSSPUNKT } else { TYP_NEUPUNKT }.into() } else { typ },
+            typ_geschaetzt: geschaetzt,
+        });
     }
     weise_standpunkte_zu(&mut daten, &kommentare);
-    daten
-}
-
-fn feld<'a>(t: &'a [String], index: usize) -> &'a str {
-    t.get(index).map_or("", String::as_str)
-}
-
-fn lese_zeile(index: usize, zeile: &str, ist_koordinatenpunkt: &impl Fn(&str) -> bool) -> Option<PolarMessung> {
-    let t: Vec<String> = zeile.split(';').map(|s| s.trim().to_string()).collect();
-    if t.len() <= SPALTE_ZIELH {
-        return None;
+    let mut aufstellungen = std::collections::HashMap::new();
+    for m in &daten.messungen {
+        if m.aufstellung_id.is_empty() {
+            continue;
+        }
+        if let Some((nr, ih)) = aufstellungen.insert(m.aufstellung_id.clone(), (m.standpunkt_nr.clone(), m.instrumenten_hoehe)) {
+            if nr != m.standpunkt_nr || ih != m.instrumenten_hoehe {
+                return Err(crate::daten::csv_basis::fehler(format!("Aufstellung {} enthält widersprüchliche Standpunktnummern/Instrumentenhöhen.", m.aufstellung_id)));
+            }
+        }
     }
-    let (hz, v, s) = (parse_zahl(&t[SPALTE_HZ])?, parse_zahl(&t[SPALTE_V])?, parse_zahl(&t[SPALTE_STRECKE])?);
-    let mut m = PolarMessung {
-        zeilen_index: index,
-        punkt_nr: t[SPALTE_PUNKTNR].clone(),
-        hz_gon: hz,
-        v_gon: v,
-        strecke_m: s,
-        zielhoehe_m: parse_zahl(&t[SPALTE_ZIELH]).unwrap_or(0.0),
-        code: feld(&t, SPALTE_CODE).to_string(),
-        zeitstempel: feld(&t, SPALTE_ZEIT).to_string(),
-        exz_laengs_m: parse_zahl(feld(&t, SPALTE_EXZ_L)).unwrap_or(0.0),
-        exz_quer_m: parse_zahl(feld(&t, SPALTE_EXZ_Q)).unwrap_or(0.0),
-        standpunkt_nr: feld(&t, SPALTE_SP).to_string(),
-        typ: TYP_NEUPUNKT.to_string(),
-        typ_geschaetzt: false,
-    };
-    let typ = feld(&t, SPALTE_TYP).to_uppercase();
-    if typ == TYP_ANSCHLUSSPUNKT || typ == TYP_NEUPUNKT {
-        m.typ = typ;
-    } else {
-        m.typ_geschaetzt = true;
-        m.typ = if ist_koordinatenpunkt(&m.punkt_nr) { TYP_ANSCHLUSSPUNKT } else { TYP_NEUPUNKT }.to_string();
-    }
-    Some(m)
+    Ok(daten)
 }
 
 /// Alte Dateien ohne Standpunktspalte: Anschlusspunkte gehören zum nächsten „# STATIONIERUNG"-Kommentar,
@@ -184,11 +155,7 @@ fn weise_standpunkte_zu(daten: &mut PolarMessdaten, kommentare: &[(usize, String
                 danach = Some(sp);
             }
         }
-        m.standpunkt_nr = if m.typ == TYP_ANSCHLUSSPUNKT {
-            danach.or(davor).unwrap_or(&kopf).to_string()
-        } else {
-            davor.unwrap_or(&kopf).to_string()
-        };
+        m.standpunkt_nr = if m.typ == TYP_ANSCHLUSSPUNKT { danach.or(davor).unwrap_or(&kopf).to_string() } else { davor.unwrap_or(&kopf).to_string() };
     }
 }
 
@@ -218,7 +185,7 @@ A2; 110,5; 99.0; 60.000; 1.500; ; 2026-01-01 10:01; 0.000; 0.000; SP1; AP\n\
 
     #[test]
     fn liest_neues_format() {
-        let d = parse(&zeilen(NEU), |_| false);
+        let d = parse(&zeilen(NEU), |_| false).unwrap();
         assert_eq!(d.kopf_standpunkt_nr, "SP1");
         assert_eq!(d.kopf_instr_hoehe, 1.556);
         assert_eq!(d.messungen.len(), 3);
@@ -238,7 +205,7 @@ A1; 2; 100; 10; 0; ; t\n\
 A2; 3; 100; 10; 0; ; t\n\
 # STATIONIERUNG: SP=NEU  IH=1.5 m\n\
 N2; 4; 100; 10; 0; ; t\n";
-        let d = parse(&zeilen(text), |nr| nr.starts_with('A'));
+        let d = parse(&zeilen(text), |nr| nr.starts_with('A')).unwrap();
         let sp: Vec<(&str, &str, bool)> = d.messungen.iter().map(|m| (m.punkt_nr.as_str(), m.standpunkt_nr.as_str(), m.typ_geschaetzt)).collect();
         // Neupunkt N1 gehört zum vorherigen Kommentar (ALT), die Anschlusspunkte zum nächsten (NEU)
         assert_eq!(sp[0], ("N1", "ALT", true));
@@ -249,10 +216,8 @@ N2; 4; 100; 10; 0; ; t\n";
     }
 
     #[test]
-    fn ueberspringt_ungueltige_zeilen() {
+    fn meldet_ungueltige_zeilen() {
         let text = "# DATEN\nkopf\nA; x; 1; 2; 3\nB; 1; 2\nC; 1; 2; 3; 4\n";
-        let d = parse(&zeilen(text), |_| false);
-        assert_eq!(d.messungen.len(), 1);
-        assert_eq!(d.messungen[0].punkt_nr, "C");
+        assert!(parse(&zeilen(text), |_| false).is_err());
     }
 }

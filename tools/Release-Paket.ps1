@@ -21,8 +21,10 @@ Write-Host "Baue Feldbuch-NT $version (Release) ..."
 cargo build --release
 if ($LASTEXITCODE -ne 0) { throw "cargo build ist fehlgeschlagen." }
 
-# Zielordner von cargo: CARGO_TARGET_DIR, sonst "target" (sonst läge eine veraltete EXE im Projektordner)
-$zielordner = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { "target" }
+# Zielordner von cargo erfragen (berücksichtigt CARGO_TARGET_DIR und target-dir aus .cargo\config.toml;
+# sonst läge eine veraltete EXE im Projektordner)
+$zielordner = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory
+if (-not $zielordner) { throw "Der Zielordner von cargo konnte nicht ermittelt werden." }
 $exe = Join-Path $zielordner "release\feldbuch-nt.exe"
 if (-not (Test-Path $exe)) { throw "$exe wurde nicht erzeugt." }
 

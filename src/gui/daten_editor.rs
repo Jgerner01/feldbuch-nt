@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use eframe::egui::{self, Color32, RichText};
 
 use super::tabelle::Raster;
-use crate::daten::csv_datei::{CsvDatei, TYP_KOORDINATEN, TYP_MESSDATEN};
+use crate::daten::csv_datei::{CsvDatei, TYP_KOORDINATEN, TYP_MESSDATEN, TYP_STANDPUNKT};
 use crate::daten::projekt::Projekt;
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::grundlagen::{fehler_log, pfade};
@@ -48,6 +48,8 @@ struct DatenPanel {
     bearbeiter: String,
     datum: String,
     messdaten: bool,
+    standpunkt: bool,
+    aufstellung_id: String,
     stp_nr: String,
     stp_hoehe: String,
     stp_code: String,
@@ -71,6 +73,8 @@ impl DatenPanel {
         self.bearbeiter.clone_from(&datei.bearbeiter);
         self.datum.clone_from(&datei.datum);
         self.messdaten = datei.datentyp == TYP_MESSDATEN;
+        self.standpunkt = datei.datentyp == TYP_STANDPUNKT;
+        self.aufstellung_id = datei.meta("AufstellungId").unwrap_or("").into();
         self.stp_nr.clone_from(&datei.standpunkt_nr);
         self.stp_hoehe.clone_from(&datei.instr_hoehe);
         self.stp_code.clone_from(&datei.standpunkt_code);
@@ -94,20 +98,28 @@ impl DatenPanel {
         d.sensor = self.sensor.trim().to_string();
         d.bearbeiter = self.bearbeiter.trim().to_string();
         d.datum = self.datum.trim().to_string();
-        d.datentyp = if self.messdaten { TYP_MESSDATEN } else { TYP_KOORDINATEN }.to_string();
+        let vorher_typ = d.datentyp.clone();
+        let vorher_sp = d.standpunkt_nr.clone();
+        let vorher_id = d.meta("AufstellungId").unwrap_or("").to_string();
+        d.datentyp = if self.standpunkt {
+            TYP_STANDPUNKT
+        } else if self.messdaten {
+            TYP_MESSDATEN
+        } else {
+            TYP_KOORDINATEN
+        }
+        .to_string();
+        d.set_meta("AufstellungId", &self.aufstellung_id);
+        let vorher_ih = d.instr_hoehe.clone();
         d.standpunkt_nr = self.stp_nr.trim().to_string();
         d.instr_hoehe = self.stp_hoehe.trim().to_string();
         d.standpunkt_code = self.stp_code.trim().to_string();
-        if !d.pfad.as_os_str().is_empty() {
-            d.pfad = CsvDatei::normalisiere_pfad(&d.pfad, &d.datentyp);
-        }
         d.spalten.clone_from(&self.spalten);
-        d.zeilen = self
-            .zeilen
-            .iter()
-            .map(|z| z.iter().map(|c| c.trim().to_string()).collect::<Vec<_>>())
-            .filter(|z| !z.iter().all(String::is_empty))
-            .collect();
+        let vorher = d.zeilen.clone();
+        d.zeilen = self.zeilen.iter().cloned().filter(|z| !z.iter().all(String::is_empty)).collect();
+        if d.zeilen != vorher || d.instr_hoehe != vorher_ih || d.standpunkt_nr != vorher_sp || d.datentyp != vorher_typ || self.aufstellung_id != vorher_id {
+            d.stationierung.clear();
+        }
     }
 
     fn hinweis(&mut self, text: impl Into<String>) {
@@ -134,7 +146,11 @@ impl DatenPanel {
     }
 
     fn neue_datei(&mut self, projekt: &Projekt, datentyp: &str) {
-        let vorschlag = if datentyp == TYP_MESSDATEN { "messdaten-dat.csv" } else { "koordinaten-kor.csv" };
+        let vorschlag = match datentyp {
+            TYP_STANDPUNKT => "standpunkt-stp.csv",
+            TYP_MESSDATEN => "messdaten-dat.csv",
+            _ => "koordinaten-kor.csv",
+        };
         let Some(pfad) = rfd::FileDialog::new()
             .set_title(format!("Neue {datentyp}-Datei anlegen"))
             .add_filter("CSV-Datei", &["csv"])
@@ -163,6 +179,14 @@ impl DatenPanel {
         let Some(d) = self.datei.as_mut() else {
             return;
         };
+        if !d.pfad.as_os_str().is_empty() {
+            let ziel = CsvDatei::normalisiere_pfad(&d.pfad, &d.datentyp);
+            if ziel != d.pfad && ziel.exists() {
+                self.meldung = format!("Das normalisierte Ziel {} existiert bereits. Bitte einen anderen Dateinamen verwenden.", ziel.display());
+                return;
+            }
+            d.pfad = ziel;
+        }
         if d.pfad.as_os_str().is_empty() {
             if !dialog {
                 return;
@@ -187,12 +211,7 @@ impl DatenPanel {
     fn importieren(&mut self, projekt: &Projekt) {
         let kor = !self.messdaten;
         let (titel, filter, endung) = if kor { ("KOR-Datei importieren", "KOR-Dateien", "kor") } else { ("DAT-Datei importieren", "DAT-Dateien", "dat") };
-        let Some(pfad) = rfd::FileDialog::new()
-            .set_title(titel)
-            .add_filter(filter, &[endung])
-            .add_filter("Alle Dateien", &["*"])
-            .set_directory(startordner(projekt))
-            .pick_file()
+        let Some(pfad) = rfd::FileDialog::new().set_title(titel).add_filter(filter, &[endung]).add_filter("Alle Dateien", &["*"]).set_directory(startordner(projekt)).pick_file()
         else {
             return;
         };
@@ -216,6 +235,10 @@ impl DatenPanel {
         let Some(d) = &self.datei else {
             return;
         };
+        if d.datentyp == TYP_STANDPUNKT {
+            self.hinweis("STP-Dateien über Speichern im vollständigen CSV-Format sichern.");
+            return;
+        }
         let kor = !d.ist_messdaten();
         let mut basis = d.pfad.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let klein = basis.to_lowercase();
@@ -307,6 +330,9 @@ impl DatenPanel {
                 if ui.button("Neu DAT").clicked() {
                     self.neue_datei(projekt, TYP_MESSDATEN);
                 }
+                if ui.button("Neu STP").clicked() {
+                    self.neue_datei(projekt, TYP_STANDPUNKT);
+                }
                 if ui.add_enabled(self.datei.is_some(), egui::Button::new("Speichern")).clicked() {
                     self.speichern(true);
                 }
@@ -348,10 +374,24 @@ impl DatenPanel {
         });
         ui.horizontal(|ui| {
             ui.label("Datentyp:");
-            geaendert |= ui.radio_value(&mut self.messdaten, false, "Koordinaten").changed();
-            geaendert |= ui.radio_value(&mut self.messdaten, true, "Messdaten").changed();
+            let mut typ = if self.standpunkt {
+                2
+            } else if self.messdaten {
+                1
+            } else {
+                0
+            };
+            geaendert |= ui.radio_value(&mut typ, 0, "Koordinaten").changed();
+            geaendert |= ui.radio_value(&mut typ, 1, "Messdaten").changed();
+            geaendert |= ui.radio_value(&mut typ, 2, "Standpunkt").changed();
+            self.standpunkt = typ == 2;
+            self.messdaten = typ == 1;
         });
-        if self.messdaten {
+        if self.messdaten || self.standpunkt {
+            ui.horizontal(|ui| {
+                ui.label("Aufstellung:");
+                geaendert |= ui.text_edit_singleline(&mut self.aufstellung_id).changed();
+            });
             ui.horizontal_wrapped(|ui| {
                 ui.label("Standpunkt-Nr:");
                 geaendert |= ui.add(egui::TextEdit::singleline(&mut self.stp_nr).desired_width(90.0)).changed();
@@ -408,15 +448,15 @@ impl DatenPanel {
         egui::ScrollArea::horizontal().id_salt("datentabelle_horizontal").auto_shrink([false, true]).show(ui, |ui| {
             raster.kopf(ui, &kopf);
             egui::ScrollArea::vertical().id_salt("datentabelle_zeilen").max_height(TABELLE_HOEHE).show(ui, |ui| {
-            for (i, zeile) in self.zeilen.iter_mut().enumerate() {
-                let markiert = &mut self.markiert[i];
-                raster.zeile(ui, i, &(i + 1).to_string(), |z| {
-                    z.haken(markiert);
-                    for zelle in zeile.iter_mut() {
-                        geaendert |= z.eingabe(zelle);
-                    }
-                });
-            }
+                for (i, zeile) in self.zeilen.iter_mut().enumerate() {
+                    let markiert = &mut self.markiert[i];
+                    raster.zeile(ui, i, &(i + 1).to_string(), |z| {
+                        z.haken(markiert);
+                        for zelle in zeile.iter_mut() {
+                            geaendert |= z.eingabe(zelle);
+                        }
+                    });
+                }
             });
         });
         self.geaendert |= geaendert;
@@ -503,20 +543,12 @@ impl DatenEditorAnsicht {
 
 /// Jeder Editor bleibt in seiner eigenen Fläche und scrollt unabhängig.
 fn editor_bereich(ui: &mut egui::Ui, id: &str, titel: &str, hintergrund: Color32, akzent: Color32, panel: &mut DatenPanel, projekt: &Projekt) {
-    egui::Frame::new()
-        .fill(hintergrund)
-        .stroke(egui::Stroke::new(1.0, akzent))
-        .corner_radius(5.0)
-        .inner_margin(8.0)
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.label(RichText::new(titel).strong().color(akzent));
-            ui.add_space(4.0);
-            egui::ScrollArea::vertical()
-                .id_salt(("dateneditor", id))
-                .auto_shrink([false, false])
-                .show(ui, |ui| panel.zeichne(ui, projekt, id));
-        });
+    egui::Frame::new().fill(hintergrund).stroke(egui::Stroke::new(1.0, akzent)).corner_radius(5.0).inner_margin(8.0).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ui.label(RichText::new(titel).strong().color(akzent));
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical().id_salt(("dateneditor", id)).auto_shrink([false, false]).show(ui, |ui| panel.zeichne(ui, projekt, id));
+    });
 }
 
 #[cfg(test)]

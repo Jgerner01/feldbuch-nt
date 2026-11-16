@@ -7,10 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::daten::json_speicher;
-use crate::daten::modelle::{
-    FeldbuchDaten, FeldbuchPunkt, ImportPunkt, ImportPunkteDaten, NeupunktErgebnis, NeupunktRohdaten,
-    StationierungsErgebnis, heute_text,
-};
+use crate::daten::modelle::{FeldbuchDaten, FeldbuchPunkt, ImportPunkt, ImportPunkteDaten, NeupunktErgebnis, NeupunktRohdaten, StationierungsErgebnis, heute_text};
 use crate::daten::rechenparameter::Rechenparameter;
 use crate::grundlagen::datei_speicher;
 use crate::grundlagen::format::parse_zahl;
@@ -109,7 +106,17 @@ impl ImportPunkteManager {
         let vorher = self.punkte.clone();
         let (mut hinzu, mut doppelt) = (0, 0);
         for p in neu {
-            if self.ist_doppelt(&p) {
+            if let Some(v) = self.punkte.iter().find(|v| v.punkt_nr.eq_ignore_ascii_case(&p.punkt_nr)) {
+                if (v.r - p.r).abs() >= DUPLIKAT_TOLERANZ_M
+                    || (v.h - p.h).abs() >= DUPLIKAT_TOLERANZ_M
+                    || v.hoehe_vorhanden.unwrap_or(true) != p.hoehe_vorhanden.unwrap_or(true)
+                    || (v.hoehe - p.hoehe).abs() >= DUPLIKAT_TOLERANZ_M
+                    || v.code != p.code
+                {
+                    let nr = p.punkt_nr.clone();
+                    self.punkte = vorher;
+                    return Err(crate::daten::csv_basis::fehler(format!("Koordinatenkonflikt für Punkt {nr}. Bestehender Punkt wurde beibehalten.")));
+                }
                 doppelt += 1;
             } else {
                 self.punkte.push(p);
@@ -140,15 +147,6 @@ impl ImportPunkteManager {
     pub fn speichern(&self) -> io::Result<()> {
         json_speicher::speichere(&self.pfad, &ImportPunkteDaten { punkte: self.punkte.clone() }, "ImportPunkteManager.speichern")
     }
-
-    fn ist_doppelt(&self, neu: &ImportPunkt) -> bool {
-        self.punkte.iter().any(|v| {
-            (!neu.punkt_nr.is_empty() && v.punkt_nr == neu.punkt_nr)
-                || ((v.r - neu.r).abs() < DUPLIKAT_TOLERANZ_M
-                    && (v.h - neu.h).abs() < DUPLIKAT_TOLERANZ_M
-                    && (neu.r != 0.0 || neu.h != 0.0))
-        })
-    }
 }
 
 fn ist_kommentar_oder_leer(zeile: &str) -> bool {
@@ -163,10 +161,7 @@ fn dateiname(pfad: &Path) -> String {
 /// Existiert eine Begleit-CSV `{name}-kor.csv` mit mindestens ebenso vielen Punkten, wird diese bevorzugt.
 pub fn lese_kor(pfad: &Path) -> io::Result<Vec<ImportPunkt>> {
     let roh = lese_kor_roh(pfad)?;
-    let begleit = pfad.with_file_name(format!(
-        "{}-kor.csv",
-        pfad.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-    ));
+    let begleit = pfad.with_file_name(format!("{}-kor.csv", pfad.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()));
     if begleit.exists() {
         if let Ok(csv) = lese_csv(&begleit) {
             return Ok(if csv.len() >= roh.len() { csv } else { roh });
@@ -200,65 +195,29 @@ pub fn lese_kor_roh(pfad: &Path) -> io::Result<Vec<ImportPunkt>> {
             hoehe,
             quelle: quelle.clone(),
             datum: datum.clone(),
+            code: teile.get(4).unwrap_or(&"").to_string(),
+            hoehe_vorhanden: Some(teile.get(3).and_then(|t| parse_zahl(t)).is_some()),
         });
     }
     Ok(ergebnis)
 }
 
-/// Liest eine CSV-Datei (Komma oder Semikolon). Die Kopfzeile wird in allen Zeilen gesucht.
+/// Koordinatenimport mit gemeinsamer Syntax und namentlicher Spaltenzuordnung.
 pub fn lese_csv(pfad: &Path) -> io::Result<Vec<ImportPunkt>> {
-    let text = fs::read_to_string(pfad)?;
-    let zeilen: Vec<&str> = text.lines().collect();
-    let quelle = dateiname(pfad);
-    let datum = heute_text();
-    let trenner = if zeilen.iter().any(|z| z.contains(';')) { ';' } else { ',' };
-
-    let (mut idx_nr, mut idx_r, mut idx_h, mut idx_hoehe) = (0usize, 1usize, 2usize, 3usize);
-    let mut start = 0;
-    for (i, zeile) in zeilen.iter().enumerate() {
-        let mut hat_header = false;
-        for (j, spalte) in zeile.split(trenner).enumerate() {
-            match spalte.trim().to_lowercase().as_str() {
-                "punktnr" | "nr" | "point" | "name" => {
-                    idx_nr = j;
-                    hat_header = true;
-                }
-                "r" | "rechtswert" | "easting" | "x" => idx_r = j,
-                "h" | "hochwert" | "northing" | "y" => idx_h = j,
-                "hoehe" | "höhe" | "z" | "elevation" | "height" => idx_hoehe = j,
-                _ => {}
-            }
-        }
-        if hat_header {
-            start = i + 1;
-            break;
-        }
-    }
-
-    let mut ergebnis = Vec::new();
-    for roh in &zeilen[start..] {
-        let zeile = roh.trim();
-        if ist_kommentar_oder_leer(zeile) {
-            continue;
-        }
-        let teile: Vec<&str> = zeile.split(trenner).collect();
-        if teile.len() <= idx_r.max(idx_h).max(idx_nr) {
-            continue;
-        }
-        let (Some(r), Some(h)) = (parse_zahl(teile[idx_r]), parse_zahl(teile[idx_h])) else {
-            continue;
-        };
-        let hoehe = teile.get(idx_hoehe).and_then(|t| parse_zahl(t)).unwrap_or(0.0);
-        ergebnis.push(ImportPunkt {
-            punkt_nr: teile[idx_nr].trim().to_string(),
-            r,
-            h,
-            hoehe,
-            quelle: quelle.clone(),
-            datum: datum.clone(),
-        });
-    }
-    Ok(ergebnis)
+    let punkte = crate::daten::kor_csv::lese_punkte(pfad)?;
+    Ok(punkte
+        .into_iter()
+        .map(|p| ImportPunkt {
+            punkt_nr: p.punkt_nr,
+            r: p.r,
+            h: p.h,
+            hoehe: p.hoehe.unwrap_or(0.0),
+            hoehe_vorhanden: Some(p.hoehe.is_some()),
+            code: p.code,
+            quelle: dateiname(pfad),
+            datum: heute_text(),
+        })
+        .collect())
 }
 
 /// Liest eine JSON-Datei im Import- oder Feldbuchformat.
@@ -282,14 +241,7 @@ pub fn lese_json(pfad: &Path) -> io::Result<Vec<ImportPunkt>> {
         return Ok(daten
             .punkte
             .into_iter()
-            .map(|p| ImportPunkt {
-                punkt_nr: p.punkt_nr,
-                r: p.r,
-                h: p.h,
-                hoehe: p.hoehe,
-                quelle: quelle.clone(),
-                datum: p.datum,
-            })
+            .map(|p| ImportPunkt { punkt_nr: p.punkt_nr, r: p.r, h: p.h, hoehe: p.hoehe, quelle: quelle.clone(), datum: p.datum, code: String::new(), hoehe_vorhanden: None })
             .collect());
     }
     Ok(Vec::new())
@@ -334,7 +286,7 @@ impl NeupunkteManager {
     pub fn hinzufuegen_oder_ersetzen(&mut self, roh: NeupunktRohdaten, ergebnis: NeupunktErgebnis) -> io::Result<()> {
         datei_speicher::pruefe_schreibzugriff(&self.pfad)?;
         let vorher = self.daten.clone();
-        match self.daten.rohdaten.iter().position(|r| r.punkt_nr == roh.punkt_nr && r.standpunkt_nr == roh.standpunkt_nr) {
+        match self.daten.rohdaten.iter().position(|r| r.punkt_nr == roh.punkt_nr && r.standpunkt_nr == roh.standpunkt_nr && r.aufstellung_id == roh.aufstellung_id) {
             Some(i) => self.daten.rohdaten[i] = roh,
             None => self.daten.rohdaten.push(roh),
         }
@@ -342,7 +294,7 @@ impl NeupunkteManager {
             .daten
             .koordinaten
             .iter()
-            .position(|e| e.punkt_nr == ergebnis.punkt_nr && e.standpunkt_nr == ergebnis.standpunkt_nr)
+            .position(|e| e.punkt_nr == ergebnis.punkt_nr && e.standpunkt_nr == ergebnis.standpunkt_nr && e.aufstellung_id == ergebnis.aufstellung_id)
         {
             Some(i) => self.daten.koordinaten[i] = ergebnis,
             None => self.daten.koordinaten.push(ergebnis),
@@ -353,20 +305,16 @@ impl NeupunkteManager {
     /// (Anzahl Neupunkte, davon Polarpunkte) eines Standpunkts.
     pub fn zaehle(&self, standpunkt_nr: &str) -> (usize, usize) {
         let alle = self.daten.rohdaten.iter().filter(|r| r.standpunkt_nr == standpunkt_nr).count();
-        let polar = self
-            .daten
-            .koordinaten
-            .iter()
-            .filter(|e| e.standpunkt_nr == standpunkt_nr && e.quelle == QUELLE_POLAR)
-            .count();
+        let polar = self.daten.koordinaten.iter().filter(|e| e.standpunkt_nr == standpunkt_nr && e.quelle == QUELLE_POLAR).count();
         (alle, polar)
     }
 
     pub fn finde_koordinate(&self, punkt_nr: &str, standpunkt_nr: &str) -> Option<&NeupunktErgebnis> {
-        self.daten
-            .koordinaten
-            .iter()
-            .find(|e| e.punkt_nr == punkt_nr && e.standpunkt_nr == standpunkt_nr)
+        self.daten.koordinaten.iter().find(|e| e.punkt_nr == punkt_nr && e.standpunkt_nr == standpunkt_nr)
+    }
+
+    pub fn finde_koordinate_aufstellung(&self, punkt_nr: &str, standpunkt_nr: &str, aufstellung_id: &str) -> Option<&NeupunktErgebnis> {
+        self.daten.koordinaten.iter().find(|e| e.punkt_nr == punkt_nr && e.standpunkt_nr == standpunkt_nr && e.aufstellung_id == aufstellung_id)
     }
 
     /// Berechnet alle Neupunkte eines Standpunkts (auch die im Polarmodul berechneten) mit der neuen
@@ -378,18 +326,20 @@ impl NeupunkteManager {
         standpunkt_nr: &str,
         params: &Rechenparameter,
         instr_hoehe: f64,
+        aufstellung_id: &str,
     ) -> io::Result<(usize, usize)> {
         datei_speicher::pruefe_schreibzugriff(&self.pfad)?;
         neupunkt::pruefe_station(station).map_err(io::Error::other)?;
         let vorher = self.daten.clone();
-        let polar_nr: std::collections::HashSet<String> = self
-            .daten
-            .koordinaten
-            .iter()
-            .filter(|e| e.standpunkt_nr == standpunkt_nr && e.quelle == QUELLE_POLAR)
-            .map(|e| e.punkt_nr.clone())
-            .collect();
-        let mut neue = neupunkt::berechne_alle(&self.daten.rohdaten, station, standpunkt_nr, params, instr_hoehe);
+        let polar_nr: std::collections::HashSet<String> =
+            self.daten.koordinaten.iter().filter(|e| e.standpunkt_nr == standpunkt_nr && e.quelle == QUELLE_POLAR).map(|e| e.punkt_nr.clone()).collect();
+        let mut neue = neupunkt::berechne_alle(
+            self.daten.rohdaten.iter().filter(|r| r.aufstellung_id.is_empty() || r.aufstellung_id == aufstellung_id),
+            station,
+            standpunkt_nr,
+            params,
+            instr_hoehe,
+        );
         // Polarpunkte bleiben als solche gekennzeichnet
         for e in neue.iter_mut().filter(|e| polar_nr.contains(&e.punkt_nr)) {
             e.quelle = QUELLE_POLAR.to_string();
@@ -397,7 +347,9 @@ impl NeupunkteManager {
         let neu_nr: std::collections::HashSet<&str> = neue.iter().map(|e| e.punkt_nr.as_str()).collect();
         // Alte Koordinaten des Standpunkts entfallen; nicht berechenbare Polarpunkte behalten ihren letzten Wert
         self.daten.koordinaten.retain(|e| {
-            !(e.standpunkt_nr == standpunkt_nr && (e.quelle != QUELLE_POLAR || neu_nr.contains(e.punkt_nr.as_str())))
+            !(e.standpunkt_nr == standpunkt_nr
+                && (e.aufstellung_id.is_empty() || e.aufstellung_id == aufstellung_id)
+                && (e.quelle != QUELLE_POLAR || neu_nr.contains(e.punkt_nr.as_str())))
         });
         let anzahl = (neue.len(), neue.iter().filter(|e| e.quelle == QUELLE_POLAR).count());
         self.daten.koordinaten.extend(neue);
@@ -409,20 +361,11 @@ impl NeupunkteManager {
     pub fn remove_where(&mut self, bedingung: impl Fn(&NeupunktRohdaten) -> bool) -> io::Result<usize> {
         datei_speicher::pruefe_schreibzugriff(&self.pfad)?;
         let vorher = self.daten.clone();
-        let schluessel: std::collections::HashSet<(String, String)> = self
-            .daten
-            .rohdaten
-            .iter()
-            .filter(|r| bedingung(r))
-            .map(|r| (r.punkt_nr.clone(), r.standpunkt_nr.clone()))
-            .collect();
+        let schluessel: std::collections::HashSet<(String, String, String)> =
+            self.daten.rohdaten.iter().filter(|r| bedingung(r)).map(|r| (r.punkt_nr.clone(), r.standpunkt_nr.clone(), r.aufstellung_id.clone())).collect();
         let vor = self.daten.rohdaten.len();
-        self.daten
-            .rohdaten
-            .retain(|r| !schluessel.contains(&(r.punkt_nr.clone(), r.standpunkt_nr.clone())));
-        self.daten
-            .koordinaten
-            .retain(|e| !schluessel.contains(&(e.punkt_nr.clone(), e.standpunkt_nr.clone())));
+        self.daten.rohdaten.retain(|r| !schluessel.contains(&(r.punkt_nr.clone(), r.standpunkt_nr.clone(), r.aufstellung_id.clone())));
+        self.daten.koordinaten.retain(|e| !schluessel.contains(&(e.punkt_nr.clone(), e.standpunkt_nr.clone(), e.aufstellung_id.clone())));
         let entfernt = vor - self.daten.rohdaten.len();
         if entfernt > 0 {
             self.speichern().inspect_err(|_| self.daten = vorher)?;
@@ -500,7 +443,10 @@ mod tests {
         let gleiche_nr = ImportPunkt { punkt_nr: "1".into(), r: 99.0, h: 99.0, ..Default::default() };
         let gleiche_lage = ImportPunkt { punkt_nr: "2".into(), r: 10.0005, h: 20.0, ..Default::default() };
         let neu = ImportPunkt { punkt_nr: "3".into(), r: 11.0, h: 20.0, ..Default::default() };
-        assert_eq!(m.add_range(vec![a, gleiche_nr, gleiche_lage, neu]).unwrap(), (2, 2));
+        assert_eq!(m.add_range(vec![a.clone()]).unwrap(), (1, 0));
+        assert!(m.add_range(vec![neu.clone(), gleiche_nr]).is_err());
+        assert_eq!(m.punkte().len(), 1, "Konflikt muss gesamten Import zurückrollen");
+        assert_eq!(m.add_range(vec![a, gleiche_lage, neu]).unwrap(), (2, 1));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -527,26 +473,11 @@ mod tests {
     fn neupunkte_polarpunkte_werden_mit_neu_berechnet() {
         let dir = test_ordner("np");
         let mut m = NeupunkteManager::initialisiere(&dir.join("P-Neupunkte.json"));
-        let roh = NeupunktRohdaten {
-            punkt_nr: "N1".into(),
-            hz_gon: 0.0,
-            v_gon: 100.0,
-            strecke_m: 10.0,
-            standpunkt_nr: "S1".into(),
-            zeitstempel: jetzt(),
-            ..Default::default()
-        };
-        let polar = NeupunktErgebnis {
-            punkt_nr: "N1".into(),
-            standpunkt_nr: "S1".into(),
-            quelle: QUELLE_POLAR.into(),
-            r: 123.0,
-            zeitstempel: jetzt(),
-            ..Default::default()
-        };
+        let roh = NeupunktRohdaten { punkt_nr: "N1".into(), hz_gon: 0.0, v_gon: 100.0, strecke_m: 10.0, standpunkt_nr: "S1".into(), zeitstempel: jetzt(), ..Default::default() };
+        let polar = NeupunktErgebnis { punkt_nr: "N1".into(), standpunkt_nr: "S1".into(), quelle: QUELLE_POLAR.into(), r: 123.0, zeitstempel: jetzt(), ..Default::default() };
         m.hinzufuegen_oder_ersetzen(roh, polar).unwrap();
         let station = StationierungsErgebnis { konvergiert: true, massstab: 1.0, ..Default::default() };
-        let anzahl = m.berechne_neu(&station, "S1", &Rechenparameter::default(), 0.0).unwrap();
+        let anzahl = m.berechne_neu(&station, "S1", &Rechenparameter::default(), 0.0, "").unwrap();
         assert_eq!(anzahl, (1, 1));
         assert_eq!(m.koordinaten().len(), 1);
         // Neu aus den Rohdaten berechnet, aber weiterhin als Polarpunkt gekennzeichnet

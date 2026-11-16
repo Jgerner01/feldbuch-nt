@@ -13,14 +13,8 @@ use crate::protokolle::{ausgabeverzeichnis, fl_teilung as ft_protokoll};
 use crate::rechnen::flaechenteilung::{self as ft, Basis, Ergebnis, Punkt};
 
 /// Verfahrensnamen in der Reihenfolge der Auswahl.
-const VERFAHREN: [&str; 6] = [
-    "1  Parallele zur Grundseite",
-    "2  Durch festen Punkt",
-    "3  Gegebene Richtung",
-    "4  Dreiecksabtrennung",
-    "5  Verhältnisteilung",
-    "6  Streifenabtrennung",
-];
+const VERFAHREN: [&str; 6] =
+    ["1  Parallele zur Grundseite", "2  Durch festen Punkt", "3  Gegebene Richtung", "4  Dreiecksabtrennung", "5  Verhältnisteilung", "6  Streifenabtrennung"];
 /// Basisverfahren der Verhältnisteilung.
 const BASIS: [&str; 3] = ["Parallele zur Grundseite", "Durch festen Punkt", "Gegebene Richtung"];
 /// Spaltenbreiten der Eckpunkttabelle: R, H, Löschen.
@@ -106,35 +100,19 @@ impl Default for FlaechenteilungAnsicht {
 impl FlaechenteilungAnsicht {
     /// Liest die Eckpunkttabelle neu ein und verwirft das Ergebnis.
     fn aktualisiere_polygon(&mut self) {
-        self.polygon = self
-            .ecken
-            .iter()
-            .filter_map(|e| Some((parse_zahl(&e.r)?, parse_zahl(&e.h)?)))
-            .collect();
+        self.polygon = self.ecken.iter().filter_map(|e| Some((parse_zahl(&e.r)?, parse_zahl(&e.h)?))).collect();
         self.kante = self.kante.min(self.polygon.len().saturating_sub(1));
         self.eckpunkt = self.eckpunkt.min(self.polygon.len().saturating_sub(1));
         self.ergebnis = None;
     }
 
     fn lade_csv(&mut self) {
-        let Some(pfad) = rfd::FileDialog::new().set_title("Punkte laden (CSV)").add_filter("CSV-Dateien", &["csv"]).add_filter("Alle Dateien", &["*"]).pick_file()
-        else {
+        let Some(pfad) = rfd::FileDialog::new().set_title("Punkte laden (CSV)").add_filter("CSV-Dateien", &["csv"]).add_filter("Alle Dateien", &["*"]).pick_file() else {
             return;
         };
-        match std::fs::read_to_string(&pfad) {
-            Ok(text) => {
-                self.ecken = text
-                    .lines()
-                    .filter(|z| !z.trim().is_empty())
-                    .filter_map(|z| {
-                        let teile: Vec<&str> = z.split([';', ',']).map(str::trim).collect();
-                        if teile.len() < 3 {
-                            return None;
-                        }
-                        let (r, h) = (parse_zahl(teile[1])?, parse_zahl(teile[2])?);
-                        Some(Ecke { r: f(r, 3), h: f(h, 3) })
-                    })
-                    .collect();
+        match crate::daten::kor_csv::lese_punkte(&pfad) {
+            Ok(punkte) => {
+                self.ecken = punkte.iter().map(|p| Ecke { r: f(p.r, 4), h: f(p.h, 4) }).collect();
                 self.aktualisiere_polygon();
                 self.meldung = format!("{} Eckpunkte geladen.", self.polygon.len());
             }
@@ -479,25 +457,16 @@ impl Abbildung {
         }
         let massstab = (f64::from(frei.width()) / breite).min(f64::from(frei.height()) / hoehe);
         // Zentriert im freien Bereich; Hochwert zeigt nach oben
-        let ursprung = Pos2::new(
-            frei.center().x - (breite * massstab / 2.0) as f32,
-            frei.center().y + (hoehe * massstab / 2.0) as f32,
-        );
+        let ursprung = Pos2::new(frei.center().x - (breite * massstab / 2.0) as f32, frei.center().y + (hoehe * massstab / 2.0) as f32);
         Some(Self { ursprung, massstab, r_min, h_min })
     }
 
     fn punkt(&self, p: Punkt) -> Pos2 {
-        Pos2::new(
-            self.ursprung.x + ((p.0 - self.r_min) * self.massstab) as f32,
-            self.ursprung.y - ((p.1 - self.h_min) * self.massstab) as f32,
-        )
+        Pos2::new(self.ursprung.x + ((p.0 - self.r_min) * self.massstab) as f32, self.ursprung.y - ((p.1 - self.h_min) * self.massstab) as f32)
     }
 
     fn welt(&self, pos: Pos2) -> Punkt {
-        (
-            self.r_min + f64::from(pos.x - self.ursprung.x) / self.massstab,
-            self.h_min - f64::from(pos.y - self.ursprung.y) / self.massstab,
-        )
+        (self.r_min + f64::from(pos.x - self.ursprung.x) / self.massstab, self.h_min - f64::from(pos.y - self.ursprung.y) / self.massstab)
     }
 }
 
@@ -515,10 +484,7 @@ mod tests {
 
     fn ansicht_mit_quadrat() -> FlaechenteilungAnsicht {
         let mut a = FlaechenteilungAnsicht::default();
-        a.ecken = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
-            .iter()
-            .map(|(r, h)| Ecke { r: f(*r, 3), h: f(*h, 3) })
-            .collect();
+        a.ecken = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)].iter().map(|(r, h)| Ecke { r: f(*r, 3), h: f(*h, 3) }).collect();
         a.aktualisiere_polygon();
         a
     }

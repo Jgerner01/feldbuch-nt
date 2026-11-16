@@ -1,0 +1,15 @@
+# METADATA
+Formatversion: 1.0
+Projekt: Demo
+Sensor:
+Bearbeiter:
+Datum: 2026-11-16
+Koordinatensystem: Lokal
+Hoehensystem:
+---
+# DATENTYP
+Koordinaten
+# DATEN
+PunktNr;X;Y;Z;Code
+001;1100.0000;2050.0000;452.0000;FP
+002;1080.0000;1920.0000;;"Baum; Bestand"

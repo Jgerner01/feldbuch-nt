@@ -37,20 +37,12 @@ pub struct ProjektdatenManager {
 impl ProjektdatenManager {
     /// Leerer Manager ohne Datei (kein Projekt geladen).
     pub fn leer() -> Self {
-        Self {
-            pfad: PathBuf::new(),
-            eintraege: Vec::new(),
-            bearbeiter: benutzername(),
-        }
+        Self { pfad: PathBuf::new(), eintraege: Vec::new(), bearbeiter: benutzername() }
     }
 
     /// Lädt die Datei oder legt sie an.
     pub fn initialisiere(pfad: &Path) -> Self {
-        let mut m = Self {
-            pfad: pfad.to_path_buf(),
-            eintraege: Vec::new(),
-            bearbeiter: benutzername(),
-        };
+        let mut m = Self { pfad: pfad.to_path_buf(), eintraege: Vec::new(), bearbeiter: benutzername() };
         if pfad.exists() {
             m.laden();
         } else {
@@ -63,13 +55,7 @@ impl ProjektdatenManager {
 
     /// Letzter Wert zu Kategorie und Parameter (ohne Beachtung der Groß-/Kleinschreibung).
     pub fn get_value(&self, kategorie: &str, parameter: &str) -> Option<&str> {
-        self.eintraege
-            .iter()
-            .rev()
-            .find(|e| {
-                e.kategorie.eq_ignore_ascii_case(kategorie) && e.parameter.eq_ignore_ascii_case(parameter)
-            })
-            .map(|e| e.wert.as_str())
+        self.eintraege.iter().rev().find(|e| e.kategorie.eq_ignore_ascii_case(kategorie) && e.parameter.eq_ignore_ascii_case(parameter)).map(|e| e.wert.as_str())
     }
 
     /// Alle Einträge.
@@ -130,12 +116,11 @@ impl ProjektdatenManager {
             return Ok(());
         }
         datei_speicher::pruefe_schreibzugriff(&self.pfad)?;
-        let mut text = KOPFZEILE.join(",");
+        let mut text = KOPFZEILE.join(";");
         text.push_str("\r\n");
         for e in &self.eintraege {
             let felder = [&e.datum, &e.uhrzeit, &e.bearbeiter, &e.kategorie, &e.parameter, &e.wert];
-            let zeile: Vec<String> = felder.iter().map(|f| maskiere(f)).collect();
-            text.push_str(&zeile.join(","));
+            text.push_str(&crate::daten::csv_basis::zeile(felder, ';'));
             text.push_str("\r\n");
         }
         datei_speicher::schreibe_text(&self.pfad, &text)
@@ -147,68 +132,10 @@ fn benutzername() -> String {
     std::env::var("USERNAME").unwrap_or_else(|_| "unbekannt".to_string())
 }
 
-/// Maskiert ein CSV-Feld bei Bedarf.
-fn maskiere(text: &str) -> String {
-    if text.contains([',', '"', '\r', '\n']) {
-        format!("\"{}\"", text.replace('"', "\"\""))
-    } else {
-        text.to_string()
-    }
-}
-
-/// Zerlegt CSV-Text in Datensätze (Anführungszeichen, doppelte Anführungszeichen, Zeilenumbrüche in Feldern).
 fn zerlege_csv(text: &str) -> Result<Vec<Vec<String>>, String> {
-    let text = text.trim_start_matches('\u{feff}');
-    let mut datensaetze = Vec::new();
-    let mut feld = String::new();
-    let mut zeile: Vec<String> = Vec::new();
-    let mut in_anfuehrung = false;
-    let mut zeichen = text.chars().peekable();
-    let mut zeile_offen = false;
-
-    while let Some(c) = zeichen.next() {
-        if in_anfuehrung {
-            match c {
-                '"' if zeichen.peek() == Some(&'"') => {
-                    feld.push('"');
-                    zeichen.next();
-                }
-                '"' => in_anfuehrung = false,
-                _ => feld.push(c),
-            }
-            continue;
-        }
-        match c {
-            '"' => {
-                in_anfuehrung = true;
-                zeile_offen = true;
-            }
-            ',' => {
-                zeile.push(std::mem::take(&mut feld));
-                zeile_offen = true;
-            }
-            '\r' => {}
-            '\n' => {
-                if zeile_offen || !feld.is_empty() {
-                    zeile.push(std::mem::take(&mut feld));
-                    datensaetze.push(std::mem::take(&mut zeile));
-                }
-                zeile_offen = false;
-            }
-            _ => {
-                feld.push(c);
-                zeile_offen = true;
-            }
-        }
-    }
-    if in_anfuehrung {
-        return Err("Nicht geschlossene Anführungszeichen in Projektdaten.csv.".to_string());
-    }
-    if zeile_offen || !feld.is_empty() {
-        zeile.push(feld);
-        datensaetze.push(zeile);
-    }
-    Ok(datensaetze)
+    let saetze = crate::daten::csv_basis::saetze(text).map_err(|e| e.to_string())?;
+    let trenner = saetze.first().map(|(_, k)| crate::daten::csv_basis::trenner(k)).unwrap_or(';');
+    saetze.into_iter().filter(|(_, z)| !z.trim().is_empty()).map(|(nr, z)| crate::daten::csv_basis::felder(&z, trenner).map_err(|e| format!("Zeile {nr}: {e}"))).collect()
 }
 
 fn parse_csv(text: &str) -> Result<Vec<ProjektEintrag>, String> {
@@ -237,11 +164,7 @@ fn parse_csv(text: &str) -> Result<Vec<ProjektEintrag>, String> {
 
 /// Werte als Zuordnung Parameter → Wert für eine Kategorie (letzte Einträge gewinnen).
 pub fn kategorie_werte(eintraege: &[ProjektEintrag], kategorie: &str) -> HashMap<String, String> {
-    eintraege
-        .iter()
-        .filter(|e| e.kategorie.eq_ignore_ascii_case(kategorie))
-        .map(|e| (e.parameter.clone(), e.wert.clone()))
-        .collect()
+    eintraege.iter().filter(|e| e.kategorie.eq_ignore_ascii_case(kategorie)).map(|e| (e.parameter.clone(), e.wert.clone())).collect()
 }
 
 #[cfg(test)]

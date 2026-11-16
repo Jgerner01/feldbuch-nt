@@ -22,7 +22,7 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
     if !matches!(app.ansicht, Ansicht::Start) {
         egui::Panel::top("navigation").show(ui, |ui| {
             if ui.button("← Zurück zum Hauptmenü").clicked() {
-                app.ansicht = Ansicht::Start;
+                app.setze_ansicht(Ansicht::Start);
             }
         });
     }
@@ -45,9 +45,8 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
             Ansicht::Testmessungen(ansicht) => {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.projekt, &mut app.geraet));
             }
-            Ansicht::Konvertierung(ansicht) => {
-                egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &app.projekt));
-            }
+            // Ohne äußere Scrollfläche: die Tabelle scrollt selbst und füllt die Fensterhöhe
+            Ansicht::Konvertierung(ansicht) => ansicht.zeichne(ui, &app.projekt),
             Ansicht::Aufnahmetest(ansicht) => {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.geraet));
             }
@@ -62,7 +61,7 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
             }
         }
         if zurueck {
-            app.ansicht = Ansicht::Start;
+            app.setze_ansicht(Ansicht::Start);
         }
     });
 }
@@ -212,7 +211,7 @@ fn modul_icon(name: &str) -> Option<egui::ImageSource<'static>> {
 /// Öffnet das Modul mit diesem Namen.
 fn oeffne_modul(app: &mut FeldbuchApp, name: &str) {
     protokoll::log("FORM", &format!("Modul geöffnet: {name}"));
-    app.ansicht = match name {
+    let neu = match name {
         "DXF-Viewer" => {
             app.dxf_viewer.get_or_insert_with(Box::default);
             return;
@@ -230,12 +229,13 @@ fn oeffne_modul(app: &mut FeldbuchApp, name: &str) {
         "Berechnungen" => Ansicht::Berechnungen(Default::default()),
         "Absteckung" => Ansicht::Absteckung(Default::default()),
         "Datenmanager" => Ansicht::Datenmanager(Default::default()),
-        "Konvertierung" => Ansicht::Konvertierung(Box::new(super::konvertierung::KonvertierungAnsicht::neu(&app.projekt))),
+        "Konvertierung" => app.konvertierung_oeffnen(),
         "Tachymeter-Kommunikation" => Ansicht::Kommunikation(Default::default()),
         "Rechenparameter" => Ansicht::Rechenparameter(rechenparameter_ansicht::RechenparameterAnsicht::default()),
         "Testmessungen" => Ansicht::Testmessungen(Box::new(super::testmessungen::TestmessungenAnsicht::neu(&app.projekt))),
         _ => Ansicht::Info,
     };
+    app.setze_ansicht(neu);
 }
 
 /// Hilfehinweise der Info-Seite (wie im Original).

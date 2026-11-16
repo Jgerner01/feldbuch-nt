@@ -125,58 +125,50 @@ pub struct ExportKopf<'a> {
     pub zeitstempel: &'a str,
 }
 
-/// Zeilen der KOR-Datei (Koordinaten).
+/// Gemeinsame Koordinaten- und Messdatenschemata, lokaler Aufnahmekontext.
 pub fn kor_zeilen(punkte: &[AufnahmePunkt], k: &ExportKopf) -> Vec<String> {
-    let mut z = vec![
-        "# METADATA".to_string(),
-        format!("Projekt: {}", k.projekt),
-        format!("Sensor: {}", k.sensor),
-        format!("Bearbeiter: {}", k.bearbeiter),
-        format!("Datum: {}", k.datum),
-        "---".to_string(),
-        "# DATENTYP".to_string(),
-        "Koordinaten".to_string(),
-        "# DATEN".to_string(),
-        "PunktNr; X; Y; Z; Code".to_string(),
-    ];
-    z.extend(punkte.iter().map(|p| format!("{}; {}; {}; {}; {}", p.punkt_nr, f(p.x, 4), f(p.y, 4), f(p.z, 4), p.code)));
-    z
+    let mut d = export_datei(k, crate::daten::csv_datei::TYP_KOORDINATEN);
+    d.zeilen = punkte.iter().map(|p| vec![p.punkt_nr.clone(), f(p.x, 4), f(p.y, 4), f(p.z, 4), p.code.clone()]).collect();
+    vec![d.text().expect("Feste Exportspalten")]
 }
-
-/// Zeilen der DAT-Datei (Messdaten).
+fn export_datei(k: &ExportKopf, typ: &str) -> crate::daten::csv_datei::CsvDatei {
+    let mut d = crate::daten::csv_datei::CsvDatei::neu(typ);
+    d.projekt = k.projekt.into();
+    d.sensor = k.sensor.into();
+    d.bearbeiter = k.bearbeiter.into();
+    d.datum = k.datum.into();
+    d.set_meta("Koordinatensystem", "Lokal");
+    d
+}
 pub fn dat_zeilen(punkte: &[AufnahmePunkt], k: &ExportKopf) -> Vec<String> {
-    let mut z = vec![
-        "# METADATA".to_string(),
-        format!("Projekt: {}", k.projekt),
-        format!("Sensor: {}", k.sensor),
-        format!("Bearbeiter: {}", k.bearbeiter),
-        format!("Datum: {}", k.datum),
-        "StandpunktNr: ".to_string(),
-        "InstrumentenHoehe: ".to_string(),
-        "StandpunktCode: ".to_string(),
-        "---".to_string(),
-        "# DATENTYP".to_string(),
-        "Messdaten".to_string(),
-        "# DATEN".to_string(),
-        "PunktNr; HZ_gon; V_gon; Strecke_m; Zielhoehe_m; Code; Zeitstempel".to_string(),
-    ];
-    z.extend(
-        punkte
-            .iter()
-            .map(|p| format!("{}; {}; {}; {}; 0.000; {}; {}", p.punkt_nr, f(p.hz, 3), f(p.v, 3), f(p.d, 3), p.code, k.zeitstempel)),
-    );
-    z
+    let mut d = export_datei(k, crate::daten::csv_datei::TYP_MESSDATEN);
+    let id = format!("Aufnahmetest-{}", k.zeitstempel);
+    d.zeilen = punkte
+        .iter()
+        .map(|p| {
+            vec![
+                p.punkt_nr.clone(),
+                f(p.hz, 4),
+                f(p.v, 4),
+                f(p.d, 3),
+                "0.000".into(),
+                p.code.clone(),
+                k.zeitstempel.into(),
+                "0.000".into(),
+                "0.000".into(),
+                "Lokal".into(),
+                "NP".into(),
+                id.clone(),
+                "0.000".into(),
+            ]
+        })
+        .collect();
+    d.set_meta("Quelle", "Aufnahmetest (synthetische lokale Aufstellung)");
+    vec![d.text().expect("Feste Exportspalten")]
 }
-
-/// Pfade der beiden Exportdateien zu einem gewählten KOR-Pfad: „…-kor.csv“ und „…-dat.csv“ (ein „-kor“ am Ende wird ersetzt).
 pub fn export_pfade(kor_pfad: &Path) -> (PathBuf, PathBuf) {
-    let ordner = kor_pfad.parent().map(Path::to_path_buf).unwrap_or_default();
-    let stamm = kor_pfad.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let basis = match stamm.len().checked_sub(4).filter(|&i| stamm.is_char_boundary(i)) {
-        Some(i) if stamm[i..].eq_ignore_ascii_case("-kor") => stamm[..i].to_string(),
-        _ => stamm,
-    };
-    (kor_pfad.to_path_buf(), ordner.join(format!("{basis}-dat.csv")))
+    use crate::daten::csv_datei::{CsvDatei, TYP_KOORDINATEN, TYP_MESSDATEN};
+    (CsvDatei::normalisiere_pfad(kor_pfad, TYP_KOORDINATEN), CsvDatei::normalisiere_pfad(kor_pfad, TYP_MESSDATEN))
 }
 
 #[cfg(test)]
@@ -256,18 +248,18 @@ mod tests {
     }
 
     #[test]
-    fn exportzeilen_wie_im_original() {
-        let k = ExportKopf { projekt: "Test", sensor: "Leica TS06", bearbeiter: "jg", datum: "2026-11-04", zeitstempel: "2026-11-04 19:30" };
-        let p = vec![AufnahmePunkt::aus_messung(1, "P001", "KS", 100.0, 100.0, 10.0)];
-        let kor = kor_zeilen(&p, &k);
-        assert_eq!(kor[0], "# METADATA");
-        assert_eq!(kor[2], "Sensor: Leica TS06");
-        assert_eq!(kor[9], "PunktNr; X; Y; Z; Code");
-        assert_eq!(kor[10], "P001; 10.0000; 0.0000; 0.0000; KS");
-        let dat = dat_zeilen(&p, &k);
-        assert_eq!(dat[5], "StandpunktNr: ");
-        assert_eq!(dat[12], "PunktNr; HZ_gon; V_gon; Strecke_m; Zielhoehe_m; Code; Zeitstempel");
-        assert_eq!(dat[13], "P001; 100.000; 100.000; 10.000; 0.000; KS; 2026-11-04 19:30");
+    fn exportzeilen_im_gemeinsamen_format() {
+        let k = ExportKopf { projekt: "Test", sensor: "Leica TS06", bearbeiter: "jg", datum: "2026-11-04", zeitstempel: "2026-11-04T19:30:00+01:00" };
+        let p = vec![AufnahmePunkt::aus_messung(1, "P001", "KS;A", 100.0, 100.0, 10.0)];
+        let kor = crate::daten::csv_datei::CsvDatei::parse(&kor_zeilen(&p, &k).join("\n")).unwrap();
+        assert_eq!(kor.zelle(&kor.zeilen[0], "X"), "10.0000");
+        assert_eq!(kor.zelle(&kor.zeilen[0], "Code"), "KS;A");
+        assert_eq!(kor.meta("Koordinatensystem"), Some("Lokal"));
+        let dat = crate::daten::csv_datei::CsvDatei::parse(&dat_zeilen(&p, &k).join("\n")).unwrap();
+        assert_eq!(dat.spalten.len(), 13);
+        assert_eq!(dat.zelle(&dat.zeilen[0], "StandpunktNr"), "Lokal");
+        assert_eq!(dat.zelle(&dat.zeilen[0], "Typ"), "NP");
+        assert_eq!(dat.zelle(&dat.zeilen[0], "HZ_gon"), "100.0000");
     }
 
     #[test]

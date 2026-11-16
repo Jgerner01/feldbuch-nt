@@ -34,11 +34,7 @@ pub fn zeichne_lampe(ui: &egui::Ui, rect: Rect, farbe: Option<Color32>) {
             maler.circle_filled(c, r, f);
             maler.circle_filled(c, r * 0.55, Color32::from_rgba_unmultiplied(255, 255, 255, 90));
             let g = r * 0.35;
-            maler.circle_filled(
-                Pos2::new(c.x - r * 0.5, c.y - r * 0.55),
-                g,
-                Color32::from_rgba_unmultiplied(255, 255, 255, 120),
-            );
+            maler.circle_filled(Pos2::new(c.x - r * 0.5, c.y - r * 0.55), g, Color32::from_rgba_unmultiplied(255, 255, 255, 120));
         }
     }
     maler.circle_stroke(c, r, Stroke::new(1.5, Color32::from_rgb(80, 80, 80)));
@@ -53,11 +49,7 @@ struct KnopfFarben {
 }
 
 const fn farben(fill: (u8, u8, u8), fore: (u8, u8, u8), rand: (u8, u8, u8)) -> KnopfFarben {
-    KnopfFarben {
-        fill: Color32::from_rgb(fill.0, fill.1, fill.2),
-        fore: Color32::from_rgb(fore.0, fore.1, fore.2),
-        rand: Color32::from_rgb(rand.0, rand.1, rand.2),
-    }
+    KnopfFarben { fill: Color32::from_rgb(fill.0, fill.1, fill.2), fore: Color32::from_rgb(fore.0, fore.1, fore.2), rand: Color32::from_rgb(rand.0, rand.1, rand.2) }
 }
 
 const BASIS: (u8, u8, u8) = (68, 74, 92);
@@ -114,9 +106,7 @@ fn seitenknopf(ui: &mut egui::Ui, inhalt: Inhalt, f: KnopfFarben, tooltip: &str)
     let knopf = match inhalt {
         Inhalt::BildVoll(_) => unreachable!(),
         Inhalt::Bild(quelle) => egui::Button::image(egui::Image::new(quelle).fit_to_exact_size(Vec2::splat(26.0))),
-        Inhalt::Text(text, groesse_pt) => {
-            egui::Button::new(egui::RichText::new(text).strong().size(groesse_pt).color(f.fore))
-        }
+        Inhalt::Text(text, groesse_pt) => egui::Button::new(egui::RichText::new(text).strong().size(groesse_pt).color(f.fore)),
     }
     .fill(f.fill)
     .stroke(Stroke::new(1.0, f.rand))
@@ -166,23 +156,13 @@ impl DxfViewer {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 0.0);
             ui.add_space(6.0);
             let (rect, _) = ui.allocate_exact_size(Vec2::new(STATUS_LABEL_BREITE - 6.0, 20.0), Sense::hover());
-            ui.painter().with_clip_rect(rect).text(
-                Pos2::new(rect.left(), rect.center().y),
-                Align2::LEFT_CENTER,
-                &self.status,
-                FontId::monospace(12.0),
-                STATUS_TEXT,
-            );
+            ui.painter().with_clip_rect(rect).text(Pos2::new(rect.left(), rect.center().y), Align2::LEFT_CENTER, &self.status, FontId::monospace(12.0), STATUS_TEXT);
 
             let text = |s: &str| egui::RichText::new(s.to_string()).size(12.0).color(Color32::from_rgb(30, 30, 30));
             if self.punkt_index.is_some() {
                 ui.checkbox(&mut self.marker_sichtbar, text("DXF-Punkte")).on_hover_text("DXF-Punktnummern ein-/ausblenden");
             }
-            if ui
-                .checkbox(&mut self.neupunkte_sichtbar, text("Neupunkte"))
-                .on_hover_text("Gemessene Neupunkte ein-/ausblenden")
-                .changed()
-            {
+            if ui.checkbox(&mut self.neupunkte_sichtbar, text("Neupunkte")).on_hover_text("Gemessene Neupunkte ein-/ausblenden").changed() {
                 projekt.einstellungen.neupunkte_visible = self.neupunkte_sichtbar;
                 let _ = projekt.einstellungen.speichern();
             }
@@ -215,10 +195,13 @@ impl DxfViewer {
     pub(super) fn zeichne_seitenleiste(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let basis = farben(BASIS, (210, 215, 230), BASIS_RAND);
+        // Im Auswahlmodus nur grafische Funktionen (Zoom, Einpassen, Snap, Sichtbarkeit); Rest ausgegraut
+        let frei = !self.ist_auswahl();
+        let knopf = |ui: &mut egui::Ui, inhalt: Inhalt, f: KnopfFarben, tooltip: &str| ui.add_enabled_ui(frei, |ui| seitenknopf(ui, inhalt, f, tooltip)).inner;
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(6.0);
-                if seitenknopf(ui, bild("open"), BLAU_FARBEN, "DXF-Datei öffnen") {
+                if knopf(ui, bild("open"), BLAU_FARBEN, "DXF-Datei öffnen") {
                     self.datei_oeffnen(projekt);
                 }
                 ui.add_space(6.0);
@@ -239,22 +222,18 @@ impl DxfViewer {
                 let tip = format!("Punktfang (Snap) – aktuell {}", if self.snap_aktiv { "EIN" } else { "AUS" });
                 if seitenknopf(ui, bild("snap"), snap, &tip) {
                     self.snap_aktiv = !self.snap_aktiv;
-                    let _ = projekt.projektdaten.set_value(
-                        "Einstellungen",
-                        "Snap",
-                        if self.snap_aktiv { "Aktiv" } else { "Inaktiv" },
-                    );
+                    if frei {
+                        let _ = projekt.projektdaten.set_value("Einstellungen", "Snap", if self.snap_aktiv { "Aktiv" } else { "Inaktiv" });
+                    }
                 }
                 ui.add_space(2.0);
                 let pk = if self.punkte_sichtbar { AKTIV_FARBEN } else { INAKTIV_FARBEN };
                 let tip = format!("Katasterpunkte – aktuell {}", if self.punkte_sichtbar { "EIN" } else { "AUS" });
                 if seitenknopf(ui, bild("points"), pk, &tip) {
                     self.punkte_sichtbar = !self.punkte_sichtbar;
-                    let _ = projekt.projektdaten.set_value(
-                        "Einstellungen",
-                        "Katasterpunkte",
-                        if self.punkte_sichtbar { "Aktiv" } else { "Inaktiv" },
-                    );
+                    if frei {
+                        let _ = projekt.projektdaten.set_value("Einstellungen", "Katasterpunkte", if self.punkte_sichtbar { "Aktiv" } else { "Inaktiv" });
+                    }
                 }
                 ui.add_space(6.0);
                 let dxf = if self.dxf_sichtbar { farben((60, 100, 160), (255, 255, 255), (40, 80, 140)) } else { INAKTIV_FARBEN };
@@ -263,75 +242,53 @@ impl DxfViewer {
                     self.dxf_sichtbar = !self.dxf_sichtbar;
                 }
                 ui.add_space(6.0);
-                if seitenknopf(ui, bild("new"), farben(BASIS, (200, 205, 225), BASIS_RAND), "DXF leeren") {
+                if knopf(ui, bild("new"), farben(BASIS, (200, 205, 225), BASIS_RAND), "DXF leeren") {
                     self.dialog = Some(Dialog::DxfLeeren);
                 }
                 ui.add_space(6.0);
-                if seitenknopf(ui, bild("import_kor"), ROT_FARBEN, "KOR / CSV importieren") {
+                if knopf(ui, bild("import_kor"), ROT_FARBEN, "KOR / CSV importieren") {
                     self.import_kor_csv(projekt);
                 }
                 ui.add_space(2.0);
-                if seitenknopf(ui, bild("import_json"), ROT_FARBEN, "JSON importieren") {
+                if knopf(ui, bild("import_json"), ROT_FARBEN, "JSON importieren") {
                     self.import_json(projekt);
                 }
                 ui.add_space(6.0);
-                let loesch = if self.loesch_modus {
-                    farben((160, 40, 40), (255, 255, 255), (130, 20, 20))
-                } else {
-                    farben(BASIS, (220, 200, 200), BASIS_RAND)
-                };
-                if seitenknopf(ui, Inhalt::Text("⌫", 16.0), loesch, "Punkte löschen (Fenster aufziehen)") {
+                let loesch = if self.loesch_modus { farben((160, 40, 40), (255, 255, 255), (130, 20, 20)) } else { farben(BASIS, (220, 200, 200), BASIS_RAND) };
+                if knopf(ui, Inhalt::Text("⌫", 16.0), loesch, "Punkte löschen (Fenster aufziehen)") {
                     self.loesch_modus = !self.loesch_modus;
-                    self.status = if self.loesch_modus {
-                        "Lösch-Modus: Fenster aufziehen  |  Erneut klicken zum Abbrechen".to_string()
-                    } else {
-                        "Lösch-Modus beendet.".to_string()
-                    };
+                    self.status =
+                        if self.loesch_modus { "Lösch-Modus: Fenster aufziehen  |  Erneut klicken zum Abbrechen".to_string() } else { "Lösch-Modus beendet.".to_string() };
                 }
                 ui.add_space(6.0);
-                if seitenknopf(ui, Inhalt::Text("↻", 16.0), farben(BASIS, (200, 210, 230), BASIS_RAND), "Punkt-Index zurücksetzen (neu nummerieren)") {
+                if knopf(ui, Inhalt::Text("↻", 16.0), farben(BASIS, (200, 210, 230), BASIS_RAND), "Punkt-Index zurücksetzen (neu nummerieren)") {
                     self.dialog = Some(Dialog::IndexReset);
                 }
                 ui.add_space(6.0);
-                let dig = if self.digital_modus {
-                    farben((36, 120, 60), (255, 255, 255), (20, 90, 40))
-                } else {
-                    farben(BASIS, (200, 230, 210), BASIS_RAND)
-                };
-                if seitenknopf(ui, Inhalt::Text("✎", 16.0), dig, "Digitalisierung: Klick → Punkt in KOR/CSV schreiben") {
+                let dig = if self.digital_modus { farben((36, 120, 60), (255, 255, 255), (20, 90, 40)) } else { farben(BASIS, (200, 230, 210), BASIS_RAND) };
+                if knopf(ui, Inhalt::Text("✎", 16.0), dig, "Digitalisierung: Klick → Punkt in KOR/CSV schreiben") {
                     self.digitalisierung_umschalten(projekt);
                 }
                 ui.add_space(6.0);
-                if seitenknopf(ui, Inhalt::Text("⊕A", 11.0), farben((50, 110, 60), (255, 255, 255), (30, 80, 40)), "Absteckung") {
-                    self.dialog = Some(Dialog::Hinweis {
-                        titel: "Absteckung".into(),
-                        text: "Die Absteckung ist in Feldbuch-NT noch nicht umgesetzt.".into(),
-                    });
+                if knopf(ui, Inhalt::Text("⊕A", 11.0), farben((50, 110, 60), (255, 255, 255), (30, 80, 40)), "Absteckung") {
+                    self.dialog = Some(Dialog::Hinweis { titel: "Absteckung".into(), text: "Die Absteckung ist in Feldbuch-NT noch nicht umgesetzt.".into() });
                 }
                 ui.add_space(6.0);
-                if seitenknopf(
-                    ui,
-                    Inhalt::Text("⊙", 16.0),
-                    farben((40, 70, 110), (180, 210, 255), (25, 50, 85)),
-                    "Aufnahmetest: Koordinaten messen & Punkt anfahren (motorisiert)",
-                ) {
+                if knopf(ui, Inhalt::Text("⊙", 16.0), farben((40, 70, 110), (180, 210, 255), (25, 50, 85)), "Aufnahmetest: Koordinaten messen & Punkt anfahren (motorisiert)")
+                {
                     self.wunsch = Some(Wunsch::Aufnahmetest);
                 }
                 ui.add_space(6.0);
-                if seitenknopf(ui, modul_bild("freie_stationierung"), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Freie Stationierung") {
+                if knopf(ui, modul_bild("freie_stationierung"), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Freie Stationierung") {
                     self.wunsch = Some(Wunsch::FreieStationierung);
                 }
                 ui.add_space(6.0);
-                if seitenknopf(ui, modul_bild("polarpunkte"), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Polarpunkte") {
+                if knopf(ui, modul_bild("polarpunkte"), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Polarpunkte") {
                     self.wunsch = Some(Wunsch::Polarpunkte);
                 }
                 ui.add_space(6.0);
-                if seitenknopf(
-                    ui,
-                    Inhalt::Text("→FP", 11.0),
-                    farben((40, 90, 70), (255, 255, 255), (25, 65, 50)),
-                    "Gemessene Neupunkte als Festpunkte übernehmen (lokales System)",
-                ) {
+                if knopf(ui, Inhalt::Text("→FP", 11.0), farben((40, 90, 70), (255, 255, 255), (25, 65, 50)), "Gemessene Neupunkte als Festpunkte übernehmen (lokales System)")
+                {
                     self.festpunkte_dialog_oeffnen(projekt);
                 }
             });
@@ -341,10 +298,7 @@ impl DxfViewer {
     // ── Aktionen ──────────────────────────────────────────────────────────────
 
     fn datei_oeffnen(&mut self, projekt: &mut Projekt) {
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("DXF-Datei öffnen")
-            .add_filter("DXF-Dateien (*.dxf)", &["dxf"])
-            .add_filter("Alle Dateien (*.*)", &["*"]);
+        let mut dialog = rfd::FileDialog::new().set_title("DXF-Datei öffnen").add_filter("DXF-Dateien (*.dxf)", &["dxf"]).add_filter("Alle Dateien (*.*)", &["*"]);
         if projekt.einstellungen.projekt_verzeichnis.is_dir() {
             dialog = dialog.set_directory(&projekt.einstellungen.projekt_verzeichnis);
         }
@@ -356,10 +310,7 @@ impl DxfViewer {
 
     fn add_import_layer(&mut self, projekt: &Projekt, pfad: &Path, punkte: &[crate::daten::modelle::ImportPunkt]) {
         let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let entities: Vec<DxfEntity> = punkte
-            .iter()
-            .map(|p| DxfEntity::overlay("Import", Art::Import { nr: p.punkt_nr.clone(), wx: p.r, wy: p.h, hoehe: p.hoehe }))
-            .collect();
+        let entities: Vec<DxfEntity> = punkte.iter().map(|p| DxfEntity::overlay("Import", Art::Import { nr: p.punkt_nr.clone(), wx: p.r, wy: p.h, hoehe: p.hoehe })).collect();
         match self.import_layer.iter_mut().find(|l| l.name.eq_ignore_ascii_case(&name)) {
             Some(layer) => layer.entities = entities,
             None => self.import_layer.push(ImportLayer { name, entities, sichtbar: true }),
@@ -382,11 +333,7 @@ impl DxfViewer {
         let ext = datei.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
         let ist_kor_csv = name.to_lowercase().ends_with("-kor.csv");
 
-        let gelesen = if ext == "csv" || ist_kor_csv {
-            lese_csv(&datei)
-        } else {
-            crate::daten::punktlisten::lese_kor_roh(&datei)
-        };
+        let gelesen = if ext == "csv" || ist_kor_csv { lese_csv(&datei) } else { crate::daten::punktlisten::lese_kor_roh(&datei) };
         let mut punkte = match gelesen {
             Ok(p) => p,
             Err(fehler) => {
@@ -412,12 +359,7 @@ impl DxfViewer {
     }
 
     fn import_json(&mut self, projekt: &mut Projekt) {
-        let Some(datei) = rfd::FileDialog::new()
-            .set_title("JSON-Datei importieren")
-            .add_filter("JSON-Dateien", &["json"])
-            .add_filter("Alle Dateien", &["*"])
-            .pick_file()
-        else {
+        let Some(datei) = rfd::FileDialog::new().set_title("JSON-Datei importieren").add_filter("JSON-Dateien", &["json"]).add_filter("Alle Dateien", &["*"]).pick_file() else {
             return;
         };
         match lese_json(&datei) {
@@ -483,18 +425,17 @@ impl DxfViewer {
                     return;
                 };
                 let jetzt = chrono::Local::now();
-                if let Err(e) = datei_speicher::schreibe_text(
-                    &gewaehlt,
-                    &format!("% Digitalisierte Punkte  {}\n", jetzt.format("%Y-%m-%d %H:%M")),
-                ) {
+                if let Err(e) = datei_speicher::schreibe_text(&gewaehlt, &format!("% Digitalisierte Punkte  {}\n", jetzt.format("%Y-%m-%d %H:%M"))) {
                     self.dialog = Some(Dialog::Hinweis { titel: "Fehler".into(), text: e.to_string() });
                     return;
                 }
-                let kopf = format!(
-                    "# METADATA\nProjekt: {}\nSensor: Digitalisierung\nBearbeiter: \nDatum: {}\n---\n# DATENTYP\nKoordinaten\n# DATEN\nPunktNr; X; Y; Z; Code\n",
-                    projekt.einstellungen.projekt_name,
-                    jetzt.format("%Y-%m-%d")
-                );
+                let kopf = match crate::daten::kor_csv::erzeuge(&projekt.einstellungen.projekt_name, "Digitalisierung", &jetzt.format("%Y-%m-%d").to_string(), &[]) {
+                    Ok(text) => text,
+                    Err(e) => {
+                        self.dialog = Some(Dialog::Hinweis { titel: "Fehler".into(), text: e.to_string() });
+                        return;
+                    }
+                };
                 if let Err(e) = datei_speicher::schreibe_text(&kor_csv_pfad(&gewaehlt), &kopf) {
                     self.dialog = Some(Dialog::Hinweis { titel: "Fehler".into(), text: e.to_string() });
                     return;
@@ -505,12 +446,7 @@ impl DxfViewer {
             }
         }
         self.digital_modus = true;
-        let name = self
-            .digital_kor_pfad
-            .as_ref()
-            .and_then(|p| p.file_name())
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        let name = self.digital_kor_pfad.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.status = format!("Digitalisierung aktiv  → {name}  [Klick = Punkt]");
     }
 
@@ -522,7 +458,7 @@ impl DxfViewer {
         let (x, y, z) = (f(r, 3), f(h, 3), f(hoehe, 3));
         let kor_zeile = format!("{nr:<8}{x:>16}{y:>16}{z:>10}    {code}\n");
         OpenOptions::new().create(true).append(true).open(kor)?.write_all(kor_zeile.as_bytes())?;
-        let csv_zeile = format!("{nr}; {x}; {y}; {z}; {code}\n");
+        let csv_zeile = format!("{}\r\n", crate::daten::csv_basis::zeile([nr, &f(r, 4), &f(h, 4), &f(hoehe, 4), code], ';'));
         OpenOptions::new().create(true).append(true).open(kor_csv_pfad(kor))?.write_all(csv_zeile.as_bytes())
     }
 
@@ -548,7 +484,9 @@ impl DxfViewer {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
 
-        if !self.verarbeite_pdf_anker(ui, projekt) {
+        if self.ist_auswahl() {
+            self.verarbeite_auswahl_eingabe(ui, &antwort, ursprung);
+        } else if !self.verarbeite_pdf_anker(ui, projekt) {
             self.verarbeite_eingabe(ui, &antwort, projekt, ursprung);
         }
 
@@ -557,19 +495,14 @@ impl DxfViewer {
         let hat_daten = (self.dxf_sichtbar && !self.entities.is_empty())
             || !self.overlay.is_empty()
             || !self.import_layer.is_empty()
-            || !self.neupunkte.is_empty();
+            || !self.neupunkte.is_empty()
+            || self.hat_auswahl_kandidaten();
         if !hat_daten {
             if self.pdf_mitte.is_some() {
                 self.zeichne_pdf_maske(&maler, projekt);
                 return;
             }
-            maler.text(
-                Pos2::new(rect.center().x - 90.0, rect.center().y - 10.0),
-                Align2::LEFT_TOP,
-                "DXF-Datei öffnen …",
-                FontId::proportional(18.0),
-                Color32::GRAY,
-            );
+            maler.text(Pos2::new(rect.center().x - 90.0, rect.center().y - 10.0), Align2::LEFT_TOP, "DXF-Datei öffnen …", FontId::proportional(18.0), Color32::GRAY);
             return;
         }
 
@@ -586,6 +519,12 @@ impl DxfViewer {
         }
         if self.residuen_sichtbar && !self.ellipsen.is_empty() {
             self.zeichne_ellipsen_massstab(&maler, rect);
+        }
+
+        // Auswahlmodus: wählbare Punkte, Rechteck und Polygon; keine Zielrichtung, kein Fadenkreuz
+        if self.ist_auswahl() {
+            self.zeichne_auswahl(&maler, &a);
+            return;
         }
 
         if self.pdf_mitte.is_some() {
@@ -650,7 +589,7 @@ impl DxfViewer {
 
     /// Zwei-Finger-Geste auf dem Touchscreen: Spreizen/Zusammenziehen zoomt um den Mittelpunkt zwischen den Fingern,
     /// gemeinsames Bewegen verschiebt die Grafik. Gibt `true` zurück, solange die Geste läuft.
-    fn verarbeite_zwei_finger(&mut self, ui: &egui::Ui, antwort: &egui::Response, ursprung: Pos2) -> bool {
+    pub(super) fn verarbeite_zwei_finger(&mut self, ui: &egui::Ui, antwort: &egui::Response, ursprung: Pos2) -> bool {
         let Some(geste) = ui.input(|i| i.multi_touch()) else {
             return false;
         };
@@ -678,22 +617,34 @@ impl DxfViewer {
             return;
         }
         if self.pdf_mitte.is_some() {
-            let a=self.ansicht(ursprung);
+            let a = self.ansicht(ursprung);
             if antwort.drag_started() {
-                self.pdf_ziehen=ui.input(|i|i.pointer.press_origin()).is_some_and(|pos| {
-                    self.pdf_rahmen(projekt).is_some_and(|(seite,karte,_)| seite.expand(8.0).contains(pos)&&!karte.shrink(8.0).contains(pos))
-                });
+                self.pdf_ziehen = ui
+                    .input(|i| i.pointer.press_origin())
+                    .is_some_and(|pos| self.pdf_rahmen(projekt).is_some_and(|(seite, karte, _)| seite.expand(8.0).contains(pos) && !karte.shrink(8.0).contains(pos)));
             }
             if antwort.dragged_by(egui::PointerButton::Primary) {
-                let d=antwort.drag_delta();
+                let d = antwort.drag_delta();
                 if self.pdf_ziehen {
-                    if let Some(m)=&mut self.pdf_mitte {m[0]+=f64::from(d.x)/a.scale;m[1]-=f64::from(d.y)/a.scale;}
-                } else {self.mitte[0]-=f64::from(d.x)/a.scale;self.mitte[1]+=f64::from(d.y)/a.scale;}
+                    if let Some(m) = &mut self.pdf_mitte {
+                        m[0] += f64::from(d.x) / a.scale;
+                        m[1] -= f64::from(d.y) / a.scale;
+                    }
+                } else {
+                    self.mitte[0] -= f64::from(d.x) / a.scale;
+                    self.mitte[1] += f64::from(d.y) / a.scale;
+                }
             }
-            if antwort.drag_stopped() {self.pdf_ziehen=false;}
+            if antwort.drag_stopped() {
+                self.pdf_ziehen = false;
+            }
             if antwort.hovered() {
-                let scroll=ui.input(|i|i.raw.events.iter().filter_map(|e|if let egui::Event::MouseWheel{delta,..}=e {Some(delta.y)} else {None}).sum::<f32>());
-                if scroll!=0.0 {if let Some(pos)=antwort.hover_pos() {self.zoom(if scroll>0.0 {ZOOM_RAD_FAKTOR}else{1.0/ZOOM_RAD_FAKTOR},pos,ursprung);}}
+                let scroll = ui.input(|i| i.raw.events.iter().filter_map(|e| if let egui::Event::MouseWheel { delta, .. } = e { Some(delta.y) } else { None }).sum::<f32>());
+                if scroll != 0.0 {
+                    if let Some(pos) = antwort.hover_pos() {
+                        self.zoom(if scroll > 0.0 { ZOOM_RAD_FAKTOR } else { 1.0 / ZOOM_RAD_FAKTOR }, pos, ursprung);
+                    }
+                }
             }
             return;
         }
@@ -798,11 +749,7 @@ impl DxfViewer {
         let mut anfahren_wunsch = None;
         antwort.context_menu(|ui| {
             if let Some(nr) = &import_nr {
-                if ui
-                    .button(format!("Anfahren: {nr}"))
-                    .on_hover_text("Öffnet den Aufnahmetest und fährt den Punkt gleichen Namens aus dessen Tabelle motorisch an")
-                    .clicked()
-                {
+                if ui.button(format!("Anfahren: {nr}")).on_hover_text("Öffnet den Aufnahmetest und fährt den Punkt gleichen Namens aus dessen Tabelle motorisch an").clicked() {
                     anfahren_wunsch = Some(nr.clone());
                     ui.close();
                 }
@@ -840,12 +787,7 @@ impl DxfViewer {
                     self.digital_layer = Some(self.import_layer.len() - 1);
                 }
             }
-            self.status = format!(
-                "Dig. {nr}: R={}  H={}{}",
-                de(x, 3),
-                de(y, 3),
-                if code.is_empty() { String::new() } else { format!("  Code={code}") }
-            );
+            self.status = format!("Dig. {nr}: R={}  H={}{}", de(x, 3), de(y, 3), if code.is_empty() { String::new() } else { format!("  Code={code}") });
             if let Ok(n) = nr.parse::<i32>() {
                 self.digital_zaehler = n + 1;
                 self.txt_punkt_nr = self.digital_zaehler.to_string();
@@ -855,11 +797,7 @@ impl DxfViewer {
 
         let hinweis = if self.snap_aktiv { " [SNAP]" } else { "" };
         let Some(auswahl) = self.auswahl else {
-            self.status = if self.entities.is_empty() {
-                koordinaten_text(x, y)
-            } else {
-                format!("{}{hinweis}   |   Kein Objekt ausgewählt", koordinaten_text(x, y))
-            };
+            self.status = if self.entities.is_empty() { koordinaten_text(x, y) } else { format!("{}{hinweis}   |   Kein Objekt ausgewählt", koordinaten_text(x, y)) };
             return;
         };
         let Some(entity) = self.entity(auswahl) else {
@@ -898,33 +836,18 @@ impl DxfViewer {
 
     fn rechteck_gewaehlt(&mut self, projekt: &Projekt, r: Rahmen) {
         let im_rahmen = |x: f64, y: f64| x >= r.min_x && x <= r.max_x && y >= r.min_y && y <= r.max_y;
-        let feldbuch: Vec<String> = projekt
-            .feldbuchpunkte
-            .punkte()
-            .iter()
-            .filter(|p| im_rahmen(p.r, p.h))
-            .map(|p| p.punkt_nr.clone())
-            .collect();
+        let feldbuch: Vec<String> = projekt.feldbuchpunkte.punkte().iter().filter(|p| im_rahmen(p.r, p.h)).map(|p| p.punkt_nr.clone()).collect();
         let neu: Vec<(String, String)> = projekt
             .neupunkte
             .rohdaten()
             .iter()
             .filter(|p| {
-                let (kr, kh) = projekt
-                    .neupunkte
-                    .finde_koordinate(&p.punkt_nr, &p.standpunkt_nr)
-                    .map_or((0.0, 0.0), |e| (e.r, e.h));
+                let (kr, kh) = projekt.neupunkte.finde_koordinate(&p.punkt_nr, &p.standpunkt_nr).map_or((0.0, 0.0), |e| (e.r, e.h));
                 im_rahmen(kr, kh)
             })
             .map(|p| (p.punkt_nr.clone(), p.standpunkt_nr.clone()))
             .collect();
-        let importiert: Vec<String> = projekt
-            .importpunkte
-            .punkte()
-            .iter()
-            .filter(|p| im_rahmen(p.r, p.h))
-            .map(|p| p.punkt_nr.clone())
-            .collect();
+        let importiert: Vec<String> = projekt.importpunkte.punkte().iter().filter(|p| im_rahmen(p.r, p.h)).map(|p| p.punkt_nr.clone()).collect();
         let gesamt = feldbuch.len() + neu.len() + importiert.len();
         if gesamt == 0 {
             self.status = "Keine Punkte im markierten Bereich.".to_string();
@@ -944,11 +867,7 @@ impl DxfViewer {
             liste("Neupunkte", neu.iter().map(|(n, _)| n).collect()),
             liste("Importpunkte", importiert.iter().collect()),
         );
-        self.dialog = Some(Dialog::Loeschen {
-            text,
-            anzahl: gesamt,
-            ziele: LoeschZiele { feldbuch, neupunkte: neu, importpunkte: importiert },
-        });
+        self.dialog = Some(Dialog::Loeschen { text, anzahl: gesamt, ziele: LoeschZiele { feldbuch, neupunkte: neu, importpunkte: importiert } });
     }
 
     fn loesche(&mut self, projekt: &mut Projekt, anzahl: usize, ziele: LoeschZiele) {
@@ -959,12 +878,8 @@ impl DxfViewer {
             self.baue_overlay(projekt);
         }
         if !ziele.neupunkte.is_empty() {
-            let schluessel: std::collections::HashSet<(&str, &str)> =
-                ziele.neupunkte.iter().map(|(n, s)| (n.as_str(), s.as_str())).collect();
-            np = projekt
-                .neupunkte
-                .remove_where(|p| schluessel.contains(&(p.punkt_nr.as_str(), p.standpunkt_nr.as_str())))
-                .unwrap_or(0);
+            let schluessel: std::collections::HashSet<(&str, &str)> = ziele.neupunkte.iter().map(|(n, s)| (n.as_str(), s.as_str())).collect();
+            np = projekt.neupunkte.remove_where(|p| schluessel.contains(&(p.punkt_nr.as_str(), p.standpunkt_nr.as_str()))).unwrap_or(0);
             self.baue_neupunkte_overlay(projekt);
         }
         if !ziele.importpunkte.is_empty() {
@@ -1001,15 +916,10 @@ impl DxfViewer {
             return;
         };
         let dialog = match dialog {
-            Dialog::Hinweis {titel,text} if titel.to_lowercase().contains("fehler") => Dialog::Fehler {titel,text},
+            Dialog::Hinweis { titel, text } if titel.to_lowercase().contains("fehler") => Dialog::Fehler { titel, text },
             anderer => anderer,
         };
-        let fenster = |titel: &str| {
-            egui::Window::new(titel.to_string())
-                .collapsible(false)
-                .resizable(false)
-                .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-        };
+        let fenster = |titel: &str| egui::Window::new(titel.to_string()).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO);
         match dialog {
             Dialog::Fehler { titel, text } => {
                 let mut offen = true;
@@ -1023,18 +933,24 @@ impl DxfViewer {
                     .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
                     .frame(egui::Frame::window(&ctx.style_of(egui::Theme::Light)).fill(Color32::from_rgb(255, 247, 247)))
                     .show(&ctx, |ui| {
-                        ui.label(RichText::new("Der Vorgang konnte nicht abgeschlossen werden.").strong().size(17.0).color(Color32::from_rgb(160,30,30)));
+                        ui.label(RichText::new("Der Vorgang konnte nicht abgeschlossen werden.").strong().size(17.0).color(Color32::from_rgb(160, 30, 30)));
                         ui.add_space(8.0);
                         egui::ScrollArea::vertical().id_salt("dxf_fehlertext").max_height(360.0).show(ui, |ui| {
-                            ui.add(egui::Label::new(RichText::new(&text).size(15.0).color(Color32::from_rgb(25,25,25))).wrap());
+                            ui.add(egui::Label::new(RichText::new(&text).size(15.0).color(Color32::from_rgb(25, 25, 25))).wrap());
                         });
                         ui.add_space(12.0);
                         ui.horizontal(|ui| {
-                            if ui.button("Fehlermeldung kopieren").clicked() {ui.ctx().copy_text(format!("{titel}\n\n{text}"));}
-                            if ui.button("Schließen").clicked() {schliessen=true;}
+                            if ui.button("Fehlermeldung kopieren").clicked() {
+                                ui.ctx().copy_text(format!("{titel}\n\n{text}"));
+                            }
+                            if ui.button("Schließen").clicked() {
+                                schliessen = true;
+                            }
                         });
                     });
-                if offen && !schliessen {self.dialog=Some(Dialog::Fehler{titel,text});}
+                if offen && !schliessen {
+                    self.dialog = Some(Dialog::Fehler { titel, text });
+                }
             }
             Dialog::Hinweis { titel, text } => {
                 let mut offen = true;
@@ -1097,9 +1013,8 @@ impl DxfViewer {
                         if ui.add(abbrechen).clicked() {
                             antwort = Some(false);
                         }
-                        let reset = egui::Button::new(egui::RichText::new("Zurücksetzen").color(Color32::WHITE))
-                            .fill(Color32::from_rgb(180, 50, 40))
-                            .min_size(Vec2::new(140.0, 30.0));
+                        let reset =
+                            egui::Button::new(egui::RichText::new("Zurücksetzen").color(Color32::WHITE)).fill(Color32::from_rgb(180, 50, 40)).min_size(Vec2::new(140.0, 30.0));
                         if ui.add(reset).clicked() {
                             antwort = Some(true);
                         }
@@ -1207,11 +1122,7 @@ impl DxfViewer {
                         schliessen = true;
                     } else {
                         let mut gesehen = std::collections::HashSet::new();
-                        let doppelt: Vec<&str> = gewaehlt
-                            .iter()
-                            .map(|z| z.ergebnis.punkt_nr.as_str())
-                            .filter(|nr| !gesehen.insert(*nr))
-                            .collect();
+                        let doppelt: Vec<&str> = gewaehlt.iter().map(|z| z.ergebnis.punkt_nr.as_str()).filter(|nr| !gesehen.insert(*nr)).collect();
                         if !doppelt.is_empty() {
                             fehler = format!(
                                 "Folgende Punktnummern sind mehrfach (von verschiedenen Standpunkten) gewählt: {}. \
@@ -1220,11 +1131,7 @@ impl DxfViewer {
                             );
                         } else {
                             fehler.clear();
-                            let ersetzen: Vec<&str> = gewaehlt
-                                .iter()
-                                .filter(|z| projekt.festpunkt_existiert(&z.ergebnis.punkt_nr))
-                                .map(|z| z.ergebnis.punkt_nr.as_str())
-                                .collect();
+                            let ersetzen: Vec<&str> = gewaehlt.iter().filter(|z| projekt.festpunkt_existiert(&z.ergebnis.punkt_nr)).map(|z| z.ergebnis.punkt_nr.as_str()).collect();
                             if ersetzen.is_empty() {
                                 bestaetigt = true;
                             } else {
@@ -1271,12 +1178,8 @@ fn naechste_punkt_nr(kor: &Path) -> i32 {
     let Ok(text) = std::fs::read_to_string(kor) else {
         return 1;
     };
-    let max = text
-        .lines()
-        .filter(|z| !z.starts_with('%') && !z.trim().is_empty())
-        .filter_map(|z| z.chars().take(8).collect::<String>().trim().parse::<i32>().ok())
-        .max()
-        .unwrap_or(0);
+    let max =
+        text.lines().filter(|z| !z.starts_with('%') && !z.trim().is_empty()).filter_map(|z| z.chars().take(8).collect::<String>().trim().parse::<i32>().ok()).max().unwrap_or(0);
     if max > 0 { max + 1 } else { 1 }
 }
 

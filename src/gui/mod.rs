@@ -72,6 +72,10 @@ pub struct FeldbuchApp {
     startgroesse_gesetzt: bool,
     /// Das Hauptfenster wurde für den geöffneten DXF-Viewer minimiert (wird beim Schließen wiederhergestellt).
     hauptfenster_minimiert: bool,
+    /// Zuletzt verlassene Konvertierungstabelle; wird beim erneuten Öffnen im selben Projekt weiterverwendet.
+    konvertierung_merker: Option<Box<konvertierung::KonvertierungAnsicht>>,
+    /// Eigene DXF-Viewer-Instanz zur Punktauswahl für die Konvertierung.
+    auswahl_viewer: Option<Box<dxf_viewer::DxfViewer>>,
 }
 
 /// Gewünschte Fenstergröße (Innenfläche) beim Start in Punkten: Full HD.
@@ -190,6 +194,8 @@ impl FeldbuchApp {
             update_pruefen_wunsch: false,
             startgroesse_gesetzt: false,
             hauptfenster_minimiert: false,
+            konvertierung_merker: None,
+            auswahl_viewer: None,
         }
     }
 
@@ -289,10 +295,27 @@ impl FeldbuchApp {
         }
     }
 
+    /// Wechselt die Ansicht. Eine verlassene Konvertierung wird aufbewahrt, damit ihre Tabelle erhalten bleibt.
+    fn setze_ansicht(&mut self, neu: Ansicht) {
+        if let Ansicht::Konvertierung(alt) = std::mem::replace(&mut self.ansicht, neu) {
+            self.konvertierung_merker = Some(alt);
+        }
+    }
+
+    /// Die Konvertierung zum Öffnen: die gemerkte Tabelle, wenn sie zum aktuellen Projekt gehört, sonst neu.
+    fn konvertierung_oeffnen(&mut self) -> Ansicht {
+        let ansicht = match self.konvertierung_merker.take() {
+            Some(a) if a.gehoert_zu(&self.projekt) => a,
+            _ => Box::new(konvertierung::KonvertierungAnsicht::neu(&self.projekt)),
+        };
+        Ansicht::Konvertierung(ansicht)
+    }
+
     /// Öffnet den Aufnahmetest (oder bleibt in ihm) und fährt auf Wunsch den Punkt mit dieser Nummer an.
     fn oeffne_aufnahmetest(&mut self, anfahren_nach: Option<&str>) {
         if !matches!(self.ansicht, Ansicht::Aufnahmetest(_)) {
-            self.ansicht = Ansicht::Aufnahmetest(Box::new(aufnahmetest::AufnahmetestAnsicht::neu(&self.projekt)));
+            let neu = Ansicht::Aufnahmetest(Box::new(aufnahmetest::AufnahmetestAnsicht::neu(&self.projekt)));
+            self.setze_ansicht(neu);
         }
         if let (Ansicht::Aufnahmetest(a), Some(nr)) = (&mut self.ansicht, anfahren_nach) {
             a.anfahren_nach(nr, &mut self.geraet);
@@ -300,8 +323,38 @@ impl FeldbuchApp {
     }
 
     /// Läuft gerade etwas, das ein Update nicht unterbrechen darf (DXF-Viewer oder ein anderes Modul als Hauptmenü/Info)?
+    /// Die Konvertierung, ob gerade angezeigt oder gemerkt.
+    fn konvertierung_mut(&mut self) -> Option<&mut konvertierung::KonvertierungAnsicht> {
+        match &mut self.ansicht {
+            Ansicht::Konvertierung(k) => Some(k),
+            _ => self.konvertierung_merker.as_deref_mut(),
+        }
+    }
+
+    /// DXF-Viewer zur Auswahl für die Konvertierung: eigene Instanz neben einem evtl. offenen Haupt-Viewer.
+    /// Öffnet auf Wunsch der Konvertierung und gibt beim Schließen das Ergebnis an sie zurück.
+    fn bediene_auswahl_viewer(&mut self, ctx: &egui::Context) {
+        if self.auswahl_viewer.is_none() {
+            if let Some(anfrage) = self.konvertierung_mut().and_then(|k| k.nimm_auswahl_anfrage()) {
+                self.auswahl_viewer = Some(Box::new(dxf_viewer::DxfViewer::fuer_auswahl(&self.projekt, anfrage)));
+            }
+        }
+        let Some(viewer) = self.auswahl_viewer.as_mut() else {
+            return;
+        };
+        if viewer.zeige(ctx, &mut self.projekt, &mut self.geraet) {
+            return;
+        }
+        let ergebnis = viewer.nimm_auswahl_ergebnis();
+        self.auswahl_viewer = None;
+        if let (Some(ergebnis), Some(k)) = (ergebnis, self.konvertierung_mut()) {
+            k.uebernimm_dxf_auswahl(ergebnis);
+        }
+    }
+
     fn update_blockiert(&self) -> bool {
-        self.dxf_viewer.is_some()
+        self.auswahl_viewer.is_some()
+            || self.dxf_viewer.is_some()
             || self.freie_stationierung.is_some()
             || self.polarpunkte.is_some()
             || !matches!(self.ansicht, Ansicht::Start | Ansicht::Info)
@@ -424,6 +477,7 @@ impl eframe::App for FeldbuchApp {
         self.geraet.live_neigung_aktiv = matches!(self.ansicht, Ansicht::Kommunikation(_));
         hauptfenster::zeichne(self, ui);
         self.bearbeite_update(&ctx);
+        self.bediene_auswahl_viewer(&ctx);
 
         // DXF-Viewer als eigenes Fenster
         let mut wunsch = None;

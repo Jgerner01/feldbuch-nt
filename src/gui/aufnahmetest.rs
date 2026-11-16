@@ -142,18 +142,8 @@ impl AufnahmetestAnsicht {
             punkt_nr = format!("P{nr:03}");
         }
         let punkt = AufnahmePunkt::aus_messung(nr, &punkt_nr, self.code.trim(), hz, v, d);
-        self.mess_info = Hinweis::neu(
-            format!(
-                "Hz={} gon   V={} gon   D={} m   →  X={}  Y={}  Z={}",
-                f(hz, 4),
-                f(v, 4),
-                f(d, 3),
-                f(punkt.x, 4),
-                f(punkt.y, 4),
-                f(punkt.z, 4)
-            ),
-            FARBE_OK,
-        );
+        self.mess_info =
+            Hinweis::neu(format!("Hz={} gon   V={} gon   D={} m   →  X={}  Y={}  Z={}", f(hz, 4), f(v, 4), f(d, 3), f(punkt.x, 4), f(punkt.y, 4), f(punkt.z, 4)), FARBE_OK);
         self.zeilen.push(Zeile::neu(punkt));
         if let Ok(zahl) = punkt_nr.parse::<i64>() {
             self.punkt_nr = (zahl + 1).to_string();
@@ -213,17 +203,11 @@ impl AufnahmetestAnsicht {
         let (kor, dat) = daten::export_pfade(&kor);
         let jetzt = jetzt();
         let datum = jetzt.format("%Y-%m-%d").to_string();
-        let zeit = jetzt.format("%Y-%m-%d %H:%M").to_string();
-        let kopf = ExportKopf {
-            projekt: &self.projekt_name,
-            sensor: geraet.modell.anzeige(),
-            bearbeiter: &self.bearbeiter,
-            datum: &datum,
-            zeitstempel: &zeit,
-        };
+        let zeit = chrono::Local::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, false);
+        let kopf = ExportKopf { projekt: &self.projekt_name, sensor: geraet.modell.anzeige(), bearbeiter: &self.bearbeiter, datum: &datum, zeitstempel: &zeit };
         let punkte: Vec<AufnahmePunkt> = self.zeilen.iter().map(|z| z.punkt.clone()).collect();
-        let ergebnis = datei_speicher::schreibe_zeilen(&kor, daten::kor_zeilen(&punkte, &kopf))
-            .and_then(|()| datei_speicher::schreibe_zeilen(&dat, daten::dat_zeilen(&punkte, &kopf)));
+        let ergebnis =
+            datei_speicher::schreibe_zeilen(&kor, daten::kor_zeilen(&punkte, &kopf)).and_then(|()| datei_speicher::schreibe_zeilen(&dat, daten::dat_zeilen(&punkte, &kopf)));
         self.meldung = match ergebnis {
             Ok(()) => format!(
                 "Export abgeschlossen:\n  {}\n  {}",

@@ -9,11 +9,11 @@ use eframe::egui::{self, Color32, RichText};
 
 use super::tabelle::Raster;
 use crate::daten::modelle::{ImportPunkt, jetzt};
-use crate::protokolle::{schreibe_fuer_projekt, transformation};
 use crate::daten::projekt::Projekt;
 use crate::daten::punktlisten::{lese_csv, lese_kor};
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::grundlagen::{datei_speicher, protokoll};
+use crate::protokolle::{schreibe_fuer_projekt, transformation};
 use crate::rechnen::koord_transformation::{self as kt, Ergebnis, Residuum, TransformPunkt, TransformationsTyp};
 
 /// Anzahl leerer Zeilen beim Start.
@@ -38,8 +38,7 @@ const FARBE_INAKTIV: Color32 = Color32::from_rgb(228, 228, 228);
 /// Code der Passpunkte im Export.
 const CODE_PASSPUNKT: &str = "T";
 /// Typen in der Reihenfolge des Auswahlfelds.
-const TYPEN: [TransformationsTyp; 4] =
-    [TransformationsTyp::Helmert2D, TransformationsTyp::Helmert3D, TransformationsTyp::Parameter7, TransformationsTyp::Parameter9];
+const TYPEN: [TransformationsTyp; 4] = [TransformationsTyp::Helmert2D, TransformationsTyp::Helmert3D, TransformationsTyp::Parameter7, TransformationsTyp::Parameter9];
 /// Breiten der Residuentabelle: Aktiv, Z, Nr, vX, vY, vZ, vGes.
 const BREITEN_RESIDUEN_3D: [f32; 7] = [44.0, 34.0, 80.0, 80.0, 80.0, 80.0, 80.0];
 const BREITEN_RESIDUEN_2D: [f32; 5] = [44.0, 80.0, 80.0, 80.0, 80.0];
@@ -47,6 +46,7 @@ const BREITEN_RESIDUEN_2D: [f32; 5] = [44.0, 80.0, 80.0, 80.0, 80.0];
 /// Eingabezeile einer Punktliste.
 #[derive(Clone, Default)]
 struct Zeile {
+    code: String,
     nr: String,
     x: String,
     y: String,
@@ -88,23 +88,16 @@ fn zeilen_aus_punkten(punkte: &[ImportPunkt]) -> Vec<Zeile> {
         .iter()
         .map(|p| Zeile {
             nr: p.punkt_nr.clone(),
-            x: f(p.r, 3),
-            y: f(p.h, 3),
-            z: if p.hoehe != 0.0 { f(p.hoehe, 3) } else { String::new() },
+            code: p.code.clone(),
+            x: f(p.r, 4),
+            y: f(p.h, 4),
+            z: if p.hoehe_vorhanden != Some(false) { f(p.hoehe, 4) } else { String::new() },
         })
         .collect()
 }
 
 fn zeilen_aus_transform(punkte: &[TransformPunkt]) -> Vec<Zeile> {
-    punkte
-        .iter()
-        .map(|p| Zeile {
-            nr: p.punkt_nr.clone(),
-            x: f(p.x, 3),
-            y: f(p.y, 3),
-            z: if p.z != 0.0 { f(p.z, 3) } else { String::new() },
-        })
-        .collect()
+    punkte.iter().map(|p| Zeile { code: String::new(), nr: p.punkt_nr.clone(), x: f(p.x, 4), y: f(p.y, 4), z: f(p.z, 4) }).collect()
 }
 
 fn leere_zeilen() -> Vec<Zeile> {
@@ -184,11 +177,7 @@ impl KoordTransformationAnsicht {
 
     fn importiere(&mut self, quelle: bool, nur_csv: bool) {
         let mut dialog = rfd::FileDialog::new().set_title(if nur_csv { "CSV-Datei importieren" } else { "KOR-Datei importieren" });
-        dialog = if nur_csv {
-            dialog.add_filter("CSV-Datei", &["csv"])
-        } else {
-            dialog.add_filter("KOR / KOR-CSV", &["kor", "csv"])
-        };
+        dialog = if nur_csv { dialog.add_filter("CSV-Datei", &["csv"]) } else { dialog.add_filter("KOR / KOR-CSV", &["kor", "csv"]) };
         let Some(pfad) = dialog.add_filter("Alle Dateien", &["*"]).pick_file() else {
             return;
         };
@@ -326,10 +315,7 @@ impl KoordTransformationAnsicht {
         let identisch = self.transformiert.iter().filter(|p| self.identische.contains(&schluessel(&p.punkt_nr))).count();
         self.ziel = zeilen_aus_transform(&self.transformiert);
         self.ziel_ist_resultat = true;
-        protokoll::log(
-            "TRANSF",
-            &format!("{}: {identisch} Passpunkte (rot), {} Neupunkte transformiert (grün)", typ.name(), self.transformiert.len() - identisch),
-        );
+        protokoll::log("TRANSF", &format!("{}: {identisch} Passpunkte (rot), {} Neupunkte transformiert (grün)", typ.name(), self.transformiert.len() - identisch));
     }
 
     /// Schreibt das RTF-Protokoll der letzten Berechnung.
@@ -338,15 +324,7 @@ impl KoordTransformationAnsicht {
             return;
         };
         let alle = (!self.transformiert.is_empty()).then_some(self.transformiert.as_slice());
-        let p = transformation::protokoll(
-            erg,
-            &self.quelle_zuletzt,
-            &self.ziel_zuletzt,
-            alle,
-            &projekt.einstellungen.projekt_name,
-            &projekt.projektdaten.bearbeiter,
-            jetzt(),
-        );
+        let p = transformation::protokoll(erg, &self.quelle_zuletzt, &self.ziel_zuletzt, alle, &projekt.einstellungen.projekt_name, &projekt.projektdaten.bearbeiter, jetzt());
         match schreibe_fuer_projekt(&p, projekt) {
             Ok(pfad) => self.hinweis(format!("Protokoll gespeichert:\n{}", pfad.display())),
             Err(text) => self.fehler(text),
@@ -363,10 +341,7 @@ impl KoordTransformationAnsicht {
         if punkte.is_empty() {
             return;
         }
-        let mut dialog = rfd::FileDialog::new()
-            .set_title("Transformierte Punkte speichern")
-            .add_filter("KOR-Datei", &["kor"])
-            .set_file_name("Transformiert.kor");
+        let mut dialog = rfd::FileDialog::new().set_title("Transformierte Punkte speichern").add_filter("KOR-Datei", &["kor"]).set_file_name("Transformiert.kor");
         if projekt.einstellungen.ist_geladen() {
             dialog = dialog.set_directory(&projekt.einstellungen.projekt_verzeichnis);
         }
@@ -376,16 +351,33 @@ impl KoordTransformationAnsicht {
         let jetzt = chrono::Local::now();
         let typ_name = erg.typ.name();
         let mut kor = format!("% Koordinatentransformation  {}\r\n% Typ: {typ_name}\r\n", jetzt.format("%Y-%m-%d %H:%M"));
-        let mut csv = format!(
-            "# METADATA\r\nProjekt: {}\r\nSensor: {typ_name}\r\nBearbeiter: \r\nDatum: {}\r\n---\r\n# DATENTYP\r\nKoordinaten\r\n# DATEN\r\nPunktNr; X; Y; Z; Code\r\n",
-            projekt.einstellungen.projekt_name,
-            jetzt.format("%Y-%m-%d")
-        );
         for p in &punkte {
             let code = if self.identische.contains(&schluessel(&p.punkt_nr)) { CODE_PASSPUNKT } else { "" };
             kor.push_str(&format!("{:<8}{:>16}{:>16}{:>10}    {code}\r\n", p.punkt_nr, f(p.x, 3), f(p.y, 3), f(p.z, 3)));
-            csv.push_str(&format!("{}; {}; {}; {}; {code}\r\n", p.punkt_nr, f(p.x, 3), f(p.y, 3), f(p.z, 3)));
         }
+        let kor_punkte: Vec<_> = punkte
+            .iter()
+            .map(|p| crate::daten::kor_csv::KorPunkt {
+                punkt_nr: p.punkt_nr.clone(),
+                r: p.x,
+                h: p.y,
+                hoehe: self.quelle.iter().find(|q| q.nr == p.punkt_nr).filter(|q| !q.z.trim().is_empty()).map(|_| p.z),
+                code: self
+                    .quelle
+                    .iter()
+                    .find(|q| q.nr == p.punkt_nr)
+                    .map(|q| q.code.clone())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| if self.identische.contains(&schluessel(&p.punkt_nr)) { CODE_PASSPUNKT.into() } else { String::new() }),
+            })
+            .collect();
+        let csv = match crate::daten::kor_csv::erzeuge(&projekt.einstellungen.projekt_name, typ_name, &jetzt.format("%Y-%m-%d").to_string(), &kor_punkte) {
+            Ok(text) => text,
+            Err(e) => {
+                self.fehler(e.to_string());
+                return;
+            }
+        };
         let stamm = pfad.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let csv_pfad = pfad.with_file_name(format!("{stamm}-kor.csv"));
         let ergebnis = datei_speicher::schreibe_text(&pfad, &kor).and_then(|()| datei_speicher::schreibe_text(&csv_pfad, &csv));
@@ -406,13 +398,11 @@ impl KoordTransformationAnsicht {
         ui.horizontal(|ui| {
             ui.label("Transformation:");
             let vorher = self.typ_index;
-            egui::ComboBox::from_id_salt("transformationstyp")
-                .selected_text(self.typ().name())
-                .show_ui(ui, |ui| {
-                    for (i, t) in TYPEN.iter().enumerate() {
-                        ui.selectable_value(&mut self.typ_index, i, t.name());
-                    }
-                });
+            egui::ComboBox::from_id_salt("transformationstyp").selected_text(self.typ().name()).show_ui(ui, |ui| {
+                for (i, t) in TYPEN.iter().enumerate() {
+                    ui.selectable_value(&mut self.typ_index, i, t.name());
+                }
+            });
             if vorher != self.typ_index {
                 self.speichere_einstellungen(projekt);
                 neu_rechnen |= self.ziel_ist_resultat && self.ergebnis.is_some();
@@ -501,11 +491,8 @@ impl KoordTransformationAnsicht {
         let ist_3d = self.typ() != TransformationsTyp::Helmert2D;
         let breiten: &[f32] = if ist_3d { &BREITEN_RESIDUEN_3D } else { &BREITEN_RESIDUEN_2D };
         let raster = Raster::neu(breiten);
-        let kopf: &[&str] = if ist_3d {
-            &["Aktiv", "Z", "PunktNr", "vX [cm]", "vY [cm]", "vZ [cm]", "vGes. [cm]"]
-        } else {
-            &["Aktiv", "PunktNr", "vX [cm]", "vY [cm]", "vGes. [cm]"]
-        };
+        let kopf: &[&str] =
+            if ist_3d { &["Aktiv", "Z", "PunktNr", "vX [cm]", "vY [cm]", "vZ [cm]", "vGes. [cm]"] } else { &["Aktiv", "PunktNr", "vX [cm]", "vY [cm]", "vGes. [cm]"] };
         ui.add_space(4.0);
         raster.kopf(ui, kopf);
         let vorher = (self.aktiv.clone(), self.hoehe_aktiv.clone());
@@ -571,9 +558,8 @@ fn zeichne_liste(ui: &mut egui::Ui, id: &str, zeilen: &mut Vec<Zeile>, faerbung:
         let mut loeschen = None;
         egui::ScrollArea::vertical().max_height(260.0).id_salt(id).show(ui, |ui| {
             for (i, zeile) in zeilen.iter_mut().enumerate() {
-                let hintergrund = faerbung.and_then(|menge| {
-                    (!zeile.nr.trim().is_empty()).then(|| if menge.contains(&schluessel(&zeile.nr)) { FARBE_PASSPUNKT } else { FARBE_NEUPUNKT })
-                });
+                let hintergrund =
+                    faerbung.and_then(|menge| (!zeile.nr.trim().is_empty()).then(|| if menge.contains(&schluessel(&zeile.nr)) { FARBE_PASSPUNKT } else { FARBE_NEUPUNKT }));
                 raster.zeile_farbig(ui, i, &(i + 1).to_string(), hintergrund, |z| {
                     *geaendert |= z.eingabe(&mut zeile.nr);
                     *geaendert |= z.eingabe(&mut zeile.x);
@@ -610,11 +596,7 @@ fn info_text(erg: &Ergebnis, typ: TransformationsTyp) -> String {
         ),
         _ => format!("{translation}    dz = {} m\n  m  = {} ppm", vorzeichen(p.dz, 3), vorzeichen(p.m * PPM, 2)),
     };
-    let genauigkeit = if erg.redundanz > 0 {
-        format!("   |   s₀ = {} mm   (r = {})", f(erg.s0_mm, 2), erg.redundanz)
-    } else {
-        "   |   eindeutig bestimmt (r = 0)".to_string()
-    };
+    let genauigkeit = if erg.redundanz > 0 { format!("   |   s₀ = {} mm   (r = {})", f(erg.s0_mm, 2), erg.redundanz) } else { "   |   eindeutig bestimmt (r = 0)".to_string() };
     info + &genauigkeit
 }
 
@@ -623,7 +605,7 @@ mod tests {
     use super::*;
 
     fn zeile(nr: &str, x: &str, y: &str, z: &str) -> Zeile {
-        Zeile { nr: nr.into(), x: x.into(), y: y.into(), z: z.into() }
+        Zeile { nr: nr.into(), x: x.into(), y: y.into(), z: z.into(), code: String::new() }
     }
 
     #[test]

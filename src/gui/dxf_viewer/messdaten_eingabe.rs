@@ -8,7 +8,6 @@ use eframe::egui::{self, Align2, Color32, RichText, Vec2};
 use super::{Dialog, DxfViewer};
 use crate::daten::modelle::StationierungsPunkt;
 use crate::daten::projekt::Projekt;
-use crate::grundlagen::datei_speicher;
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::gui::geraet::Geraet;
 use crate::tachymeter::messablauf::MessErgebnis;
@@ -19,7 +18,6 @@ pub const STANDARD_CODE: &str = "030";
 /// Zielhöhe, wenn noch keine verwendet wurde.
 pub const STANDARD_ZIELHOEHE: &str = "1.700";
 /// Kopfzeile der Anschlusspunktdatei.
-const KOPFZEILE: &str = "PunktNr,R,H,Hoehe,HZ,V,Strecke,Zielhoehe";
 /// Farben der Meldungen.
 const FARBE_OK: Color32 = Color32::from_rgb(40, 150, 60);
 const FARBE_WARNUNG: Color32 = Color32::from_rgb(200, 130, 40);
@@ -150,19 +148,34 @@ impl MessdatenEingabe {
 }
 
 /// Zeile der Anschlusspunktdatei.
+#[cfg(test)]
 pub(super) fn anschluss_zeile(p: &StationierungsPunkt) -> String {
-    [p.punkt_nr.clone(), f(p.r, 3), f(p.h, 3), f(p.hoehe, 3), f(p.hz, 4), f(p.v, 4), f(p.strecke, 3), f(p.zielhoehe, 3)].join(",")
+    crate::daten::csv_basis::zeile(crate::daten::stationierung_csv::zeile(p), ';')
 }
 
 /// Hängt eine Messung an die Anschlusspunktdatei an (gleiche Nummer bleibt als Mehrfachmessung erhalten).
-pub(super) fn schreibe_anschlusspunkt(projekt: &Projekt, p: &StationierungsPunkt) -> std::io::Result<()> {
-    let pfad = projekt.anschlusspunkte_pfad();
-    let mut zeilen: Vec<String> = vec![KOPFZEILE.to_string()];
-    if let Ok(text) = std::fs::read_to_string(&pfad) {
-        zeilen.extend(text.lines().skip(1).filter(|z| !z.trim().is_empty()).map(str::to_string));
+pub(super) fn schreibe_anschlusspunkt(projekt: &Projekt, p: &StationierungsPunkt, code: &str) -> std::io::Result<()> {
+    let quelle = projekt.anschlusspunkte_pfad();
+    let mut d = if quelle.exists() {
+        crate::daten::csv_datei::CsvDatei::laden(&quelle)?
+    } else {
+        crate::daten::stationierung_csv::datei(&projekt.station.standpunkt_nr, projekt.einstellungen.instrumenten_hoehe, &[])
+    };
+    d.datentyp = crate::daten::csv_datei::TYP_STANDPUNKT.into();
+    d.projekt = projekt.einstellungen.projekt_name.clone();
+    let i = d.zeilen.len();
+    d.zeilen.push(vec![String::new(); d.spalten.len()]);
+    for (spalte, wert) in crate::daten::csv_datei::SPALTEN_STP.iter().zip(crate::daten::stationierung_csv::zeile(p)) {
+        d.set_zelle(i, spalte, wert);
     }
-    zeilen.push(anschluss_zeile(p));
-    datei_speicher::schreibe_zeilen(&pfad, zeilen)
+    d.set_zelle(i, "Code", code.into());
+    let ih = if projekt.station.standpunkt_nr.is_empty() { projekt.einstellungen.instrumenten_hoehe } else { projekt.station.instrumenten_hoehe };
+    d.standpunkt_nr = projekt.station.standpunkt_nr.clone();
+    d.instr_hoehe = f(ih, 3);
+    d.set_meta("AufstellungId", &crate::daten::messdaten::aufstellung_id(&projekt.einstellungen, &d.standpunkt_nr.clone(), ih));
+    d.stationierung.clear();
+    d.pfad = projekt.anschlusspunkte_zielpfad();
+    d.speichern()
 }
 
 impl DxfViewer {
@@ -312,7 +325,7 @@ impl DxfViewer {
                     if projekt.einstellungen.mess_modus_name == "Prisma" {
                         self.letzte_zielhoehe.clone_from(&d.zielhoehe);
                     }
-                    match schreibe_anschlusspunkt(projekt, &p) {
+                    match schreibe_anschlusspunkt(projekt, &p, &d.code) {
                         Ok(()) => self.status = format!("Punkt '{}' gespeichert  |  R: {}   H: {}", p.punkt_nr, f(p.r, 3), f(p.h, 3)),
                         Err(fehler) => {
                             self.dialog = Some(Dialog::Hinweis { titel: "Fehler".into(), text: format!("Punkt konnte nicht geschrieben werden:\n{fehler}") });
@@ -388,6 +401,6 @@ mod tests {
     #[test]
     fn anschlusszeile_und_datei() {
         let p = StationierungsPunkt { punkt_nr: "A1".into(), r: 1.5, h: 2.25, hoehe: 3.0, hz: 4.0, v: 99.5, strecke: 10.0, zielhoehe: 1.7 };
-        assert_eq!(anschluss_zeile(&p), "A1,1.500,2.250,3.000,4.0000,99.5000,10.000,1.700");
+        assert_eq!(anschluss_zeile(&p), "A1;1.5000;2.2500;3.0000;4.0000;99.5000;10.000;1.700;;;0.000;0.000;AP");
     }
 }

@@ -36,11 +36,8 @@ GNSS_Latitude; GNSS_Longitude; GNSS_Height_m; \
 GNSS_HorizAccuracy_m; GNSS_VertAccuracy_m; \
 GNSS_FixType; GNSS_Satellites; GNSS_HDOP; GNSS_PDOP";
 
+#[cfg(test)]
 const SPALTENZEILE_ALT: &str = "PunktNr; HZ_gon; V_gon; Strecke_m; Zielhoehe_m; Code; Zeitstempel";
-const SPALTENZEILE: &str =
-    "PunktNr; HZ_gon; V_gon; Strecke_m; Zielhoehe_m; Code; Zeitstempel; ExzLaengs_m; ExzQuer_m; StandpunktNr; Typ";
-/// Zusatzwerte für Datenzeilen alter Dateien.
-const ZUSATZWERTE_ALTE_ZEILE: &str = "; 0.000; 0.000; ; ";
 /// Anzahl der Spalten des Dateiformats (Platzhalter leerer GNSS-Spalten im Tagesprotokoll).
 const GNSS_SPALTEN: usize = 9;
 
@@ -81,15 +78,7 @@ pub fn tagesprotokoll_pfad(e: &Einstellungen, zeit: NaiveDateTime) -> PathBuf {
 }
 
 /// Schreibt einen Messeintrag ins Tagesprotokoll (GNSS-Spalten bleiben leer).
-pub fn schreibe_tagesprotokoll(
-    e: &Einstellungen,
-    messmethode: &str,
-    standpunkt_nr: &str,
-    instr_hoehe: f64,
-    punkt_nr: &str,
-    code: &str,
-    m: &TachymeterMessung,
-) -> io::Result<()> {
+pub fn schreibe_tagesprotokoll(e: &Einstellungen, messmethode: &str, standpunkt_nr: &str, instr_hoehe: f64, punkt_nr: &str, code: &str, m: &TachymeterMessung) -> io::Result<()> {
     let pfad = tagesprotokoll_pfad(e, m.zeitstempel);
     if !pfad.exists() {
         let kopf = format!(
@@ -122,7 +111,7 @@ pub fn schreibe_tagesprotokoll(
         m.quelle.clone(),
     ];
     felder.extend(std::iter::repeat_n(String::new(), GNSS_SPALTEN));
-    anhaengen(&pfad, &felder.join("; "))
+    anhaengen(&pfad, &crate::daten::csv_basis::zeile(&felder, ';'))
 }
 
 /// Pfad der Messdatei des Projekts.
@@ -130,167 +119,210 @@ pub fn messdatei_pfad(e: &Einstellungen) -> PathBuf {
     e.get_pfad(&format!("{}-dat.csv", e.projekt_name))
 }
 
-/// Schreibt eine Neupunktmessung in die Messdatei.
-pub fn schreibe_neupunktmessung(e: &Einstellungen, r: &NeupunktRohdaten, standpunkt_nr: &str, instr_hoehe: f64) {
-    stelle_messdatei_sicher(e, standpunkt_nr, instr_hoehe);
-    let zeile = [
-        r.punkt_nr.clone(),
-        f(r.hz_gon, 4),
-        f(r.v_gon, 4),
-        f(r.strecke_m, 3),
-        f(r.zielhoehe_m, 3),
-        r.code.clone(),
-        zeit_text(r.zeitstempel, "%Y-%m-%d %H:%M"),
-        f(r.exz_laengs_m, 3),
-        f(r.exz_quer_m, 3),
-        standpunkt_nr.to_string(),
-        TYP_NEUPUNKT.to_string(),
-    ]
-    .join("; ");
-    hänge_messdatei_an(e, &zeile);
+/// Stabile Kennung der aktiven Aufstellung (auch über Programmneustarts).
+pub fn aufstellung_id(e: &Einstellungen, nr: &str, ih: f64) -> String {
+    let station = e.get_pfad(&format!("Station-{nr}.json"));
+    if let Ok(d) = crate::daten::json_speicher::lade::<crate::daten::projekt::StationsdatenDatei>(&station) {
+        if !d.aufstellung_id.is_empty() && (d.instrumenten_hoehe - ih).abs() < 0.0005 {
+            return d.aufstellung_id;
+        }
+    }
+    if let Ok(d) = crate::daten::csv_datei::CsvDatei::laden(&messdatei_pfad(e)) {
+        if let Some(z) = d
+            .zeilen
+            .last()
+            .filter(|z| d.zelle(z, "StandpunktNr") == nr && crate::grundlagen::format::parse_zahl(d.zelle(z, "InstrumentenHoehe_m")).is_some_and(|h| (h - ih).abs() < 0.0005))
+        {
+            let id = d.zelle(z, "AufstellungId");
+            if !id.is_empty() {
+                return id.into();
+            }
+        }
+    }
+    neue_aufstellung_id(nr)
 }
 
-/// Schreibt eine Anschlusspunktmessung (Stationierung) in die Messdatei.
-pub fn schreibe_stationierungsmessung(
-    e: &Einstellungen,
-    p: &StationierungsPunkt,
-    standpunkt_nr: &str,
-    instr_hoehe: f64,
-    zeit: NaiveDateTime,
-) {
-    stelle_messdatei_sicher(e, standpunkt_nr, instr_hoehe);
-    let zeile = [
-        p.punkt_nr.clone(),
-        f(p.hz, 4),
-        f(p.v, 4),
-        f(p.strecke, 3),
-        f(p.zielhoehe, 3),
-        String::new(),
-        zeit_text(zeit, "%Y-%m-%d %H:%M"),
-        f(0.0, 3),
-        f(0.0, 3),
-        standpunkt_nr.to_string(),
-        TYP_ANSCHLUSSPUNKT.to_string(),
-    ]
-    .join("; ");
-    hänge_messdatei_an(e, &zeile);
+pub fn neue_aufstellung_id(nr: &str) -> String {
+    let sicher: String = nr.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) { '_' } else { c }).collect();
+    format!("{sicher}-{}", Local::now().format("%Y%m%dT%H%M%S%f"))
 }
 
-/// Schreibt die Kommentarzeile nach einer Neuberechnung der Stationierung.
-pub fn schreibe_standpunktinfo(
-    e: &Einstellungen,
-    standpunkt_nr: &str,
-    instr_hoehe: f64,
-    erg: &StationierungsErgebnis,
-    sigma_faktor: i32,
-    sigma_wert_mm: f64,
-) {
-    stelle_messdatei_sicher(e, standpunkt_nr, instr_hoehe);
-    let mut zeile = format!(
+fn messzeit(zeit: NaiveDateTime) -> String {
+    use chrono::TimeZone;
+    // Nur eindeutig zuordenbare neue lokale Zeiten mit Offset ausgeben.
+    Local.from_local_datetime(&zeit).single().map(|z| z.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)).unwrap_or_else(|| zeit.format("%Y-%m-%d %H:%M:%S").to_string())
+}
+
+fn lade_messdatei(e: &Einstellungen) -> io::Result<crate::daten::csv_datei::CsvDatei> {
+    use crate::daten::csv_datei::{CsvDatei, TYP_MESSDATEN};
+    let pfad = messdatei_pfad(e);
+    let mut d = if pfad.exists() { CsvDatei::laden(&pfad)? } else { CsvDatei::neu(TYP_MESSDATEN) };
+    if d.datentyp != TYP_MESSDATEN {
+        return Err(crate::daten::csv_basis::fehler("Die Zieldatei enthält keine Messdaten."));
+    }
+    d.pfad = pfad;
+    d.projekt = e.projekt_name.clone();
+    if d.sensor.is_empty() && e.tachymeter_modell != TachymeterModell::Manuell {
+        d.sensor = e.tachymeter_modell.name().into();
+    }
+    Ok(d)
+}
+
+fn schreibe_messung(e: &Einstellungen, felder: Vec<String>, nr: &str, ih: f64, id: &str) -> io::Result<()> {
+    use crate::daten::csv_datei::SPALTEN_DAT;
+    let mut d = lade_messdatei(e)?;
+    // Vor einer Schemaumstellung unveränderte Altdatei sichern.
+    if d.pfad.exists() && d.meta("Formatversion").is_none() {
+        sichere(&d.pfad)?;
+    }
+    // Vor dem Leeren eines globalen Kopfes dessen nachweisbare Altzuordnung
+    // in die Zeilen übernehmen. Keine Aufstellungs-ID für Altmessungen erfinden.
+    let alter_sp = d.standpunkt_nr.clone();
+    let alte_ih = d.instr_hoehe.clone();
+    let alt = if d.pfad.exists() { crate::daten::polar_messdaten::lese(&d.pfad, |_| false).ok() } else { None };
+    for i in 0..d.zeilen.len() {
+        if d.zelle(&d.zeilen[i], "StandpunktNr").is_empty() {
+            let sp = alt.as_ref().and_then(|a| a.messungen.get(i)).map(|m| m.standpunkt_nr.clone()).unwrap_or_else(|| alter_sp.clone());
+            d.set_zelle(i, "StandpunktNr", sp);
+        }
+        if !alter_sp.is_empty() && d.zelle(&d.zeilen[i], "StandpunktNr") == alter_sp && d.zelle(&d.zeilen[i], "InstrumentenHoehe_m").is_empty() {
+            d.set_zelle(i, "InstrumentenHoehe_m", alte_ih.clone());
+        }
+    }
+    let mut werte = felder;
+    werte.push(if id.is_empty() { aufstellung_id(e, nr, ih) } else { id.into() });
+    werte.push(f(ih, 3));
+    let i = d.zeilen.len();
+    d.zeilen.push(vec![String::new(); d.spalten.len()]);
+    for (spalte, wert) in SPALTEN_DAT.iter().zip(werte) {
+        d.set_zelle(i, spalte, wert);
+    }
+    // Kopfwerte sind bei mehreren Aufstellungen keine gültigen Vorgaben.
+    let mut ids = std::collections::HashSet::new();
+    for z in &d.zeilen {
+        ids.insert(d.zelle(z, "AufstellungId").to_string());
+    }
+    if ids.len() == 1 && !ids.contains("") {
+        d.standpunkt_nr = nr.into();
+        d.instr_hoehe = f(ih, 3);
+    } else {
+        d.standpunkt_nr.clear();
+        d.instr_hoehe.clear();
+    }
+    d.speichern()
+}
+
+pub fn schreibe_neupunktmessung(e: &Einstellungen, r: &NeupunktRohdaten, standpunkt_nr: &str, instr_hoehe: f64) -> io::Result<()> {
+    let ergebnis = schreibe_messung(
+        e,
+        vec![
+            r.punkt_nr.clone(),
+            f(r.hz_gon, 4),
+            f(r.v_gon, 4),
+            f(r.strecke_m, 3),
+            f(r.zielhoehe_m, 3),
+            r.code.clone(),
+            messzeit(r.zeitstempel),
+            f(r.exz_laengs_m, 3),
+            f(r.exz_quer_m, 3),
+            standpunkt_nr.into(),
+            TYP_NEUPUNKT.into(),
+        ],
+        standpunkt_nr,
+        instr_hoehe,
+        &r.aufstellung_id,
+    );
+    ergebnis.inspect_err(|e| fehler_log::log("Messdaten.schreibe_neupunktmessung", &e.to_string()))
+}
+
+pub fn schreibe_stationierungsmessung(e: &Einstellungen, p: &StationierungsPunkt, standpunkt_nr: &str, instr_hoehe: f64, zeit: NaiveDateTime) -> io::Result<()> {
+    let ergebnis = schreibe_messung(
+        e,
+        vec![
+            p.punkt_nr.clone(),
+            f(p.hz, 4),
+            f(p.v, 4),
+            f(p.strecke, 3),
+            f(p.zielhoehe, 3),
+            String::new(),
+            messzeit(zeit),
+            "0.000".into(),
+            "0.000".into(),
+            standpunkt_nr.into(),
+            TYP_ANSCHLUSSPUNKT.into(),
+        ],
+        standpunkt_nr,
+        instr_hoehe,
+        "",
+    );
+    ergebnis.inspect_err(|e| fehler_log::log("Messdaten.schreibe_stationierungsmessung", &e.to_string()))
+}
+
+pub fn schreibe_standpunktinfo(e: &Einstellungen, standpunkt_nr: &str, instr_hoehe: f64, erg: &StationierungsErgebnis, sigma_faktor: i32, sigma_wert_mm: f64) {
+    let mut kommentar = format!(
         "# STATIONIERUNG: SP={standpunkt_nr}  IH={} m  R={}  H={}  Hoehe={}  Ori={} gon  s0={} mm  n={}",
         f(instr_hoehe, 3),
-        f(erg.r, 3),
-        f(erg.h, 3),
-        f(erg.hoehe, 3),
+        f(erg.r, 4),
+        f(erg.h, 4),
+        f(erg.hoehe, 4),
         f(erg.orientierung_gon, 4),
         f(erg.s0_mm, 2),
         erg.redundanz
     );
     if sigma_faktor > 1 {
-        zeile.push_str(&format!("  {sigma_faktor}s0={} mm", f(sigma_wert_mm, 2)));
+        kommentar.push_str(&format!("  {sigma_faktor}s0={} mm", f(sigma_wert_mm, 2)));
     }
-    hänge_messdatei_an(e, &zeile);
-    protokoll::log("STANDPKT", zeile.trim_start_matches(['#', ' ']));
+    let ergebnis = lade_messdatei(e).and_then(|mut d| {
+        d.kommentare.push((d.zeilen.len(), kommentar.clone()));
+        d.speichern()
+    });
+    if let Err(e) = ergebnis {
+        fehler_log::log("Messdaten.schreibe_standpunktinfo", &e.to_string());
+    }
+    protokoll::log("STANDPKT", &kommentar);
 }
 
-/// Stellt sicher, dass die Messdatei mit korrektem Kopf existiert; alte Formate werden aufgerüstet oder gesichert.
-fn stelle_messdatei_sicher(e: &Einstellungen, standpunkt_nr: &str, instr_hoehe: f64) {
-    let pfad = messdatei_pfad(e);
-    if pfad.exists() {
-        let erste = fs::read_to_string(&pfad).ok().and_then(|t| t.lines().next().map(|z| z.trim().to_string()));
-        match erste {
-            Some(z) if z == "# METADATA" => {
-                migriere_spalten(&pfad);
-                return;
-            }
-            None => return,
-            Some(_) => {
-                // Veraltetes Format: Sicherungskopie anlegen
-                let stamm = pfad.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                let backup = pfad.with_file_name(format!("{stamm}_backup_{}.csv", Local::now().format("%Y%m%d-%H%M%S")));
-                if fs::rename(&pfad, &backup).is_err() {
-                    return;
-                }
-                fehler_log::log("Messdaten.stelle_messdatei_sicher", &format!("Veraltetes Format gesichert nach: {}", backup.display()));
-            }
-        }
-    }
-    let sensor = if e.tachymeter_modell == TachymeterModell::Manuell { "" } else { e.tachymeter_modell.name() };
-    let kopf = format!(
-        "# METADATA\r\nProjekt: {}\r\nSensor: {sensor}\r\nBearbeiter: \r\nDatum: {}\r\nStandpunktNr: {standpunkt_nr}\r\n\
-         InstrumentenHoehe: {}\r\nStandpunktCode: \r\n---\r\n# DATENTYP\r\nMessdaten\r\n# DATEN\r\n{SPALTENZEILE}\r\n",
-        e.projekt_name,
-        Local::now().format("%Y-%m-%d"),
-        f(instr_hoehe, 3)
-    );
-    if let Err(fehler) = datei_speicher::schreibe_text(&pfad, &kopf) {
-        fehler_log::log("Messdaten.stelle_messdatei_sicher", &fehler.to_string());
-    }
+fn sichere(pfad: &Path) -> io::Result<()> {
+    let stamm = pfad.file_stem().unwrap_or_default().to_string_lossy();
+    fs::copy(pfad, pfad.with_file_name(format!("{stamm}_backup_{}.csv", Local::now().format("%Y%m%d-%H%M%S%f"))))?;
+    Ok(())
 }
 
-/// Rüstet eine Datei mit alter 7-Spalten-Zeile auf das 11-Spalten-Format auf (mit Sicherungskopie).
+/// Kompatible Aufrüstung, ohne unbekannte Spalten/Kommentare zu verwerfen.
 pub fn migriere_spalten(pfad: &Path) -> bool {
-    let Ok(text) = fs::read_to_string(pfad) else {
+    let Ok(mut d) = crate::daten::csv_datei::CsvDatei::laden(pfad) else {
         return false;
     };
-    let mut zeilen: Vec<String> = text.lines().map(str::to_string).collect();
-    let Some(idx) = zeilen.iter().position(|z| z.trim() == SPALTENZEILE_ALT) else {
-        return false;
-    };
-    let stamm = pfad.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let backup = pfad.with_file_name(format!("{stamm}_backup_{}.csv", Local::now().format("%Y%m%d-%H%M%S")));
-    if fs::copy(pfad, backup).is_err() {
+    if d.spalten_index("ExzLaengs_m").is_some() {
         return false;
     }
-    zeilen[idx] = SPALTENZEILE.to_string();
-    for z in zeilen.iter_mut().skip(idx + 1) {
-        if z.trim().is_empty() || z.trim_start().starts_with('#') {
-            continue;
+    if sichere(pfad).is_err() {
+        return false;
+    }
+    for i in 0..d.zeilen.len() {
+        for (k, v) in [("ExzLaengs_m", "0.000"), ("ExzQuer_m", "0.000"), ("StandpunktNr", ""), ("Typ", ""), ("AufstellungId", ""), ("InstrumentenHoehe_m", "")] {
+            d.set_zelle(i, k, v.into());
         }
-        *z = format!("{}{ZUSATZWERTE_ALTE_ZEILE}", z.trim_end());
     }
-    datei_speicher::schreibe_zeilen(pfad, zeilen).is_ok()
+    d.speichern().is_ok()
 }
 
-/// Anzahl der Spalten der Messdatei.
-const SPALTENANZAHL: usize = 11;
-const SPALTE_EXZ_LAENGS: usize = 7;
-const SPALTE_EXZ_QUER: usize = 8;
-
-/// Schreibt geänderte Exzentrizitäten (Zeilenindex, Längs [m], Quer [m]) zurück in die Messdatei.
+/// Indizes beziehen sich auf die physischen Startzeilen der geladenen Datensätze.
 pub fn schreibe_exzentrizitaeten(pfad: &Path, aenderungen: &[(usize, f64, f64)]) -> io::Result<()> {
-    migriere_spalten(pfad);
-    let text = fs::read_to_string(pfad)?;
-    let mut zeilen: Vec<String> = text.lines().map(str::to_string).collect();
+    let mut d = crate::daten::csv_datei::CsvDatei::laden(pfad)?;
     for (index, laengs, quer) in aenderungen {
-        let Some(zeile) = zeilen.get_mut(*index) else {
-            continue;
-        };
-        let mut teile: Vec<String> = zeile.split(';').map(|t| t.trim().to_string()).collect();
-        while teile.len() < SPALTENANZAHL {
-            teile.push(String::new());
+        if !laengs.is_finite() || !quer.is_finite() {
+            return Err(crate::daten::csv_basis::fehler("Exzentrizität ist keine endliche Zahl."));
         }
-        teile[SPALTE_EXZ_LAENGS] = f(*laengs, 3);
-        teile[SPALTE_EXZ_QUER] = f(*quer, 3);
-        *zeile = teile.join("; ");
+        let i = d
+            .zeilennummern
+            .iter()
+            .position(|nr| *nr == index + 1)
+            .ok_or_else(|| crate::daten::csv_basis::fehler(format!("Messzeile {} wurde verändert. Datei neu laden.", index + 1)))?;
+        d.set_zelle(i, "ExzLaengs_m", f(*laengs, 3));
+        d.set_zelle(i, "ExzQuer_m", f(*quer, 3));
     }
-    datei_speicher::schreibe_zeilen(pfad, zeilen)
-}
-
-fn hänge_messdatei_an(e: &Einstellungen, zeile: &str) {
-    if let Err(fehler) = anhaengen(&messdatei_pfad(e), zeile) {
-        fehler_log::log("Messdaten.anhaengen", &fehler.to_string());
-    }
+    d.speichern()
 }
 
 fn anhaengen(pfad: &Path, zeile: &str) -> io::Result<()> {
@@ -337,7 +369,7 @@ mod tests {
         assert_eq!(zeilen[0], "# Data Protocol: Demo");
         assert_eq!(zeilen[4], SPALTENZEILE_PROTOKOLL);
         assert_eq!(zeilen.len(), 7, "Kopf (5) + 2 Messungen");
-        let felder: Vec<&str> = zeilen[5].split("; ").collect();
+        let felder = crate::daten::csv_basis::felder(zeilen[5], ';').unwrap();
         assert_eq!(felder.len(), SPALTENZEILE_PROTOKOLL.split("; ").count());
         assert_eq!(&felder[1..7], &["STP1", "1.556", "7", "Baum", "Neupunkt", "Reflektorlos"]);
         assert_eq!(felder[7], "-17.5");
@@ -359,6 +391,7 @@ mod tests {
     fn messdatei_hat_metadata_kopf_und_zeilen() {
         let (e, dir) = einst("dat");
         let roh = NeupunktRohdaten {
+            aufstellung_id: String::new(),
             punkt_nr: "7".into(),
             code: "Baum".into(),
             hz_gon: 1.5,
@@ -370,23 +403,26 @@ mod tests {
             exz_laengs_m: 0.25,
             exz_quer_m: -0.1,
         };
-        schreibe_neupunktmessung(&e, &roh, "STP1", 1.556);
+        schreibe_neupunktmessung(&e, &roh, "STP1", 1.556).unwrap();
         let ap = StationierungsPunkt { punkt_nr: "A".into(), hz: 10.0, v: 99.0, strecke: 50.0, ..Default::default() };
-        schreibe_stationierungsmessung(&e, &ap, "STP1", 1.556, jetzt());
+        schreibe_stationierungsmessung(&e, &ap, "STP1", 1.556, jetzt()).unwrap();
         let erg = StationierungsErgebnis { r: 1.0, h: 2.0, hoehe: 3.0, orientierung_gon: 4.0, s0_mm: 5.0, redundanz: 6, ..Default::default() };
         schreibe_standpunktinfo(&e, "STP1", 1.556, &erg, 2, 10.0);
 
         let text = fs::read_to_string(messdatei_pfad(&e)).unwrap();
         let zeilen: Vec<&str> = text.lines().collect();
         assert_eq!(zeilen[0], "# METADATA");
-        assert_eq!(zeilen[1], "Projekt: Demo");
-        assert_eq!(zeilen[2], "Sensor: LeicaTS06");
-        assert_eq!(zeilen[12], SPALTENZEILE);
-        assert!(zeilen[13].starts_with("7; 1.5000; 100.0000; 12.346; 1.500; Baum; "));
-        assert!(zeilen[13].ends_with("; 0.250; -0.100; STP1; NP"));
-        assert!(zeilen[14].ends_with("; 0.000; 0.000; STP1; AP"));
-        assert!(zeilen[15].starts_with("# STATIONIERUNG: SP=STP1  IH=1.556 m  R=1.000"));
-        assert!(zeilen[15].ends_with("n=6  2s0=10.00 mm"));
+        assert!(text.contains("Projekt: Demo"));
+        assert!(text.contains("Sensor: LeicaTS06"));
+        let d = crate::daten::csv_datei::CsvDatei::laden(&messdatei_pfad(&e)).unwrap();
+        assert_eq!(d.zeilen.len(), 2);
+        assert_eq!(d.spalten.len(), 13);
+        assert_eq!(d.zelle(&d.zeilen[0], "Typ"), "NP");
+        assert_eq!(d.zelle(&d.zeilen[1], "Typ"), "AP");
+        assert_eq!(d.zelle(&d.zeilen[0], "InstrumentenHoehe_m"), "1.556");
+        assert!(!d.zelle(&d.zeilen[0], "AufstellungId").is_empty());
+        assert!(text.contains("# STATIONIERUNG: SP=STP1"));
+
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -396,24 +432,26 @@ mod tests {
         let alt = format!("# METADATA\r\nProjekt: Demo\r\n---\r\n# DATEN\r\n{SPALTENZEILE_ALT}\r\n1; 2; 3; 4; 5; c; 2026-01-01 10:00\r\n");
         fs::write(messdatei_pfad(&e), alt).unwrap();
         let roh = NeupunktRohdaten { punkt_nr: "9".into(), zeitstempel: jetzt(), ..Default::default() };
-        schreibe_neupunktmessung(&e, &roh, "S", 0.0);
+        schreibe_neupunktmessung(&e, &roh, "S", 0.0).unwrap();
         let text = fs::read_to_string(messdatei_pfad(&e)).unwrap();
-        assert!(text.contains(SPALTENZEILE));
-        assert!(text.contains("1; 2; 3; 4; 5; c; 2026-01-01 10:00; 0.000; 0.000; ; "));
+        let d = crate::daten::csv_datei::CsvDatei::parse(&text).unwrap();
+        assert_eq!(d.zeilen.len(), 2);
+        assert_eq!(d.zelle(&d.zeilen[0], "PunktNr"), "1");
+        assert_eq!(d.zelle(&d.zeilen[0], "Zeitstempel"), "2026-01-01 10:00");
+        assert!(d.spalten_index("AufstellungId").is_some());
         let sicherungen = fs::read_dir(&dir).unwrap().filter_map(Result::ok).filter(|d| d.file_name().to_string_lossy().contains("_backup_")).count();
         assert_eq!(sicherungen, 1);
         let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn veraltetes_format_wird_gesichert_und_neu_angelegt() {
+    fn unbekanntes_format_wird_nicht_ueberschrieben() {
         let (e, dir) = einst("alt");
         fs::write(messdatei_pfad(&e), "irgendein altes Format\r\n").unwrap();
         let roh = NeupunktRohdaten { punkt_nr: "1".into(), zeitstempel: jetzt(), ..Default::default() };
-        schreibe_neupunktmessung(&e, &roh, "S", 0.0);
+        assert!(schreibe_neupunktmessung(&e, &roh, "S", 0.0).is_err());
         let text = fs::read_to_string(messdatei_pfad(&e)).unwrap();
-        assert!(text.starts_with("# METADATA"));
-        assert!(fs::read_dir(&dir).unwrap().filter_map(Result::ok).any(|d| d.file_name().to_string_lossy().contains("_backup_")));
+        assert_eq!(text, "irgendein altes Format\r\n");
         let _ = fs::remove_dir_all(dir);
     }
 }

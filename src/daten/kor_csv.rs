@@ -3,22 +3,14 @@
 // Hardware: keine
 // Autor:    Johann Gerner
 
+#[cfg(test)]
 use std::fs;
 use std::io;
 use std::path::Path;
 
 use chrono::Local;
 
-use crate::grundlagen::datei_speicher;
-use crate::grundlagen::format::{f, parse_zahl};
-
-const SPALTENZEILE: &str = "PunktNr; X; Y; Z; Code";
-const SPALTE_NR: usize = 0;
-const SPALTE_X: usize = 1;
-const SPALTE_Y: usize = 2;
-const SPALTE_Z: usize = 3;
-const SPALTE_CODE: usize = 4;
-const NACHKOMMASTELLEN: usize = 3;
+use crate::grundlagen::format::f;
 
 /// Ein Punkt der Koordinatendatei.
 #[derive(Clone, Debug, PartialEq)]
@@ -30,71 +22,61 @@ pub struct KorPunkt {
     pub code: String,
 }
 
-/// Erzeugt den vollständigen Dateitext.
-pub fn erzeuge(projekt: &str, sensor: &str, datum: &str, punkte: &[KorPunkt]) -> String {
-    let mut text = format!(
-        "# METADATA\r\nProjekt: {projekt}\r\nSensor: {sensor}\r\nBearbeiter: \r\nDatum: {datum}\r\n---\r\n# DATENTYP\r\nKoordinaten\r\n# DATEN\r\n{SPALTENZEILE}\r\n"
-    );
-    for p in punkte {
-        let z = p.hoehe.map_or_else(String::new, |h| f(h, NACHKOMMASTELLEN));
-        text.push_str(&format!("{}; {}; {}; {z}; {}\r\n", p.punkt_nr, f(p.r, NACHKOMMASTELLEN), f(p.h, NACHKOMMASTELLEN), p.code));
-    }
-    text
+/// Erzeugt den vollständigen Dateitext im gemeinsamen KOR-Schema.
+pub fn erzeuge(projekt: &str, sensor: &str, datum: &str, punkte: &[KorPunkt]) -> io::Result<String> {
+    let mut d = crate::daten::csv_datei::CsvDatei::neu(crate::daten::csv_datei::TYP_KOORDINATEN);
+    d.projekt = projekt.into();
+    d.sensor = sensor.into();
+    d.datum = datum.into();
+    d.zeilen = punkte.iter().map(|p| vec![p.punkt_nr.clone(), f(p.r, 4), f(p.h, 4), p.hoehe.map_or_else(String::new, |h| f(h, 4)), p.code.clone()]).collect();
+    d.text()
 }
 
-/// Liest die Datenzeilen einer vorhandenen -kor.csv (Zeilen mit lesbaren X/Y).
+/// Liest Koordinaten nach Spaltennamen, einschließlich Codes und unbekannter Höhe.
 pub fn lese_punkte(pfad: &Path) -> io::Result<Vec<KorPunkt>> {
-    let text = fs::read_to_string(pfad)?;
-    let mut liste = Vec::new();
-    let (mut in_daten, mut kopf_gelesen) = (false, false);
-    for roh in text.lines() {
-        let zeile = roh.trim();
-        if zeile.is_empty() || zeile == "---" {
-            continue;
+    let d = crate::daten::csv_datei::CsvDatei::laden(pfad)?;
+    punkte_aus_datei(&d)
+}
+
+pub fn punkte_aus_datei(d: &crate::daten::csv_datei::CsvDatei) -> io::Result<Vec<KorPunkt>> {
+    let mut punkte = Vec::new();
+    for (i, z) in d.zeilen.iter().enumerate() {
+        let nr = d.zelle(z, "PunktNr");
+        if nr.trim().is_empty() {
+            return Err(crate::daten::csv_basis::fehler(format!("Datensatz {}: PunktNr fehlt.", i + 1)));
         }
-        if zeile.starts_with('#') {
-            in_daten = zeile.trim_start_matches('#').trim().eq_ignore_ascii_case("DATEN");
-            kopf_gelesen = false;
-            continue;
-        }
-        if !in_daten {
-            continue;
-        }
-        if !kopf_gelesen {
-            kopf_gelesen = true;
-            continue;
-        }
-        let t: Vec<&str> = zeile.split(';').map(str::trim).collect();
-        if t.len() <= SPALTE_Y {
-            continue;
-        }
-        let (Some(x), Some(y)) = (parse_zahl(t[SPALTE_X]), parse_zahl(t[SPALTE_Y])) else {
-            continue;
-        };
-        liste.push(KorPunkt {
-            punkt_nr: t[SPALTE_NR].to_string(),
-            r: x,
-            h: y,
-            hoehe: t.get(SPALTE_Z).and_then(|z| parse_zahl(z)),
-            code: t.get(SPALTE_CODE).map_or_else(String::new, |c| (*c).to_string()),
-        });
+        let hoehe = if d.zelle(z, "Z").is_empty() { None } else { Some(d.zahl(i, "Z")?) };
+        punkte.push(KorPunkt { punkt_nr: nr.into(), r: d.zahl(i, "X")?, h: d.zahl(i, "Y")?, hoehe, code: d.zelle(z, "Code").into() });
     }
-    Ok(liste)
+    Ok(punkte)
 }
 
 /// Schreibt die Punkte in die Datei. Ist `vorhandene_erhalten` gesetzt und die Datei vorhanden, ersetzen neue Punkte
 /// gleicher Nummer die alten (an gleicher Stelle), alle anderen bleiben erhalten. Liefert die Anzahl der Punkte.
 pub fn schreibe(pfad: &Path, projekt: &str, sensor: &str, neu: &[KorPunkt], vorhandene_erhalten: bool) -> io::Result<usize> {
-    let mut ergebnis = if vorhandene_erhalten && pfad.exists() { lese_punkte(pfad)? } else { Vec::new() };
+    use crate::daten::csv_datei::{CsvDatei, TYP_KOORDINATEN};
+    let mut d = if vorhandene_erhalten && pfad.exists() { CsvDatei::laden(pfad)? } else { CsvDatei::neu(TYP_KOORDINATEN) };
+    if d.datentyp != TYP_KOORDINATEN {
+        return Err(crate::daten::csv_basis::fehler("Die Zieldatei ist keine Koordinatendatei."));
+    }
+    d.projekt = projekt.into();
+    d.sensor = sensor.into();
+    d.datum = Local::now().format("%Y-%m-%d").to_string();
     for p in neu {
-        match ergebnis.iter().position(|e| e.punkt_nr.eq_ignore_ascii_case(&p.punkt_nr)) {
-            Some(i) => ergebnis[i] = p.clone(),
-            None => ergebnis.push(p.clone()),
+        let i = match d.zeilen.iter().position(|z| d.zelle(z, "PunktNr").eq_ignore_ascii_case(&p.punkt_nr)) {
+            Some(i) => i,
+            None => {
+                d.zeilen.push(vec![String::new(); d.spalten.len()]);
+                d.zeilen.len() - 1
+            }
+        };
+        for (k, v) in [("PunktNr", p.punkt_nr.clone()), ("X", f(p.r, 4)), ("Y", f(p.h, 4)), ("Z", p.hoehe.map_or_else(String::new, |h| f(h, 4))), ("Code", p.code.clone())] {
+            d.set_zelle(i, k, v);
         }
     }
-    let datum = Local::now().format("%Y-%m-%d").to_string();
-    datei_speicher::schreibe_text(pfad, &erzeuge(projekt, sensor, &datum, &ergebnis))?;
-    Ok(ergebnis.len())
+    d.pfad = pfad.into();
+    d.speichern()?;
+    Ok(d.zeilen.len())
 }
 
 #[cfg(test)]
@@ -133,8 +115,8 @@ mod tests {
 
     #[test]
     fn kopf_enthaelt_projekt_und_sensor() {
-        let text = erzeuge("Demo", "Sensor", "2026-01-02", &[]);
-        assert!(text.starts_with("# METADATA\r\nProjekt: Demo\r\nSensor: Sensor\r\n"));
-        assert!(text.contains("# DATEN\r\nPunktNr; X; Y; Z; Code\r\n"));
+        let text = erzeuge("Demo", "Sensor", "2026-01-02", &[]).unwrap();
+        assert!(text.contains("Projekt: Demo\r\nSensor: Sensor\r\n"));
+        assert!(text.contains("# DATEN\r\nPunktNr;X;Y;Z;Code\r\n"));
     }
 }

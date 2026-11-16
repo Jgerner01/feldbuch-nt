@@ -12,9 +12,7 @@
 
 use std::f64::consts::PI;
 
-use crate::daten::modelle::{
-    InstrumentParameter, Konfidenzellipse, PunktResiduum, StationierungsErgebnis, StationierungsPunkt,
-};
+use crate::daten::modelle::{InstrumentParameter, Konfidenzellipse, PunktResiduum, StationierungsErgebnis, StationierungsPunkt};
 
 /// Umrechnung gon → rad.
 const GON2RAD: f64 = PI / 200.0;
@@ -87,11 +85,7 @@ impl Default for Optionen {
 }
 
 /// Berechnet die freie Stationierung.
-pub fn berechnen(
-    punkte: &[StationierungsPunkt],
-    instrumentenhoehe: f64,
-    optionen: &Optionen,
-) -> Result<StationierungsErgebnis, String> {
+pub fn berechnen(punkte: &[StationierungsPunkt], instrumentenhoehe: f64, optionen: &Optionen) -> Result<StationierungsErgebnis, String> {
     let mut param = optionen.param.clone();
     // Gewichtung bei nahen Zielen (nur Polarmodul): Zentrierfehler gehen in die Varianz ein.
     if optionen.zentrierfehler_ziel_mm > 0.0 || optionen.zentrierfehler_standpunkt_mm > 0.0 {
@@ -105,11 +99,14 @@ pub fn berechnen(
 
     let akt_hz = optionen.aktiv_richtung.clone().unwrap_or_else(|| vec![true; n]);
     let akt_str = optionen.aktiv_strecke.clone().unwrap_or_else(|| vec![true; n]);
-    let akt_hoe = optionen.aktiv_hoehe.clone().unwrap_or_else(|| akt_str.clone());
+    let mut akt_hoe = optionen.aktiv_hoehe.clone().unwrap_or_else(|| akt_str.clone());
     if akt_hz.len() != n || akt_str.len() != n || akt_hoe.len() != n {
         return Err("Die Aktivierungslisten passen nicht zur Punktanzahl.".to_string());
     }
 
+    for (aktiv, p) in akt_hoe.iter_mut().zip(punkte) {
+        *aktiv &= p.hoehe.is_finite();
+    }
     let n_dir = akt_hz.iter().filter(|b| **b).count();
     let n_dist = akt_str.iter().filter(|b| **b).count();
     if n_dir < 1 {
@@ -128,10 +125,7 @@ pub fn berechnen(
             ));
         }
     } else if n_dir + n_dist < MIN_BEOBACHTUNGEN {
-        return Err(format!(
-            "Mindestens 3 aktive Beobachtungen erforderlich (aktiv: {n_dir} Richtungen + {n_dist} Strecken = {}).",
-            n_dir + n_dist
-        ));
+        return Err(format!("Mindestens 3 aktive Beobachtungen erforderlich (aktiv: {n_dir} Richtungen + {n_dist} Strecken = {}).", n_dir + n_dist));
     }
 
     let hz_rad: Vec<f64> = punkte.iter().map(|p| p.hz * GON2RAD).collect();
@@ -195,8 +189,7 @@ pub fn berechnen(
             if !akt_hoe[i] {
                 continue;
             }
-            h_station[i] =
-                punkte[i].hoehe + punkte[i].zielhoehe - instrumentenhoehe - punkte[i].strecke * v_rad[i].cos();
+            h_station[i] = punkte[i].hoehe + punkte[i].zielhoehe - instrumentenhoehe - punkte[i].strecke * v_rad[i].cos();
             let w = 1.0 / (dh[i] * dh[i] + HOEHEN_GEWICHT_EPS);
             summe_zaehler += w * h_station[i];
             summe_nenner += w;
@@ -227,16 +220,11 @@ pub fn berechnen(
     let mut residuen = Vec::with_capacity(n);
     for i in 0..n {
         let s0_i = (punkte[i].r - r_fs).hypot(punkte[i].h - h_fs);
-        let v_w_cc = if akt_hz[i] && s0_i > MIN_STRECKE_M {
-            (v_quer_m[i] / s0_i) * RAD2CC
-        } else {
-            f64::NAN
-        };
+        let v_w_cc = if akt_hz[i] && s0_i > MIN_STRECKE_M { (v_quer_m[i] / s0_i) * RAD2CC } else { f64::NAN };
         let v_q_mm = if akt_hz[i] { v_quer_m[i] * MM_PRO_M } else { f64::NAN };
         let mut v_h_mm = f64::NAN;
         if ist_3d && akt_hoe[i] {
-            let h_station =
-                punkte[i].hoehe + punkte[i].zielhoehe - instrumentenhoehe - punkte[i].strecke * v_rad[i].cos();
+            let h_station = punkte[i].hoehe + punkte[i].zielhoehe - instrumentenhoehe - punkte[i].strecke * v_rad[i].cos();
             v_h_mm = (h_station - h_mittel) * MM_PRO_M;
         }
         residuen.push(PunktResiduum {
@@ -320,13 +308,7 @@ fn konfidenz_ellipse(normal: &[[f64; 3]; 3], m0_mm: f64, s0_mm: f64, redundanz: 
 
 /// Relatives Richtungsgewicht je Punkt (1 = größtes Gewicht aller aktiven Richtungen).
 /// Bei n = 2 (Direktlösung) unwirksam → NaN.
-fn berechne_richtungsgewichte(
-    punkte: &[StationierungsPunkt],
-    akt_hz: &[bool],
-    r_stand: f64,
-    h_stand: f64,
-    param: &InstrumentParameter,
-) -> Vec<f64> {
+fn berechne_richtungsgewichte(punkte: &[StationierungsPunkt], akt_hz: &[bool], r_stand: f64, h_stand: f64, param: &InstrumentParameter) -> Vec<f64> {
     let n = punkte.len();
     let mut rel = vec![f64::NAN; n];
     if n < 3 {
@@ -360,12 +342,7 @@ fn berechne_richtungsgewichte(
 }
 
 /// Helmert-Transformation (Methode 3.1): Näherungskoordinaten, Orientierung und Maßstab.
-fn helmert_transformation(
-    punkte: &[StationierungsPunkt],
-    hz_rad: &[f64],
-    dh: &[f64],
-    freier_massstab: bool,
-) -> Result<(f64, f64, f64, f64), String> {
+fn helmert_transformation(punkte: &[StationierungsPunkt], hz_rad: &[f64], dh: &[f64], freier_massstab: bool) -> Result<(f64, f64, f64, f64), String> {
     let n = punkte.len();
     let nf = n as f64;
     let xi: Vec<f64> = (0..n).map(|i| dh[i] * hz_rad[i].cos()).collect();
@@ -481,10 +458,7 @@ fn voll_ausgleichung(
         *o0 = norm_winkel(*o0 + dx[2]);
         iterationen = iter + 1;
 
-        if dx[0].abs() < KONVERGENZ_KOORDINATE_M
-            && dx[1].abs() < KONVERGENZ_KOORDINATE_M
-            && dx[2].abs() < KONVERGENZ_ORIENTIERUNG_RAD
-        {
+        if dx[0].abs() < KONVERGENZ_KOORDINATE_M && dx[1].abs() < KONVERGENZ_KOORDINATE_M && dx[2].abs() < KONVERGENZ_ORIENTIERUNG_RAD {
             konvergiert = true;
             break;
         }
@@ -589,25 +563,11 @@ mod tests {
         let d_hoehe = hoehe - STAND_HOEHE;
         let schraeg = dist_h.hypot(d_hoehe);
         let v = dist_h.atan2(d_hoehe) * RAD2GON;
-        StationierungsPunkt {
-            punkt_nr: nr.to_string(),
-            r,
-            h,
-            hoehe,
-            hz,
-            v,
-            strecke: schraeg,
-            zielhoehe: 0.0,
-        }
+        StationierungsPunkt { punkt_nr: nr.to_string(), r, h, hoehe, hz, v, strecke: schraeg, zielhoehe: 0.0 }
     }
 
     fn testpunkte() -> Vec<StationierungsPunkt> {
-        vec![
-            messung("A", 1100.0, 2150.0, 101.0),
-            messung("B", 920.0, 2210.0, 99.5),
-            messung("C", 1060.0, 1890.0, 100.4),
-            messung("D", 880.0, 1940.0, 100.9),
-        ]
+        vec![messung("A", 1100.0, 2150.0, 101.0), messung("B", 920.0, 2210.0, 99.5), messung("C", 1060.0, 1890.0, 100.4), messung("D", 880.0, 1940.0, 100.9)]
     }
 
     #[test]
@@ -638,12 +598,7 @@ mod tests {
     #[test]
     fn zwei_punkte_fester_massstab_beachten_ausgeschaltete_strecken() {
         let mut punkte = testpunkte()[..2].to_vec();
-        let optionen = Optionen {
-            freier_massstab: false,
-            aktiv_strecke: Some(vec![true, false]),
-            berechnung_3d: false,
-            ..Optionen::default()
-        };
+        let optionen = Optionen { freier_massstab: false, aktiv_strecke: Some(vec![true, false]), berechnung_3d: false, ..Optionen::default() };
         let ohne = berechnen(&punkte, 0.0, &optionen).unwrap();
         assert!(ohne.konvergiert);
         assert_eq!(ohne.redundanz, 0);
@@ -700,11 +655,7 @@ mod tests {
         punkte[2].strecke += 0.050;
         let e = berechnen(&punkte, 0.0, &Optionen::default()).unwrap();
         assert!(e.s0_mm > 1.0);
-        let groesstes = e
-            .residuen
-            .iter()
-            .map(|r| r.v_strecke_mm.abs())
-            .fold(0.0_f64, f64::max);
+        let groesstes = e.residuen.iter().map(|r| r.v_strecke_mm.abs()).fold(0.0_f64, f64::max);
         assert!(groesstes > 5.0);
     }
 
@@ -721,16 +672,9 @@ mod tests {
     #[test]
     fn zu_wenige_beobachtungen_werden_abgelehnt() {
         assert!(berechnen(&testpunkte()[..1], 0.0, &Optionen::default()).is_err());
-        let opt = Optionen {
-            aktiv_richtung: Some(vec![false; 4]),
-            ..Optionen::default()
-        };
+        let opt = Optionen { aktiv_richtung: Some(vec![false; 4]), ..Optionen::default() };
         assert!(berechnen(&testpunkte(), 0.0, &opt).is_err());
-        let opt = Optionen {
-            aktiv_richtung: Some(vec![true, false, false, false]),
-            aktiv_strecke: Some(vec![true, false, false, false]),
-            ..Optionen::default()
-        };
+        let opt = Optionen { aktiv_richtung: Some(vec![true, false, false, false]), aktiv_strecke: Some(vec![true, false, false, false]), ..Optionen::default() };
         assert!(berechnen(&testpunkte(), 0.0, &opt).is_err());
     }
 
@@ -744,10 +688,7 @@ mod tests {
 
     #[test]
     fn kollineare_punkte_werden_erkannt() {
-        let punkte = vec![
-            messung("A", 1000.0, 2100.0, 100.0),
-            messung("B", 1000.0, 2100.0, 100.0),
-        ];
+        let punkte = vec![messung("A", 1000.0, 2100.0, 100.0), messung("B", 1000.0, 2100.0, 100.0)];
         assert!(berechnen(&punkte, 0.0, &Optionen::default()).is_err());
     }
 }

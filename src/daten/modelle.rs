@@ -105,6 +105,11 @@ pub struct ImportPunkt {
     pub quelle: String,
     #[serde(rename = "Datum")]
     pub datum: String,
+    #[serde(rename = "Code")]
+    pub code: String,
+    /// None in alten JSON-Dateien bedeutet: vorhandener numerischer Höhenwert.
+    #[serde(rename = "HoeheVorhanden")]
+    pub hoehe_vorhanden: Option<bool>,
 }
 
 /// Dateiinhalt von ImportPunkte.json.
@@ -135,14 +140,7 @@ pub struct InstrumentParameter {
 
 impl Default for InstrumentParameter {
     fn default() -> Self {
-        Self {
-            m_r_cc: 9.0,
-            msk_mm: 3.0,
-            msv_ppm: 2.0,
-            m_spz_mm: 0.0,
-            m_zpz_mm: 0.0,
-            m0_mm: 1.0,
-        }
+        Self { m_r_cc: 9.0, msk_mm: 3.0, msv_ppm: 2.0, m_spz_mm: 0.0, m_zpz_mm: 0.0, m0_mm: 1.0 }
     }
 }
 
@@ -313,6 +311,8 @@ impl Default for StationierungsErgebnis {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct NeupunktRohdaten {
+    #[serde(rename = "AufstellungId")]
+    pub aufstellung_id: String,
     #[serde(rename = "PunktNr")]
     pub punkt_nr: String,
     #[serde(rename = "Code")]
@@ -340,6 +340,7 @@ pub struct NeupunktRohdaten {
 impl Default for NeupunktRohdaten {
     fn default() -> Self {
         Self {
+            aufstellung_id: String::new(),
             punkt_nr: String::new(),
             code: String::new(),
             hz_gon: 0.0,
@@ -358,6 +359,8 @@ impl Default for NeupunktRohdaten {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 pub struct NeupunktErgebnis {
+    #[serde(rename = "AufstellungId")]
+    pub aufstellung_id: String,
     #[serde(rename = "PunktNr")]
     pub punkt_nr: String,
     #[serde(rename = "Code")]
@@ -403,6 +406,7 @@ pub struct NeupunktErgebnis {
 impl Default for NeupunktErgebnis {
     fn default() -> Self {
         Self {
+            aufstellung_id: String::new(),
             punkt_nr: String::new(),
             code: String::new(),
             r: 0.0,

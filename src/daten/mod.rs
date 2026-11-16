@@ -3,7 +3,10 @@
 // Autor:    Johann Gerner
 
 pub mod aufnahmetest;
+pub mod csv_basis;
 pub mod csv_datei;
+#[cfg(test)]
+mod csv_tests;
 pub mod einstellungen;
 pub mod json_speicher;
 pub mod konvertierung;

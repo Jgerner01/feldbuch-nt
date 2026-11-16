@@ -11,7 +11,7 @@ use crate::daten::projekt::Projekt;
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::grundlagen::{fehler_log, protokoll};
 use crate::rechnen::neupunkt;
-use crate::rechnen::polar::{exzentrizitaet_gross, ist_massstab_eins, EXZ_INFO_GRENZE_M};
+use crate::rechnen::polar::{EXZ_INFO_GRENZE_M, exzentrizitaet_gross, ist_massstab_eins};
 use crate::tachymeter::konfiguration::Konfiguration;
 use crate::tachymeter::messung::TachymeterMessung;
 
@@ -83,10 +83,7 @@ fn finde_prisma(mm: f64) -> Option<usize> {
 
 /// Gespeicherter Prismenname hat Vorrang, weil mehrere Typen die Konstante 0,0 mm haben.
 fn finde_prisma_nach_name(name: &str, mm: f64) -> Option<usize> {
-    PRISMEN
-        .iter()
-        .position(|p| p.0 == name && (p.1 - mm).abs() < PRISMA_TOLERANZ_MM)
-        .or_else(|| finde_prisma(mm))
+    PRISMEN.iter().position(|p| p.0 == name && (p.1 - mm).abs() < PRISMA_TOLERANZ_MM).or_else(|| finde_prisma(mm))
 }
 
 impl DxfViewer {
@@ -97,59 +94,46 @@ impl DxfViewer {
         self.dialog = Some(Dialog::Prisma { auswahl, konstante: f(aktuell, 1) });
     }
 
-    pub(super) fn zeichne_prisma_dialog(
-        &mut self,
-        ctx: &egui::Context,
-        projekt: &mut Projekt,
-        mut auswahl: Option<usize>,
-        mut konstante: String,
-    ) {
+    pub(super) fn zeichne_prisma_dialog(&mut self, ctx: &egui::Context, projekt: &mut Projekt, mut auswahl: Option<usize>, mut konstante: String) {
         let mut ergebnis: Option<bool> = None;
-        egui::Window::new("Prismenkonstante")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(ctx, |ui| {
-                for (i, (name, mm, beschreibung)) in PRISMEN.iter().enumerate() {
-                    let aktiv = auswahl == Some(i);
-                    let text = format!("{name}\n{beschreibung}  ({} mm)", vorzeichen_text(*mm));
-                    let fill = if aktiv { Color32::from_rgb(40, 100, 175) } else { Color32::from_rgb(52, 64, 90) };
-                    let rand = if aktiv { Color32::from_rgb(120, 180, 255) } else { Color32::from_rgb(80, 95, 130) };
-                    let knopf = egui::Button::new(egui::RichText::new(text).color(Color32::WHITE))
-                        .fill(fill)
-                        .stroke(Stroke::new(1.0, rand))
-                        .min_size(Vec2::new(PRISMA_KNOPF.x * 2.0, PRISMA_KNOPF.y));
-                    let antwort = ui.add(knopf);
-                    let bild_rect = egui::Rect::from_min_size(
-                        egui::pos2(
-                            antwort.rect.right() - PRISMA_BILD_RAND - PRISMA_BILD_PX,
-                            antwort.rect.center().y - PRISMA_BILD_PX / 2.0,
-                        ),
-                        Vec2::splat(PRISMA_BILD_PX),
-                    );
-                    egui::Image::new(prisma_bild(name)).paint_at(ui, bild_rect);
-                    if antwort.clicked() {
-                        auswahl = Some(i);
-                        konstante = f(*mm, 1);
-                    }
+        egui::Window::new("Prismenkonstante").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            for (i, (name, mm, beschreibung)) in PRISMEN.iter().enumerate() {
+                let aktiv = auswahl == Some(i);
+                let text = format!("{name}\n{beschreibung}  ({} mm)", vorzeichen_text(*mm));
+                let fill = if aktiv { Color32::from_rgb(40, 100, 175) } else { Color32::from_rgb(52, 64, 90) };
+                let rand = if aktiv { Color32::from_rgb(120, 180, 255) } else { Color32::from_rgb(80, 95, 130) };
+                let knopf = egui::Button::new(egui::RichText::new(text).color(Color32::WHITE))
+                    .fill(fill)
+                    .stroke(Stroke::new(1.0, rand))
+                    .min_size(Vec2::new(PRISMA_KNOPF.x * 2.0, PRISMA_KNOPF.y));
+                let antwort = ui.add(knopf);
+                let bild_rect = egui::Rect::from_min_size(
+                    egui::pos2(antwort.rect.right() - PRISMA_BILD_RAND - PRISMA_BILD_PX, antwort.rect.center().y - PRISMA_BILD_PX / 2.0),
+                    Vec2::splat(PRISMA_BILD_PX),
+                );
+                egui::Image::new(prisma_bild(name)).paint_at(ui, bild_rect);
+                if antwort.clicked() {
+                    auswahl = Some(i);
+                    konstante = f(*mm, 1);
                 }
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label("Konstante [mm]:");
-                    if ui.add(egui::TextEdit::singleline(&mut konstante).desired_width(70.0)).changed() {
-                        auswahl = parse_zahl(&konstante).and_then(finde_prisma);
-                    }
-                });
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Übernehmen").clicked() {
-                        ergebnis = Some(true);
-                    }
-                    if ui.button("Abbrechen").clicked() {
-                        ergebnis = Some(false);
-                    }
-                });
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Konstante [mm]:");
+                if ui.add(egui::TextEdit::singleline(&mut konstante).desired_width(70.0)).changed() {
+                    auswahl = parse_zahl(&konstante).and_then(finde_prisma);
+                }
             });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Übernehmen").clicked() {
+                    ergebnis = Some(true);
+                }
+                if ui.button("Abbrechen").clicked() {
+                    ergebnis = Some(false);
+                }
+            });
+        });
         match ergebnis {
             Some(true) => {
                 let mm = parse_zahl(&konstante).unwrap_or(0.0).clamp(-PRISMA_GRENZE_MM, PRISMA_GRENZE_MM);
@@ -232,12 +216,7 @@ impl DxfViewer {
 
     /// Lokales System als Station: Standpunkt im Ursprung, keine Drehung, Maßstab 1.
     fn lokale_station() -> StationierungsErgebnis {
-        StationierungsErgebnis {
-            massstab: 1.0,
-            konvergiert: true,
-            ist_lokales_system: true,
-            ..StationierungsErgebnis::default()
-        }
+        StationierungsErgebnis { massstab: 1.0, konvergiert: true, ist_lokales_system: true, ..StationierungsErgebnis::default() }
     }
 
     /// Port von VerarbeiteMiessung des Originals.
@@ -255,9 +234,7 @@ impl DxfViewer {
 
         let mut punkt_nr = self.txt_punkt_nr.trim().to_string();
         let code = self.txt_code.trim().to_string();
-        let instr_hoehe = parse_zahl(&self.txt_instr_hoehe)
-            .filter(|v| *v >= 0.0)
-            .unwrap_or(projekt.einstellungen.instrumenten_hoehe);
+        let instr_hoehe = parse_zahl(&self.txt_instr_hoehe).filter(|v| *v >= 0.0).unwrap_or(projekt.einstellungen.instrumenten_hoehe);
         let mut standpunkt = self.txt_standpunkt.trim().to_string();
         if standpunkt.is_empty() {
             standpunkt = STANDARD_STANDPUNKT.to_string();
@@ -265,15 +242,9 @@ impl DxfViewer {
         let zielhoehe = m.zielhoehe_m.unwrap_or(0.0);
 
         // Lückenloses Tagesprotokoll: jede Messung sofort sichern
-        let protokoll_nr = if self.neupunkt_modus && punkt_nr.is_empty() {
-            self.neupunkt_zaehler.to_string()
-        } else {
-            punkt_nr.clone()
-        };
+        let protokoll_nr = if self.neupunkt_modus && punkt_nr.is_empty() { self.neupunkt_zaehler.to_string() } else { punkt_nr.clone() };
         let methode = if self.neupunkt_modus { "Neupunkt" } else { "Stationierung" };
-        if let Err(fehler) =
-            messdaten::schreibe_tagesprotokoll(&projekt.einstellungen, methode, &standpunkt, instr_hoehe, &protokoll_nr, &code, m)
-        {
+        if let Err(fehler) = messdaten::schreibe_tagesprotokoll(&projekt.einstellungen, methode, &standpunkt, instr_hoehe, &protokoll_nr, &code, m) {
             fehler_log::log("DxfViewer.verarbeite_messung", &format!("Tagesprotokoll: {fehler}"));
         }
 
@@ -302,6 +273,7 @@ impl DxfViewer {
         (hz, v, strecke, zielhoehe): (f64, f64, f64, f64),
     ) {
         let roh = NeupunktRohdaten {
+            aufstellung_id: messdaten::aufstellung_id(&projekt.einstellungen, &standpunkt, instr_hoehe),
             punkt_nr: punkt_nr.clone(),
             code,
             hz_gon: hz,
@@ -313,7 +285,10 @@ impl DxfViewer {
             exz_laengs_m: Self::lese_exzentrizitaet(&self.txt_exz_laengs),
             exz_quer_m: Self::lese_exzentrizitaet(&self.txt_exz_quer),
         };
-        messdaten::schreibe_neupunktmessung(&projekt.einstellungen, &roh, &standpunkt, instr_hoehe);
+        if let Err(e) = messdaten::schreibe_neupunktmessung(&projekt.einstellungen, &roh, &standpunkt, instr_hoehe) {
+            self.status = format!("Messdaten konnten nicht gespeichert werden: {e}");
+            return;
+        }
 
         let mut info = format!("NP {punkt_nr}: Hz={}  V={}  D={} m", f(hz, 4), f(v, 4), f(strecke, 3));
 
@@ -352,12 +327,7 @@ impl DxfViewer {
         }
 
         if exzentrizitaet_gross(roh.exz_laengs_m, roh.exz_quer_m) {
-            info.push_str(&format!(
-                "  ⚠ Exzentrizität eL={} eQ={} m (> {} m)",
-                f(roh.exz_laengs_m, 3),
-                f(roh.exz_quer_m, 3),
-                f(EXZ_INFO_GRENZE_M, 0)
-            ));
+            info.push_str(&format!("  ⚠ Exzentrizität eL={} eQ={} m (> {} m)", f(roh.exz_laengs_m, 3), f(roh.exz_quer_m, 3), f(EXZ_INFO_GRENZE_M, 0)));
         }
         self.exzentrizitaet_zuruecksetzen();
         self.status = info;
@@ -380,11 +350,7 @@ impl DxfViewer {
         instr_hoehe: f64,
         (hz, v, strecke, zielhoehe): (f64, f64, f64, f64),
     ) {
-        let anschluss_nr = if punkt_nr.is_empty() {
-            format!("{ANSCHLUSS_PRAEFIX}{}", projekt.station.messungen.len() + 1)
-        } else {
-            punkt_nr
-        };
+        let anschluss_nr = if punkt_nr.is_empty() { format!("{ANSCHLUSS_PRAEFIX}{}", projekt.station.messungen.len() + 1) } else { punkt_nr };
         let (r, h, hoehe) = projekt.finde_anschlusspunkt(&anschluss_nr).unwrap_or((0.0, 0.0, 0.0));
         let punkt = StationierungsPunkt { punkt_nr: anschluss_nr.clone(), r, h, hoehe, hz, v, strecke, zielhoehe };
 
@@ -398,7 +364,10 @@ impl DxfViewer {
         }
         let _ = projekt.set_instrumenten_hoehe(instr_hoehe);
 
-        messdaten::schreibe_stationierungsmessung(&projekt.einstellungen, &punkt, &standpunkt, instr_hoehe, m.zeitstempel);
+        if let Err(e) = messdaten::schreibe_stationierungsmessung(&projekt.einstellungen, &punkt, &standpunkt, instr_hoehe, m.zeitstempel) {
+            self.status = format!("Messdaten konnten nicht gespeichert werden: {e}");
+            return;
+        }
 
         let ergebnis = match projekt.hinzufuegen_und_berechnen(punkt) {
             Ok(e) => e,
@@ -419,20 +388,8 @@ impl DxfViewer {
                 // Die Neupunkte hat das Projekt bereits mit der neuen Stationierung neu berechnet
                 let params = projekt.rechenparameter.params.clone();
                 self.baue_neupunkte_overlay(projekt);
-                messdaten::schreibe_standpunktinfo(
-                    &projekt.einstellungen,
-                    &standpunkt,
-                    instr_hoehe,
-                    &erg,
-                    params.sigma_faktor_wirksam(),
-                    params.sigma_wert(erg.s0_mm),
-                );
-                self.status = format!(
-                    "Stationierung {standpunkt}: {}  r={}  n={}",
-                    params.sigma_text(erg.s0_mm, 2),
-                    erg.redundanz,
-                    projekt.station.messungen.len()
-                );
+                messdaten::schreibe_standpunktinfo(&projekt.einstellungen, &standpunkt, instr_hoehe, &erg, params.sigma_faktor_wirksam(), params.sigma_wert(erg.s0_mm));
+                self.status = format!("Stationierung {standpunkt}: {}  r={}  n={}", params.sigma_text(erg.s0_mm, 2), erg.redundanz, projekt.station.messungen.len());
                 if !erg.warnung_hoehe.is_empty() {
                     self.status.push_str(&format!(" | {}", erg.warnung_hoehe));
                 }
@@ -461,12 +418,7 @@ impl DxfViewer {
         if self.lokales_system {
             return Some((0.0, 0.0, 0.0));
         }
-        projekt
-            .station
-            .ergebnis
-            .as_ref()
-            .filter(|_| projekt.hat_gueltige_station())
-            .map(|e| (e.r, e.h, e.orientierung_gon))
+        projekt.station.ergebnis.as_ref().filter(|_| projekt.hat_gueltige_station()).map(|e| (e.r, e.h, e.orientierung_gon))
     }
 
     /// Zeichnet die Zielrichtung als rot gestrichelte Linie vom Standpunkt aus.

@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use super::csv_basis::{self, fehler};
 use chrono::Local;
 
 use crate::grundlagen::datei_speicher;
@@ -15,11 +16,13 @@ use crate::grundlagen::datei_speicher;
 pub const TYP_KOORDINATEN: &str = "Koordinaten";
 /// Datentyp Messdaten.
 pub const TYP_MESSDATEN: &str = "Messdaten";
+pub const TYP_STANDPUNKT: &str = "Standpunkt";
+pub const SPALTEN_STP: [&str; 13] = ["PunktNr", "X", "Y", "Z", "HZ_gon", "V_gon", "Strecke_m", "Zielhoehe_m", "Code", "Zeitstempel", "ExzLaengs_m", "ExzQuer_m", "Typ"];
 /// Standardspalten der Koordinatendatei.
 pub const SPALTEN_KOR: [&str; 5] = ["PunktNr", "X", "Y", "Z", "Code"];
 /// Standardspalten der Messdatei.
-pub const SPALTEN_DAT: [&str; 11] =
-    ["PunktNr", "HZ_gon", "V_gon", "Strecke_m", "Zielhoehe_m", "Code", "Zeitstempel", "ExzLaengs_m", "ExzQuer_m", "StandpunktNr", "Typ"];
+pub const SPALTEN_DAT: [&str; 13] =
+    ["PunktNr", "HZ_gon", "V_gon", "Strecke_m", "Zielhoehe_m", "Code", "Zeitstempel", "ExzLaengs_m", "ExzQuer_m", "StandpunktNr", "Typ", "AufstellungId", "InstrumentenHoehe_m"];
 /// Vorgabe für den Standpunkt, wenn keiner angegeben ist.
 const STANDARD_STANDPUNKT: &str = "STP";
 const STANDARD_INSTR_HOEHE: &str = "0.000";
@@ -44,12 +47,21 @@ pub struct CsvDatei {
     pub spalten: Vec<String>,
     pub zeilen: Vec<Vec<String>>,
     pub pfad: PathBuf,
+    pub metadaten: Vec<(String, String)>,
+    /// Kommentare an ihrer Position zwischen den Datenzeilen.
+    pub kommentare: Vec<(usize, String)>,
+    pub stationierung: Vec<Vec<String>>,
+    pub zeilennummern: Vec<usize>,
 }
 
 impl CsvDatei {
     /// Neue leere Datei mit den Standardspalten des Datentyps.
     pub fn neu(datentyp: &str) -> Self {
-        let spalten: &[&str] = if datentyp == TYP_MESSDATEN { &SPALTEN_DAT } else { &SPALTEN_KOR };
+        let spalten: &[&str] = match datentyp {
+            TYP_MESSDATEN => &SPALTEN_DAT,
+            TYP_STANDPUNKT => &SPALTEN_STP,
+            _ => &SPALTEN_KOR,
+        };
         Self {
             projekt: String::new(),
             sensor: String::new(),
@@ -62,6 +74,10 @@ impl CsvDatei {
             spalten: spalten.iter().map(|s| (*s).to_string()).collect(),
             zeilen: Vec::new(),
             pfad: PathBuf::new(),
+            metadaten: vec![("Formatversion".into(), "1.0".into())],
+            kommentare: Vec::new(),
+            stationierung: Vec::new(),
+            zeilennummern: Vec::new(),
         }
     }
 
@@ -71,12 +87,15 @@ impl CsvDatei {
 
     /// Fügt „-kor" oder „-dat" vor „.csv" ein, wenn der Dateiname noch nicht so endet.
     pub fn normalisiere_pfad(pfad: &Path, datentyp: &str) -> PathBuf {
-        let basis = pfad.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let klein = basis.to_lowercase();
-        if klein.ends_with("-kor") || klein.ends_with("-dat") {
-            return pfad.to_path_buf();
+        let mut basis = pfad.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        while ["-kor", "-dat", "-stp"].iter().any(|s| basis.to_lowercase().ends_with(s)) {
+            basis.truncate(basis.len() - 4);
         }
-        let suffix = if datentyp == TYP_MESSDATEN { "-dat" } else { "-kor" };
+        let suffix = match datentyp {
+            TYP_MESSDATEN => "-dat",
+            TYP_STANDPUNKT => "-stp",
+            _ => "-kor",
+        };
         pfad.with_file_name(format!("{basis}{suffix}.csv"))
     }
 
@@ -107,12 +126,14 @@ impl CsvDatei {
     pub fn importiere_dat(pfad: &Path) -> io::Result<Self> {
         let mut d = Self::neu(TYP_MESSDATEN);
         d.pfad = Self::csv_pfad_zu(pfad, TYP_MESSDATEN);
-        let zeitstempel = Local::now().format("%Y-%m-%d %H:%M").to_string();
         let mut erste = true;
         for roh in fs::read_to_string(pfad)?.lines() {
             let zeile = roh.trim();
-            if zeile.is_empty() {
+            if zeile.is_empty() || zeile.starts_with(['%', '#']) {
                 continue;
+            }
+            if zeile.starts_with("STANDPUNKT ") {
+                return Err(fehler("Diese DAT-Variante enthält Koordinaten statt polarer Messungen. Bitte als Koordinatenliste konvertieren."));
             }
             if erste {
                 erste = false;
@@ -121,8 +142,8 @@ impl CsvDatei {
                     d.standpunkt_nr = p.first().map_or_else(String::new, |s| (*s).to_string());
                     d.instr_hoehe = p.get(1).map_or_else(String::new, |s| (*s).to_string());
                     d.standpunkt_code = p.get(2).map_or_else(String::new, |s| (*s).to_string());
+                    continue;
                 }
-                continue;
             }
             let t: Vec<&str> = zeile.split_whitespace().collect();
             if t.len() < MIN_FELDER_DAT {
@@ -135,21 +156,23 @@ impl CsvDatei {
                 t[3].into(),
                 t[4].into(),
                 t.get(5).map_or_else(String::new, |c| (*c).to_string()),
-                zeitstempel.clone(),
+                String::new(),
                 EXZ_NULL.into(),
                 EXZ_NULL.into(),
                 d.standpunkt_nr.clone(),
                 String::new(),
+                String::new(),
+                d.instr_hoehe.clone(),
             ]);
         }
         Ok(d)
     }
 
-    fn spalten_index(&self, name: &str) -> Option<usize> {
-        self.spalten.iter().position(|s| s.eq_ignore_ascii_case(name))
+    pub fn spalten_index(&self, name: &str) -> Option<usize> {
+        csv_basis::index(&self.spalten, name)
     }
 
-    fn zelle<'a>(&self, zeile: &'a [String], name: &str) -> &'a str {
+    pub fn zelle<'a>(&self, zeile: &'a [String], name: &str) -> &'a str {
         self.spalten_index(name).and_then(|i| zeile.get(i)).map_or("", String::as_str)
     }
 
@@ -189,90 +212,202 @@ impl CsvDatei {
         datei_speicher::schreibe_text(pfad, &text)
     }
 
-    /// Lädt eine Standard-CSV-Datei.
+    /// Standarddateien und alte Tabellen mit Komma/Semikolon.
     pub fn laden(pfad: &Path) -> io::Result<Self> {
+        let mut d = Self::parse(&fs::read_to_string(pfad)?)?;
+        d.pfad = pfad.to_path_buf();
+        Ok(d)
+    }
+
+    pub fn parse(text: &str) -> io::Result<Self> {
         let mut d = Self::neu(TYP_KOORDINATEN);
         d.spalten.clear();
-        d.pfad = pfad.to_path_buf();
-        let mut sektion = String::new();
-        let mut daten_kopf = false;
-        for roh in fs::read_to_string(pfad)?.lines() {
-            let zeile = roh.trim();
-            if zeile.is_empty() {
+        d.metadaten.clear();
+        let (mut sektion, mut trenner, mut typ_explizit) = (String::new(), ';', false);
+        for (nr, roh) in csv_basis::saetze(text)? {
+            let z = roh.trim();
+            if z.is_empty() || z == "---" {
                 continue;
             }
-            if zeile.starts_with('#') {
-                sektion = zeile.trim_start_matches('#').trim().to_uppercase();
-                daten_kopf = false;
+            if z.starts_with('#') {
+                let marker = z.trim_start_matches('#').trim_end_matches([';', ',']).trim().to_uppercase();
+                if ["METADATA", "DATENTYP", "DATEN", "STATIONIERUNG"].contains(&marker.as_str()) {
+                    sektion = marker;
+                } else {
+                    d.kommentare.push((d.zeilen.len(), roh));
+                }
                 continue;
             }
-            if zeile == "---" {
+            if z.starts_with('%') {
+                d.kommentare.push((d.zeilen.len(), roh));
                 continue;
             }
-            match sektion.as_str() {
-                "METADATA" => {
-                    let Some(i) = zeile.find(':') else {
-                        continue;
-                    };
-                    let (schluessel, wert) = (zeile[..i].trim().to_lowercase(), zeile[i + 1..].trim().to_string());
-                    match schluessel.as_str() {
-                        "projekt" => d.projekt = wert,
-                        "sensor" => d.sensor = wert,
-                        "bearbeiter" => d.bearbeiter = wert,
-                        "datum" => d.datum = wert,
-                        "standpunktnr" => d.standpunkt_nr = wert,
-                        "instrumentenhoehe" => d.instr_hoehe = wert,
-                        "standpunktcode" => d.standpunkt_code = wert,
-                        _ => {}
-                    }
+            if sektion == "METADATA" || (d.spalten.is_empty() && z.contains(':')) {
+                if let Some((k, v)) = z.split_once(':') {
+                    let wert = v.trim();
+                    let wert = if wert.ends_with(",,") || wert.ends_with(";;") { wert.trim_end_matches([',', ';']).trim() } else { wert };
+                    d.set_meta(k.trim(), wert);
                 }
-                "DATENTYP" => {
-                    if !zeile.to_lowercase().starts_with("format") {
-                        d.datentyp = zeile.to_string();
-                    }
+                continue;
+            }
+            if sektion == "DATENTYP" {
+                if !z.to_lowercase().starts_with("format") {
+                    d.datentyp = z.to_string();
+                    typ_explizit = true;
                 }
-                "DATEN" => {
-                    let felder: Vec<String> = zeile.split(';').map(|s| s.trim().to_string()).collect();
-                    if daten_kopf {
-                        d.zeilen.push(felder);
-                    } else {
-                        d.spalten = felder;
-                        daten_kopf = true;
-                    }
+                continue;
+            }
+            if sektion == "STATIONIERUNG" {
+                d.stationierung.push(csv_basis::felder(&roh, csv_basis::trenner(&roh)).map_err(|e| fehler(format!("Zeile {nr}: {e}")))?);
+                continue;
+            }
+            if d.spalten.is_empty() {
+                trenner = csv_basis::trenner(&roh);
+                let spalten = csv_basis::felder(&roh, trenner)?;
+                if !spalten.iter().any(|s| csv_basis::name(s) == "punktnr") {
+                    continue;
                 }
-                _ => {}
+                csv_basis::pruefe_spalten(&spalten)?;
+                d.spalten = spalten;
+            } else {
+                let mut felder = csv_basis::felder(&roh, trenner).map_err(|e| fehler(format!("Zeile {nr}: {e}")))?;
+                if felder.len() > d.spalten.len() {
+                    return Err(fehler(format!("Zeile {nr}: {} Felder, erwartet höchstens {}.", felder.len(), d.spalten.len())));
+                }
+                felder.resize(d.spalten.len(), String::new());
+                d.zeilen.push(felder);
+                d.zeilennummern.push(nr);
+            }
+        }
+        if d.spalten.is_empty() {
+            return Err(fehler("Keine CSV-Kopfzeile mit PunktNr gefunden."));
+        }
+        if !typ_explizit {
+            d.datentyp = if d.spalten_index("HZ_gon").is_some() { if d.spalten_index("X").is_some() { TYP_STANDPUNKT } else { TYP_MESSDATEN } } else { TYP_KOORDINATEN }.into();
+        }
+        if ![TYP_KOORDINATEN, TYP_MESSDATEN, TYP_STANDPUNKT].contains(&d.datentyp.as_str()) {
+            return Err(fehler(format!("Unbekannter Datentyp: {}", d.datentyp)));
+        }
+        if let Some(v) = d.meta("Formatversion").filter(|v| !v.is_empty()) {
+            if v != "1.0" {
+                return Err(fehler(format!("Nicht unterstützte CSV-Formatversion: {v}")));
             }
         }
         Ok(d)
     }
 
-    /// Schreibt die Datei an `pfad`; ohne Pfad geschieht nichts.
+    pub fn meta(&self, k: &str) -> Option<&str> {
+        match csv_basis::name(k).as_str() {
+            "projekt" => Some(&self.projekt),
+            "sensor" => Some(&self.sensor),
+            "bearbeiter" => Some(&self.bearbeiter),
+            "datum" => Some(&self.datum),
+            "standpunktnr" => Some(&self.standpunkt_nr),
+            "instrumentenhoehe" => Some(&self.instr_hoehe),
+            "standpunktcode" => Some(&self.standpunkt_code),
+            _ => self.metadaten.iter().find(|(n, _)| csv_basis::name(n) == csv_basis::name(k)).map(|(_, v)| v.as_str()),
+        }
+    }
+
+    pub fn set_meta(&mut self, k: &str, wert: &str) {
+        match csv_basis::name(k).as_str() {
+            "projekt" => self.projekt = wert.into(),
+            "sensor" => self.sensor = wert.into(),
+            "bearbeiter" => self.bearbeiter = wert.into(),
+            "datum" => self.datum = wert.into(),
+            "standpunktnr" => self.standpunkt_nr = wert.into(),
+            "instrumentenhoehe" => self.instr_hoehe = wert.into(),
+            "standpunktcode" => self.standpunkt_code = wert.into(),
+            _ => match self.metadaten.iter_mut().find(|(n, _)| csv_basis::name(n) == csv_basis::name(k)) {
+                Some((_, v)) => *v = wert.into(),
+                None => self.metadaten.push((k.into(), wert.into())),
+            },
+        }
+    }
+
+    pub fn zahl(&self, zeile: usize, spalte: &str) -> io::Result<f64> {
+        let wert = self.zeilen.get(zeile).map(|z| self.zelle(z, spalte)).unwrap_or("");
+        crate::grundlagen::format::parse_zahl(wert).ok_or_else(|| {
+            fehler(format!("Zeile {}, Spalte {spalte}: ungültiger oder fehlender Zahlenwert '{wert}'.", self.zeilennummern.get(zeile).copied().unwrap_or(zeile + 1)))
+        })
+    }
+
+    pub fn set_zelle(&mut self, zeile: usize, spalte: &str, wert: String) {
+        let idx = match self.spalten_index(spalte) {
+            Some(i) => i,
+            None => {
+                self.spalten.push(spalte.into());
+                self.spalten.len() - 1
+            }
+        };
+        for z in &mut self.zeilen {
+            z.resize(self.spalten.len(), String::new());
+        }
+        self.zeilen[zeile][idx] = wert;
+    }
+
+    pub fn text(&self) -> io::Result<String> {
+        csv_basis::pruefe_spalten(&self.spalten)?;
+        let standard: &[&str] = match self.datentyp.as_str() {
+            TYP_MESSDATEN => &SPALTEN_DAT,
+            TYP_STANDPUNKT => &SPALTEN_STP,
+            _ => &SPALTEN_KOR,
+        };
+        let mut ausgabe: Vec<(Option<usize>, String)> = standard.iter().map(|s| (self.spalten_index(s), s.to_string())).collect();
+        for (i, spalte) in self.spalten.iter().enumerate() {
+            if !ausgabe.iter().any(|(j, _)| *j == Some(i)) {
+                ausgabe.push((Some(i), spalte.clone()));
+            }
+        }
+        let mut text = String::from("# METADATA\r\nFormatversion: 1.0\r\n");
+        let mut metadaten = vec![("Projekt", self.projekt.as_str()), ("Sensor", &self.sensor), ("Bearbeiter", &self.bearbeiter), ("Datum", &self.datum)];
+        if self.ist_messdaten() || self.datentyp == TYP_STANDPUNKT {
+            metadaten.extend([("StandpunktNr", self.standpunkt_nr.as_str()), ("InstrumentenHoehe", &self.instr_hoehe), ("StandpunktCode", &self.standpunkt_code)]);
+        }
+        metadaten.extend(self.metadaten.iter().filter(|(k, _)| csv_basis::name(k) != "formatversion").map(|(k, v)| (k.as_str(), v.as_str())));
+        for (k, v) in metadaten {
+            if k.contains(['\r', '\n', ':']) || v.contains(['\r', '\n']) {
+                return Err(fehler(format!("Metadatum {k}: Zeilenumbrüche sind nicht erlaubt.")));
+            }
+            text.push_str(&format!("{k}: {v}\r\n"));
+        }
+        text.push_str(&format!("---\r\n# DATENTYP\r\n{}\r\n# DATEN\r\n{}\r\n", self.datentyp, csv_basis::zeile(ausgabe.iter().map(|(_, s)| s), ';')));
+        for i in 0..=self.zeilen.len() {
+            for (_, kommentar) in self.kommentare.iter().filter(|(pos, _)| (*pos).min(self.zeilen.len()) == i) {
+                text.push_str(kommentar);
+                text.push_str("\r\n");
+            }
+            if let Some(z) = self.zeilen.get(i) {
+                if z.len() > self.spalten.len() {
+                    return Err(fehler(format!("Datensatz {}: mehr Felder als Spalten.", i + 1)));
+                }
+                let mut felder = z.clone();
+                felder.resize(self.spalten.len(), String::new());
+                let aus: Vec<_> = ausgabe
+                    .iter()
+                    .map(|(j, name)| csv_basis::zahlenfeld(name, j.and_then(|j| felder.get(j)).map_or("", String::as_str)).map_err(|e| fehler(format!("Datensatz {}: {e}", i + 1))))
+                    .collect::<io::Result<_>>()?;
+                text.push_str(&csv_basis::zeile(&aus, ';'));
+                text.push_str("\r\n");
+            }
+        }
+        if !self.stationierung.is_empty() {
+            text.push_str("# STATIONIERUNG\r\n");
+            for z in &self.stationierung {
+                text.push_str(&csv_basis::zeile(z, ';'));
+                text.push_str("\r\n");
+            }
+        }
+        Ok(text)
+    }
+
     pub fn speichern(&self) -> io::Result<()> {
         if self.pfad.as_os_str().is_empty() {
             return Ok(());
         }
-        let mut text = format!(
-            "# METADATA\r\nProjekt: {}\r\nSensor: {}\r\nBearbeiter: {}\r\nDatum: {}\r\n",
-            self.projekt, self.sensor, self.bearbeiter, self.datum
-        );
-        if self.ist_messdaten() {
-            text.push_str(&format!("StandpunktNr: {}\r\nInstrumentenHoehe: {}\r\nStandpunktCode: {}\r\n", self.standpunkt_nr, self.instr_hoehe, self.standpunkt_code));
-        }
-        text.push_str(&format!("---\r\n# DATENTYP\r\n{}\r\n# DATEN\r\n", self.datentyp));
-        if !self.spalten.is_empty() {
-            text.push_str(&format!("{}\r\n", self.spalten.join("; ")));
-        }
-        for zeile in &self.zeilen {
-            let mut felder = zeile.clone();
-            while felder.len() < self.spalten.len() {
-                felder.push(String::new());
-            }
-            text.push_str(&format!("{}\r\n", felder.join("; ")));
-        }
-        datei_speicher::schreibe_text(&self.pfad, &text)
+        datei_speicher::schreibe_text(&self.pfad, &self.text()?)
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,7 +424,8 @@ mod tests {
         let p = |s: &str, t: &str| CsvDatei::normalisiere_pfad(Path::new(s), t).to_string_lossy().replace('\\', "/");
         assert_eq!(p("a/Demo.csv", TYP_KOORDINATEN), "a/Demo-kor.csv");
         assert_eq!(p("a/Demo.csv", TYP_MESSDATEN), "a/Demo-dat.csv");
-        assert_eq!(p("a/Demo-KOR.csv", TYP_MESSDATEN), "a/Demo-KOR.csv");
+        assert_eq!(p("a/Demo-KOR.csv", TYP_MESSDATEN), "a/Demo-dat.csv");
+        assert_eq!(p("a/Demo-kor-DAT.CSV", TYP_STANDPUNKT), "a/Demo-stp.csv");
     }
 
     #[test]

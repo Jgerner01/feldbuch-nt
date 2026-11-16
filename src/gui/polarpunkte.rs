@@ -166,20 +166,14 @@ fn mit_vorzeichen(wert: f64) -> String {
 }
 
 fn lokale_station() -> StationierungsErgebnis {
-    StationierungsErgebnis {
-        massstab: 1.0,
-        konvergiert: true,
-        berechnung_3d: true,
-        ist_lokales_system: true,
-        ..StationierungsErgebnis::default()
-    }
+    StationierungsErgebnis { massstab: 1.0, konvergiert: true, berechnung_3d: true, ist_lokales_system: true, ..StationierungsErgebnis::default() }
 }
 
 fn zeitstempel(text: &str) -> NaiveDateTime {
-    ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"]
-        .iter()
-        .find_map(|format| NaiveDateTime::parse_from_str(text, format).ok())
-        .unwrap_or_else(jetzt)
+    if let Ok(z) = chrono::DateTime::parse_from_rfc3339(text) {
+        return z.with_timezone(&chrono::Local).naive_local();
+    }
+    ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"].iter().find_map(|format| NaiveDateTime::parse_from_str(text, format).ok()).unwrap_or_else(jetzt)
 }
 
 impl PolarpunkteAnsicht {
@@ -234,8 +228,14 @@ impl PolarpunkteAnsicht {
         }
     }
 
-    fn sp_name(&self) -> String {
+    fn sp_gruppe(&self) -> String {
         self.standpunkte.get(self.sp_index).cloned().unwrap_or_default()
+    }
+    fn sp_id(&self) -> String {
+        self.daten.as_ref().and_then(|d| d.messungen.iter().find(|m| m.gruppe() == self.sp_gruppe())).map(|m| m.aufstellung_id.clone()).unwrap_or_default()
+    }
+    fn sp_name(&self) -> String {
+        self.daten.as_ref().and_then(|d| d.messungen.iter().find(|m| m.gruppe() == self.sp_gruppe())).map(|m| m.standpunkt_nr.clone()).unwrap_or_default()
     }
 
     fn zeige_leer(&mut self, meldung: &str) {
@@ -279,7 +279,12 @@ impl PolarpunkteAnsicht {
         self.standpunkte = daten.standpunkte();
         self.daten = Some(daten);
         let aktuell = &projekt.station.standpunkt_nr;
-        match self.standpunkte.iter().position(|s| s == aktuell).or_else(|| self.standpunkte.len().checked_sub(1)) {
+        match self
+            .standpunkte
+            .iter()
+            .position(|s| s == aktuell || self.daten.as_ref().is_some_and(|d| d.messungen.iter().any(|m| m.gruppe() == **s && m.aufstellung_id == projekt.station.aufstellung_id)))
+            .or_else(|| self.standpunkte.len().checked_sub(1))
+        {
             Some(i) => {
                 self.sp_index = i;
                 self.standpunkt_gewaehlt(projekt);
@@ -296,7 +301,11 @@ impl PolarpunkteAnsicht {
         if sp.is_empty() {
             return;
         }
-        let ih = if &projekt.station.standpunkt_nr == &sp && projekt.station.instrumenten_hoehe > 0.0 {
+        let gruppe = self.sp_gruppe();
+        let messung = daten.messungen.iter().find(|m| m.gruppe() == gruppe);
+        let ih = if let Some(ih) = messung.and_then(|m| m.instrumenten_hoehe) {
+            ih
+        } else if &projekt.station.standpunkt_nr == &sp && projekt.station.instrumenten_hoehe > 0.0 {
             projekt.station.instrumenten_hoehe
         } else if daten.kopf_instr_hoehe > 0.0 {
             daten.kopf_instr_hoehe
@@ -304,13 +313,23 @@ impl PolarpunkteAnsicht {
             projekt.einstellungen.instrumenten_hoehe
         };
         self.instr_hoehe = f(ih, 3);
-        self.quelle_station = projekt.lese_station_datei(&sp).is_some_and(|d| !d.messungen.is_empty());
+        self.quelle_station = projekt
+            .lese_station_datei(&sp)
+            .is_some_and(|d| !d.messungen.is_empty() && messung.is_some_and(|m| m.aufstellung_id.is_empty() || m.aufstellung_id == d.aufstellung_id));
         self.fuelle_tabellen(projekt);
     }
 
     fn fuelle_tabellen(&mut self, projekt: &Projekt) {
         let sp = self.sp_name();
         self.lade_hinweise.clear();
+        if let Some(d) = &self.daten {
+            if d.messungen.iter().any(|m| m.gruppe() == self.sp_gruppe() && m.typ_geschaetzt) {
+                self.lade_hinweise.push("Altdatei: AP/NP wurde aus vorhandenen Koordinaten abgeleitet. Zuordnung prüfen.".into());
+            }
+            if d.messungen.iter().any(|m| m.gruppe() == self.sp_gruppe() && m.exz_unbekannt) {
+                self.lade_hinweise.push("Exzentrizitäten fehlen: für die Berechnung wird 0 angenommen. Werte prüfen.".into());
+            }
+        }
         self.station_fehler.clear();
         self.ap.clear();
         self.np.clear();
@@ -320,8 +339,8 @@ impl PolarpunkteAnsicht {
             } else {
                 self.lade_anschluss_aus_dat(projekt, &daten, &sp);
             }
-            self.akt = self.ap.iter().map(|p| [true, true, p.hoehe != 0.0]).collect();
-            self.np = daten.messungen.iter().filter(|m| !m.ist_anschlusspunkt() && m.standpunkt_nr == sp).cloned().collect();
+            self.akt = self.ap.iter().map(|p| [true, true, p.hoehe.is_finite()]).collect();
+            self.np = daten.messungen.iter().filter(|m| !m.ist_anschlusspunkt() && m.gruppe() == self.sp_gruppe()).cloned().collect();
             self.exz_original = self.np.iter().map(|m| (m.exz_laengs_m, m.exz_quer_m)).collect();
             self.exz_text = self.np.iter().map(|m| (f(m.exz_laengs_m, 3), f(m.exz_quer_m, 3))).collect();
             self.np_aktiv = vec![true; self.np.len()];
@@ -340,16 +359,9 @@ impl PolarpunkteAnsicht {
         for m in daten.messungen.iter().filter(|m| m.ist_anschlusspunkt() && m.standpunkt_nr == sp) {
             match projekt.finde_anschlusspunkt(&m.punkt_nr) {
                 None => self.lade_hinweise.push(format!("Anschlusspunkt {}: keine Koordinaten gefunden – nicht verwendet.", m.punkt_nr)),
-                Some((r, h, hoehe)) => self.ap.push(StationierungsPunkt {
-                    punkt_nr: m.punkt_nr.clone(),
-                    r,
-                    h,
-                    hoehe,
-                    hz: m.hz_gon,
-                    v: m.v_gon,
-                    strecke: m.strecke_m,
-                    zielhoehe: m.zielhoehe_m,
-                }),
+                Some((r, h, hoehe)) => {
+                    self.ap.push(StationierungsPunkt { punkt_nr: m.punkt_nr.clone(), r, h, hoehe, hz: m.hz_gon, v: m.v_gon, strecke: m.strecke_m, zielhoehe: m.zielhoehe_m })
+                }
             }
         }
     }
@@ -460,9 +472,7 @@ impl PolarpunkteAnsicht {
         (akt_hz, akt_str, akt_hoe): (&[bool], &[bool], &[bool]),
         je_zeile: &mut [Option<PunktResiduum>],
     ) -> Result<StationierungsErgebnis, String> {
-        let (r, h, hoehe) = projekt
-            .finde_anschlusspunkt(sp)
-            .ok_or_else(|| format!("Nur ein Anschlussziel: Der Standpunkt {sp} hat keine bekannten Koordinaten."))?;
+        let (r, h, hoehe) = projekt.finde_anschlusspunkt(sp).ok_or_else(|| format!("Nur ein Anschlussziel: Der Standpunkt {sp} hat keine bekannten Koordinaten."))?;
         let idx = akt_hz.iter().position(|a| *a).ok_or("Keine aktive Richtung zum Anschlussziel.")?;
         let erg = polar::orientierung_aus_einem_ziel(r, h, hoehe, &self.ap[idx], ih, akt_hz[idx], akt_str[idx], akt_hoe[idx], projekt.rechenparameter.params.berechnung_3d)
             .ok_or("Orientierung aus dem Anschlussziel nicht berechenbar (Standpunkt und Ziel identisch?).")?;
@@ -483,6 +493,7 @@ impl PolarpunkteAnsicht {
 
     fn baue_rohdaten(&self, m: &PolarMessung) -> NeupunktRohdaten {
         NeupunktRohdaten {
+            aufstellung_id: m.aufstellung_id.clone(),
             punkt_nr: m.punkt_nr.clone(),
             code: m.code.clone(),
             hz_gon: m.hz_gon,
@@ -543,11 +554,7 @@ impl PolarpunkteAnsicht {
             self.status.clear();
             return;
         };
-        let gewichtung = if par.gewichtung_nahe_ziele {
-            format!("ein (Zielzentrierung {} mm)", f(par.zentrierfehler_ziel_mm, 1))
-        } else {
-            "aus".to_string()
-        };
+        let gewichtung = if par.gewichtung_nahe_ziele { format!("ein (Zielzentrierung {} mm)", f(par.zentrierfehler_ziel_mm, 1)) } else { "aus".to_string() };
         if self.lokal {
             self.ergebnis_text = "Lokales System: Standpunkt 0/0/0, Orientierung 0 gon – keine Anschlusspunkte erforderlich.".to_string();
         } else {
@@ -564,11 +571,7 @@ impl PolarpunkteAnsicht {
         }
         let drei_d = par.berechnung_3d && (self.lokal || station.hoehe != 0.0);
         let herkunft = if self.lokal { "lokales System".to_string() } else { format!("{anschluss} Anschlusspunkt(e)") };
-        self.status = format!(
-            "{} · m = {} · {herkunft} · {berechnet} Polarpunkt(e) berechnet",
-            if drei_d { "3D" } else { "2D" },
-            f(self.massstab.wert, 6)
-        );
+        self.status = format!("{} · m = {} · {herkunft} · {berechnet} Polarpunkt(e) berechnet", if drei_d { "3D" } else { "2D" }, f(self.massstab.wert, 6));
     }
 
     // ── Speichern ─────────────────────────────────────────────────────────────
@@ -596,7 +599,7 @@ impl PolarpunkteAnsicht {
             .iter()
             .flatten()
             .filter_map(|e| {
-                let alt = projekt.neupunkte.finde_koordinate(&e.punkt_nr, &sp)?;
+                let alt = projekt.neupunkte.finde_koordinate_aufstellung(&e.punkt_nr, &sp, &self.sp_id())?;
                 let abw = polar::abstand(e.r - alt.r, e.h - alt.h);
                 (abw > UEBERSCHREIBEN_RUECKFRAGE_M).then(|| format!("{}: {} m", e.punkt_nr, f(abw, 3)))
             })
@@ -634,7 +637,7 @@ impl PolarpunkteAnsicht {
             };
             erg.standpunkt_nr.clone_from(&sp);
             erg.quelle = QUELLE_POLAR.to_string();
-            let alt = projekt.neupunkte.finde_koordinate(&erg.punkt_nr, &sp).map(|a| (a.r, a.h));
+            let alt = projekt.neupunkte.finde_koordinate_aufstellung(&erg.punkt_nr, &sp, &self.sp_id()).map(|a| (a.r, a.h));
             if alt.is_none() {
                 neu += 1;
             } else {
@@ -763,10 +766,9 @@ impl PolarpunkteAnsicht {
     /// Öffnet das zuletzt erzeugte Polarpunkte-Protokoll.
     fn oeffne_letztes_protokoll(&mut self, projekt: &Projekt) {
         match letztes_protokoll(&ausgabeverzeichnis(projekt), "Polarpunkte") {
-            None => self.melde(
-                "Kein Protokoll",
-                "Kein Polarpunkte-Protokoll gefunden.\nEs wird beim Speichern erzeugt (sofern das Protokoll in den Projektoptionen aktiviert ist).",
-            ),
+            None => {
+                self.melde("Kein Protokoll", "Kein Polarpunkte-Protokoll gefunden.\nEs wird beim Speichern erzeugt (sofern das Protokoll in den Projektoptionen aktiviert ist).")
+            }
             Some(pfad) => {
                 if let Err(fehler) = oeffne(&pfad) {
                     self.melde("Protokoll", format!("Protokoll konnte nicht geöffnet werden:\n{fehler}\n\nDatei: {}", pfad.display()));
@@ -792,7 +794,19 @@ impl PolarpunkteAnsicht {
         }
         let pfad = self.datei_pfad(projekt);
         match messdaten::schreibe_exzentrizitaeten(&pfad, &aenderungen) {
-            Ok(()) => self.exz_original = self.np.iter().map(|m| (m.exz_laengs_m, m.exz_quer_m)).collect(),
+            Ok(()) => {
+                self.exz_original = self.np.iter().map(|m| (m.exz_laengs_m, m.exz_quer_m)).collect();
+                // Die kanonische Ausgabe kann Kopfzeilen/mehrzeilige Felder
+                // verschieben. Indizes vor dem nächsten Speichern aktualisieren.
+                if let (Some(daten), Ok(datei)) = (self.daten.as_mut(), crate::daten::csv_datei::CsvDatei::laden(&pfad)) {
+                    let indizes: std::collections::HashMap<_, _> = daten.messungen.iter().zip(&datei.zeilennummern).map(|(m, nr)| (m.zeilen_index, nr - 1)).collect();
+                    for m in daten.messungen.iter_mut().chain(self.np.iter_mut()) {
+                        if let Some(neu) = indizes.get(&m.zeilen_index) {
+                            m.zeilen_index = *neu;
+                        }
+                    }
+                }
+            }
             Err(fehler) => {
                 fehler_log::log("Polarpunkte.schreibe_exzentrizitaeten", &fehler.to_string());
                 self.melde("Polarpunkte", format!("Die geänderten Exzentrizitäten konnten nicht in die dat.csv geschrieben werden:\n{fehler}"));
@@ -818,6 +832,7 @@ impl PolarpunkteAnsicht {
         let Some(pfad) = dialog.save_file() else {
             return;
         };
+        let pfad = crate::daten::csv_datei::CsvDatei::normalisiere_pfad(&pfad, crate::daten::csv_datei::TYP_KOORDINATEN);
         if pfad.exists() {
             self.frage = Some(Frage::Kor(pfad));
         } else {
@@ -826,12 +841,8 @@ impl PolarpunkteAnsicht {
     }
 
     fn schreibe_kor(&mut self, projekt: &Projekt, pfad: &Path, erhalten: bool) {
-        let punkte: Vec<KorPunkt> = self
-            .ergebnisse
-            .iter()
-            .flatten()
-            .map(|e| KorPunkt { punkt_nr: e.punkt_nr.clone(), r: e.r, h: e.h, hoehe: e.ist_3d.then_some(e.hoehe), code: e.code.clone() })
-            .collect();
+        let punkte: Vec<KorPunkt> =
+            self.ergebnisse.iter().flatten().map(|e| KorPunkt { punkt_nr: e.punkt_nr.clone(), r: e.r, h: e.h, hoehe: e.ist_3d.then_some(e.hoehe), code: e.code.clone() }).collect();
         let sensor = if projekt.einstellungen.tachymeter_modell == TachymeterModell::Manuell { "" } else { projekt.einstellungen.tachymeter_modell.name() };
         let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         match kor_csv::schreibe(pfad, &projekt.einstellungen.projekt_name, sensor, &punkte, erhalten) {
@@ -881,23 +892,16 @@ impl PolarpunkteAnsicht {
         ui.horizontal(|ui| {
             ui.label("Standpunkt:");
             let vorher = self.sp_index;
-            egui::ComboBox::from_id_salt("polar_standpunkt")
-                .width(STANDPUNKT_BREITE)
-                .selected_text(RichText::new(self.sp_name()).monospace())
-                .show_ui(ui, |ui| {
-                    for (i, sp) in self.standpunkte.iter().enumerate() {
-                        ui.selectable_value(&mut self.sp_index, i, RichText::new(sp).monospace());
-                    }
-                });
+            egui::ComboBox::from_id_salt("polar_standpunkt").width(STANDPUNKT_BREITE).selected_text(RichText::new(self.sp_gruppe()).monospace()).show_ui(ui, |ui| {
+                for (i, sp) in self.standpunkte.iter().enumerate() {
+                    ui.selectable_value(&mut self.sp_index, i, RichText::new(sp).monospace());
+                }
+            });
             standpunkt_neu = vorher != self.sp_index;
             ui.add_space(12.0);
             ui.label("Instrumentenhöhe [m]:");
-            let antwort = ui.add(
-                egui::TextEdit::singleline(&mut self.instr_hoehe)
-                    .font(egui::TextStyle::Monospace)
-                    .align(egui::Align2::RIGHT_CENTER)
-                    .desired_width(HOEHEN_FELD_BREITE),
-            );
+            let antwort =
+                ui.add(egui::TextEdit::singleline(&mut self.instr_hoehe).font(egui::TextStyle::Monospace).align(egui::Align2::RIGHT_CENTER).desired_width(HOEHEN_FELD_BREITE));
             neu_rechnen |= antwort.lost_focus();
             ui.add_space(12.0);
             if ui.add(egui::Button::new("Rechenparameter…").min_size(egui::Vec2::new(160.0, KOPF_KNOPF_HOEHE))).clicked() {
@@ -975,10 +979,7 @@ impl PolarpunkteAnsicht {
     }
 
     fn tabellen_raster(gewichte: &[f32], breite: f32) -> Raster {
-        Raster::fuellend(gewichte, breite - TABELLEN_RAND, MIN_SPALTENBREITE)
-            .mit_zeilenhoehe(ZEILEN_HOEHE)
-            .mit_kopf_stil(FARBE_KOPF, Color32::WHITE)
-            .ohne_streifen()
+        Raster::fuellend(gewichte, breite - TABELLEN_RAND, MIN_SPALTENBREITE).mit_zeilenhoehe(ZEILEN_HOEHE).mit_kopf_stil(FARBE_KOPF, Color32::WHITE).ohne_streifen()
     }
 
     fn zeichne_anschluss(&mut self, ui: &mut egui::Ui, projekt: &Projekt, breite: f32, hoehe: f32) -> bool {
@@ -1033,7 +1034,10 @@ impl PolarpunkteAnsicht {
             ui.set_min_width(ui.available_width());
             egui::ScrollArea::horizontal().id_salt("polar_np_horizontal").auto_shrink([false, true]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
-                raster.kopf(ui, &["Berechnen", "Punkt", "Hz [gon]", "V [gon]", "Strecke [m]", "ZH [m]", "Exz längs [m]", "Exz quer [m]", "R [m]", "H [m]", "Höhe [m]", "Code", "Zeit"]);
+                raster.kopf(
+                    ui,
+                    &["Berechnen", "Punkt", "Hz [gon]", "V [gon]", "Strecke [m]", "ZH [m]", "Exz längs [m]", "Exz quer [m]", "R [m]", "H [m]", "Höhe [m]", "Code", "Zeit"],
+                );
                 egui::ScrollArea::vertical().id_salt("polar_np").max_height(hoehe).auto_shrink([false, false]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                     for i in 0..self.np.len() {
@@ -1091,9 +1095,8 @@ impl PolarpunkteAnsicht {
                 schliessen = ui.add(knopf("Schließen", 100.0)).clicked();
                 kor = ui.add(knopf("Als KOR-CSV speichern", 180.0)).clicked();
                 protokoll_zeigen = ui.add(knopf("Protokoll anzeigen", 150.0)).clicked();
-                speichern = ui
-                    .add(egui::Button::new(RichText::new("Speichern").color(Color32::WHITE)).fill(FARBE_SPEICHERN).min_size(egui::Vec2::new(110.0, KNOPF_HOEHE)))
-                    .clicked();
+                speichern =
+                    ui.add(egui::Button::new(RichText::new("Speichern").color(Color32::WHITE)).fill(FARBE_SPEICHERN).min_size(egui::Vec2::new(110.0, KNOPF_HOEHE))).clicked();
                 neu = ui.add(knopf("Neu berechnen", 130.0)).clicked();
             });
         });
@@ -1229,9 +1232,7 @@ fn exz_zelle(z: &mut Zellen<'_>, text: &mut String, gross: bool) -> bool {
             ui.painter().rect_filled(ui.max_rect().expand(1.0), 0.0, FARBE_EXZ_GROSS);
         }
         let breite = ui.available_width();
-        geaendert = ui
-            .add(egui::TextEdit::singleline(text).frame(egui::Frame::NONE).align(egui::Align2::RIGHT_CENTER).desired_width(breite))
-            .changed();
+        geaendert = ui.add(egui::TextEdit::singleline(text).frame(egui::Frame::NONE).align(egui::Align2::RIGHT_CENTER).desired_width(breite)).changed();
     });
     geaendert
 }

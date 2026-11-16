@@ -1,0 +1,21 @@
+# METADATA
+Formatversion: 1.0
+Projekt: Demo
+Sensor: Manuell
+Bearbeiter:
+Datum: 2026-11-16
+StandpunktNr: SP01
+AufstellungId: SP01-20261116T093000
+InstrumentenHoehe: 1.600
+StandpunktCode: ST
+Koordinatensystem: Lokal
+Hoehensystem:
+---
+# DATENTYP
+Standpunkt
+# DATEN
+PunktNr;X;Y;Z;HZ_gon;V_gon;Strecke_m;Zielhoehe_m;Code;Zeitstempel;ExzLaengs_m;ExzQuer_m;Typ
+1001;1100.0000;2050.0000;452.0000;55.4833;98.8039;111.822;1.600;FP;2026-11-16T09:30:00+01:00;0.000;0.000;AP
+1002;1080.0000;1920.0000;448.5000;135.0000;100.7882;113.146;1.600;FP;2026-11-16T09:31:00+01:00;0.000;0.000;AP
+1003;950.0000;1970.0000;451.0000;250.5730;98.7990;58.320;1.600;FP;2026-11-16T09:32:00+01:00;0.000;0.000;AP
+2001;;;;200.0000;95.0000;20.000;1.500;Baum;2026-11-16T09:35:00+01:00;0.250;-0.100;NP

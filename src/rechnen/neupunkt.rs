@@ -45,13 +45,7 @@ pub fn pruefe_station(e: &StationierungsErgebnis) -> Result<(), String> {
 ///
 /// `massstab`: fester Maßstab oder `None` (dann nach Rechenparameter).
 /// `instr_hoehe`: Instrumentenhöhe [m] der aktiven Station.
-pub fn berechnen(
-    rohdaten: &NeupunktRohdaten,
-    station: &StationierungsErgebnis,
-    params: &Rechenparameter,
-    massstab: Option<f64>,
-    instr_hoehe: f64,
-) -> Option<NeupunktErgebnis> {
+pub fn berechnen(rohdaten: &NeupunktRohdaten, station: &StationierungsErgebnis, params: &Rechenparameter, massstab: Option<f64>, instr_hoehe: f64) -> Option<NeupunktErgebnis> {
     if rohdaten.strecke_m <= 0.0 {
         return None;
     }
@@ -70,15 +64,7 @@ pub fn berechnen(
     let d_horiz = strecke * (v * GON2RAD).sin();
 
     let m = massstab.unwrap_or_else(|| ermittle_massstab(params, Some(station)).wert);
-    let (r, h) = polar::lage(
-        station.r,
-        station.h,
-        hz_ori,
-        d_horiz,
-        m,
-        rohdaten.exz_laengs_m,
-        rohdaten.exz_quer_m,
-    );
+    let (r, h) = polar::lage(station.r, station.h, hz_ori, d_horiz, m, rohdaten.exz_laengs_m, rohdaten.exz_quer_m);
 
     // Höhe: nur bei 3D-Berechnung mit gültiger Standpunkthöhe
     let ist_3d = params.berechnung_3d && (station.hoehe != 0.0 || station.ist_lokales_system);
@@ -90,6 +76,7 @@ pub fn berechnen(
     };
 
     Some(NeupunktErgebnis {
+        aufstellung_id: rohdaten.aufstellung_id.clone(),
         punkt_nr: rohdaten.punkt_nr.clone(),
         code: rohdaten.code.clone(),
         r,
@@ -119,11 +106,7 @@ pub fn berechne_alle<'a>(
     params: &Rechenparameter,
     instr_hoehe: f64,
 ) -> Vec<NeupunktErgebnis> {
-    rohdaten
-        .into_iter()
-        .filter(|r| r.standpunkt_nr == standpunkt_nr)
-        .filter_map(|r| berechnen(r, station, params, None, instr_hoehe))
-        .collect()
+    rohdaten.into_iter().filter(|r| r.standpunkt_nr == standpunkt_nr).filter_map(|r| berechnen(r, station, params, None, instr_hoehe)).collect()
 }
 
 #[cfg(test)]
@@ -132,15 +115,7 @@ mod tests {
     use crate::daten::modelle::jetzt;
 
     fn station() -> StationierungsErgebnis {
-        StationierungsErgebnis {
-            r: 1000.0,
-            h: 2000.0,
-            hoehe: 100.0,
-            orientierung_gon: 50.0,
-            massstab: 1.0,
-            konvergiert: true,
-            ..StationierungsErgebnis::default()
-        }
+        StationierungsErgebnis { r: 1000.0, h: 2000.0, hoehe: 100.0, orientierung_gon: 50.0, massstab: 1.0, konvergiert: true, ..StationierungsErgebnis::default() }
     }
 
     fn roh(hz: f64, v: f64, s: f64) -> NeupunktRohdaten {
