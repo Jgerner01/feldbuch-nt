@@ -3,6 +3,7 @@
 // Autor:    Johann Gerner
 
 mod absteckung;
+pub mod bildschirmtastatur;
 mod berechnungen;
 mod daten_editor;
 mod flaechenteilung;

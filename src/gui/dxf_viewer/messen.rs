@@ -9,7 +9,7 @@ use crate::daten::messdaten;
 use crate::daten::modelle::{NeupunktRohdaten, StationierungsErgebnis, StationierungsPunkt};
 use crate::daten::projekt::Projekt;
 use crate::grundlagen::format::{f, parse_zahl};
-use crate::grundlagen::{fehler_log, protokoll};
+use crate::grundlagen::{fehler_log, protokoll, ton};
 use crate::rechnen::neupunkt;
 use crate::rechnen::polar::{EXZ_INFO_GRENZE_M, exzentrizitaet_gross, ist_massstab_eins};
 use crate::tachymeter::konfiguration::Konfiguration;
@@ -170,13 +170,18 @@ impl DxfViewer {
                 // Getrennte Messung: nur die Strecke merken, Hz/V folgen beim Übernehmen
                 if m.schraegstrecke_m.is_some() {
                     self.getrennt_messung = Some(*m);
+                    ton::bestaetigung();
                     self.status = "Strecke gemessen – Ziel anpeilen und „Übernehmen“ drücken.".to_string();
                 } else {
                     self.status = "Messung unvollständig (Strecke fehlt).".to_string();
+                    ton::fehler();
                 }
             }
             Some(MessErgebnis::Messung(m)) => self.verarbeite_messung(projekt, geraet, &m),
-            Some(MessErgebnis::Fehler(text)) => self.status = format!("Messung fehlgeschlagen: {text}"),
+            Some(MessErgebnis::Fehler(text)) => {
+                self.status = format!("Messung fehlgeschlagen: {text}");
+                ton::fehler();
+            }
             None => {}
         }
     }
@@ -186,7 +191,10 @@ impl DxfViewer {
         let zielhoehe = parse_zahl(&self.txt_zielhoehe).unwrap_or(0.0);
         match geraet.starte_messung(zielhoehe) {
             Ok(()) => self.status = "Messung startet …".to_string(),
-            Err(fehler) => self.status = fehler,
+            Err(fehler) => {
+                self.status = fehler;
+                ton::fehler();
+            }
         }
     }
 
@@ -223,6 +231,7 @@ impl DxfViewer {
     fn verarbeite_messung(&mut self, projekt: &mut Projekt, geraet: &Geraet, m: &TachymeterMessung) {
         let (Some(hz), Some(v), Some(strecke)) = (m.hz_gon, m.v_gon, m.schraegstrecke_m) else {
             self.status = "Messung unvollständig (Hz, V oder Strecke fehlt).".to_string();
+            ton::fehler();
             return;
         };
 
@@ -287,8 +296,10 @@ impl DxfViewer {
         };
         if let Err(e) = messdaten::schreibe_neupunktmessung(&projekt.einstellungen, &roh, &standpunkt, instr_hoehe) {
             self.status = format!("Messdaten konnten nicht gespeichert werden: {e}");
+            ton::fehler();
             return;
         }
+        ton::bestaetigung();
 
         let mut info = format!("NP {punkt_nr}: Hz={}  V={}  D={} m", f(hz, 4), f(v, 4), f(strecke, 3));
 
@@ -366,8 +377,10 @@ impl DxfViewer {
 
         if let Err(e) = messdaten::schreibe_stationierungsmessung(&projekt.einstellungen, &punkt, &standpunkt, instr_hoehe, m.zeitstempel) {
             self.status = format!("Messdaten konnten nicht gespeichert werden: {e}");
+            ton::fehler();
             return;
         }
+        ton::bestaetigung();
 
         let ergebnis = match projekt.hinzufuegen_und_berechnen(punkt) {
             Ok(e) => e,

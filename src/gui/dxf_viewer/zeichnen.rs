@@ -4,8 +4,16 @@
 
 use super::*;
 
+/// Darstellung der Messanzeige.
+const MESSUNG_FARBE: Color32 = Color32::from_rgb(20, 80, 200);
+const MESSUNG_SCHRIFT: f32 = 12.0;
+const MESSUNG_RAND: f32 = 8.0;
+const MESSUNG_ABSTAND_UEBER_BALKEN: f32 = 36.0;
+const MESSUNG_HINTERGRUND_RAND: f32 = 3.0;
+const MESSUNG_HINTERGRUND_ALPHA: u8 = 200;
+
 /// Eingabefelder der Toolbar.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FeldArt {
     Code,
     PunktNr,
@@ -507,15 +515,24 @@ impl DxfViewer {
         }
 
         let groesse = rect.size();
+        let zeichen_start = std::time::Instant::now();
+        let gezeichnet = std::cell::Cell::new(0usize);
         let zeichne = |e: &DxfEntity, farbe: Color32, breite: f32, ausgewaehlt: bool| {
             if self.ist_zeichenbar(e, ursprung, groesse) {
+                gezeichnet.set(gezeichnet.get() + 1);
                 let (f, b) = if ausgewaehlt { (AUSWAHL_FARBE, 2.0) } else { (farbe, breite) };
                 e.zeichne(&maler, &a, f, b);
             }
         };
 
+        let mut gesamt = 0usize;
         for (e, farbe, auswahl) in self.sichtbare_entities() {
+            gesamt += 1;
             zeichne(e, farbe, 1.0, auswahl.is_some() && self.auswahl == auswahl);
+        }
+        self.mess_zeichnen_ms = glaette(self.mess_zeichnen_ms, zeichen_start.elapsed().as_secs_f32() * MS_JE_S);
+        if MESSUNG_ANZEIGEN {
+            self.zeichne_messung(&maler, rect, gezeichnet.get(), gesamt);
         }
         if self.residuen_sichtbar && !self.ellipsen.is_empty() {
             self.zeichne_ellipsen_massstab(&maler, rect);
@@ -559,6 +576,23 @@ impl DxfViewer {
                 maler.rect_stroke(r, 0.0, Stroke::new(1.5, Color32::from_rgba_unmultiplied(180, 0, 0, 210)), egui::StrokeKind::Middle);
             }
         }
+    }
+
+    /// Messanzeige links unten in blauer Schrift: Zeichenzeit, Bildzeit des Viewers, Bildrate, gezeichnete von allen Objekten.
+    fn zeichne_messung(&self, maler: &egui::Painter, rect: Rect, gezeichnet: usize, gesamt: usize) {
+        let text = format!(
+            "Zeichnen {} ms  |  Bild {} ms  |  {} fps  |  Objekte {gezeichnet}/{gesamt}",
+            f(f64::from(self.mess_zeichnen_ms), 1),
+            f(f64::from(self.mess_frame_ms), 1),
+            f(f64::from(self.mess_fps), 0),
+        );
+        // Über dem Maßstabsbalken der Ellipsen, falls dieser sichtbar ist
+        let balken_sichtbar = self.residuen_sichtbar && !self.ellipsen.is_empty();
+        let unten = rect.bottom() - if balken_sichtbar { MESSUNG_ABSTAND_UEBER_BALKEN } else { MESSUNG_RAND };
+        let galley = maler.layout_no_wrap(text, FontId::monospace(MESSUNG_SCHRIFT), MESSUNG_FARBE);
+        let box_rect = Align2::LEFT_BOTTOM.anchor_size(Pos2::new(rect.left() + MESSUNG_RAND, unten), galley.size());
+        maler.rect_filled(box_rect.expand(MESSUNG_HINTERGRUND_RAND), 2.0, Color32::from_rgba_unmultiplied(255, 255, 255, MESSUNG_HINTERGRUND_ALPHA));
+        maler.galley(box_rect.min, galley, MESSUNG_FARBE);
     }
 
     /// Maßstabsbalken für die Ellipsen-Skalierung (links unten).

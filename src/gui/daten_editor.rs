@@ -11,6 +11,7 @@ use eframe::egui::{self, Color32, RichText};
 use super::tabelle::Raster;
 use crate::daten::csv_datei::{CsvDatei, TYP_KOORDINATEN, TYP_MESSDATEN, TYP_STANDPUNKT};
 use crate::daten::projekt::Projekt;
+use crate::gui::bildschirmtastatur;
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::grundlagen::{fehler_log, pfade};
 
@@ -390,7 +391,9 @@ impl DatenPanel {
         if self.messdaten || self.standpunkt {
             ui.horizontal(|ui| {
                 ui.label("Aufstellung:");
-                geaendert |= ui.text_edit_singleline(&mut self.aufstellung_id).changed();
+                let antwort = ui.text_edit_singleline(&mut self.aufstellung_id);
+                bildschirmtastatur::text_feld(&antwort);
+                geaendert |= antwort.changed();
             });
             ui.horizontal_wrapped(|ui| {
                 ui.label("Standpunkt-Nr:");

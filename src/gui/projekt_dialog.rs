@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::daten::projekt::Projekt;
+use crate::gui::bildschirmtastatur;
 
 /// Eingabemaske für das Projekt.
 pub struct ProjektDialog {
@@ -31,11 +32,11 @@ impl ProjektDialog {
         ui.heading("Projekt");
         egui::Grid::new("projekt").num_columns(2).spacing([8.0, 8.0]).show(ui, |ui| {
             ui.label("Projektname:");
-            ui.text_edit_singleline(&mut self.name);
+            bildschirmtastatur::text_feld(&ui.text_edit_singleline(&mut self.name));
             ui.end_row();
             ui.label("Verzeichnis:");
             ui.horizontal(|ui| {
-                ui.text_edit_singleline(&mut self.verzeichnis);
+                bildschirmtastatur::text_feld(&ui.text_edit_singleline(&mut self.verzeichnis));
                 if ui.button("Durchsuchen…").clicked() {
                     if let Some(ordner) = rfd::FileDialog::new().pick_folder() {
                         self.verzeichnis = ordner.to_string_lossy().into_owned();

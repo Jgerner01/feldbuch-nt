@@ -12,6 +12,7 @@ use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Pos2, Rect, Ric
 
 use crate::daten::modelle::{NeupunktErgebnis, StationierungsErgebnis, TYP_STANDPUNKT};
 use crate::daten::projekt::Projekt;
+use crate::gui::bildschirmtastatur;
 use crate::daten::punktlisten::{lese_csv, lese_json};
 use crate::dxf::entity::{Ansicht, Art, DxfEntity, Rahmen};
 use crate::dxf::{leser, punktindex};
@@ -95,6 +96,25 @@ mod pdf_export;
 mod messdaten_eingabe;
 mod messen;
 mod zeichnen;
+
+/// A-Taste des Panasonic Toughpad (Panasonic-Einstellungen → Tablet-Tasten): Strg+Alt+E, löst „Messen" aus.
+/// Auf deutscher Tastatur ist das AltGr+E und erzeugt das Zeichen „€".
+const MESS_TASTE: egui::Key = egui::Key::E;
+const MESS_TASTE_ZEICHEN: &str = "€";
+
+/// Messanzeige (Zeichenzeit, Bildzeit, Bildrate, Objektzahl) links unten in der Zeichenfläche.
+const MESSUNG_ANZEIGEN: bool = true;
+/// Glättung der Messwerte: Anteil des alten Wertes im gleitenden Mittel.
+const MESSUNG_GLAETTUNG: f32 = 0.9;
+/// Bildabstände über dieser Dauer [s] zählen als Leerlauf und gehen nicht in die Bildrate ein.
+const MESSUNG_LEERLAUF_S: f32 = 0.25;
+/// Millisekunden je Sekunde.
+const MS_JE_S: f32 = 1000.0;
+
+/// Gleitender Mittelwert; der erste Wert (alter Wert 0) wird direkt übernommen.
+fn glaette(alt: f32, neu: f32) -> f32 {
+    if alt <= 0.0 { neu } else { MESSUNG_GLAETTUNG * alt + (1.0 - MESSUNG_GLAETTUNG) * neu }
+}
 
 /// Auffrischintervall des Viewers (Zielrichtung, Messablauf).
 const REPAINT_INTERVALL: std::time::Duration = std::time::Duration::from_millis(100);
@@ -214,6 +234,12 @@ pub struct DxfViewer {
     txt_exz_quer: String,
     txt_code: String,
     txt_punkt_nr: String,
+    /// Die A-Taste wurde in diesem Bildaufbau gedrückt.
+    mess_taste: bool,
+    /// Messwerte der Zeichenfläche (gleitende Mittel): Zeichenzeit, Bildzeit des Viewers [ms], Bildrate [1/s].
+    mess_zeichnen_ms: f32,
+    mess_frame_ms: f32,
+    mess_fps: f32,
     /// Zuletzt gemessene Horizontalrichtung der Zielrichtung [gon].
     ziel_hz: Option<f64>,
     /// Zuletzt im Dialog „Messdaten eingeben" verwendeter Code und Zielhöhe.
@@ -285,6 +311,10 @@ impl Default for DxfViewer {
             txt_exz_quer: "0.000".to_string(),
             txt_code: String::new(),
             txt_punkt_nr: String::new(),
+            mess_taste: false,
+            mess_zeichnen_ms: 0.0,
+            mess_frame_ms: 0.0,
+            mess_fps: 0.0,
             ziel_hz: None,
             letzter_code: String::new(),
             letzte_zielhoehe: messdaten_eingabe::STANDARD_ZIELHOEHE.to_string(),
@@ -865,7 +895,33 @@ impl DxfViewer {
         }
     }
 
+    /// Prüft, ob die A-Taste (Strg+Alt+E = AltGr+E) gedrückt wurde, und entfernt deren Ereignisse,
+    /// damit das erzeugte „€" nicht in ein Eingabefeld getippt wird.
+    fn nimm_mess_taste(ctx: &egui::Context) -> bool {
+        ctx.input_mut(|i| {
+            let mut gedrueckt = false;
+            i.events.retain(|e| match e {
+                egui::Event::Text(t) if t == MESS_TASTE_ZEICHEN => {
+                    gedrueckt = true;
+                    false
+                }
+                egui::Event::Key { key: MESS_TASTE, modifiers, pressed, .. } if modifiers.ctrl && modifiers.alt => {
+                    gedrueckt |= *pressed;
+                    false
+                }
+                _ => true,
+            });
+            gedrueckt
+        })
+    }
+
     fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt, geraet: &mut Geraet) {
+        let frame_start = std::time::Instant::now();
+        let bildabstand_s = ui.ctx().input(|i| i.unstable_dt);
+        if bildabstand_s > 0.0 && bildabstand_s <= MESSUNG_LEERLAUF_S {
+            self.mess_fps = glaette(self.mess_fps, 1.0 / bildabstand_s);
+        }
+        self.mess_taste = Self::nimm_mess_taste(ui.ctx());
         // Fensterhintergrund
         let voll = ui.max_rect();
         ui.painter().rect_filled(voll, 0.0, FENSTER_FARBE);
@@ -902,8 +958,18 @@ impl DxfViewer {
             .frame(egui::Frame::new().fill(HINTERGRUND))
             .show(ui, |ui| self.zeichne_canvas(ui, projekt));
 
+        // A-Taste des Toughpad (als MESS_TASTE konfiguriert) löst die Messung aus, solange kein Dialog offen ist
+        if self.dialog.is_none() && self.neupunkt_modus && self.mess_taste {
+            if self.getrennt_messung.is_some() {
+                self.uebernimm_getrennte_messung(projekt, geraet);
+            } else {
+                self.messen_geklickt(geraet);
+            }
+        }
+
         self.zeichne_dialog(ui.ctx().clone(), projekt, geraet);
         self.zeichne_auswahl_frage(&ui.ctx().clone());
+        self.mess_frame_ms = glaette(self.mess_frame_ms, frame_start.elapsed().as_secs_f32() * MS_JE_S);
     }
 
     // ── Toolbar ───────────────────────────────────────────────────────────────
@@ -1084,14 +1150,7 @@ Stationierung", Color32::from_rgb(42, 130, 65), Color32::from_rgb(28, 100, 45), 
             parse_zahl(text).unwrap_or(0.0).abs() > EXZ_INFO_GRENZE_M
         };
         let (fill, textfarbe) = if grosse_exz { (EXZ_GROSS_HINTERGRUND, Color32::BLACK) } else { (FELD_FARBE, Color32::WHITE) };
-        let text = match art {
-            FeldArt::Code => &mut self.txt_code,
-            FeldArt::PunktNr => &mut self.txt_punkt_nr,
-            FeldArt::Zielhoehe => &mut self.txt_zielhoehe,
-            FeldArt::ExzLaengs => &mut self.txt_exz_laengs,
-            FeldArt::ExzQuer => &mut self.txt_exz_quer,
-            FeldArt::Standpunkt => &mut self.txt_standpunkt,
-        };
+        let text = self.feld_text_mut(art);
         let antwort = ui
             .scope(|ui| {
                 ui.visuals_mut().extreme_bg_color = fill;
@@ -1105,7 +1164,23 @@ Stationierung", Color32::from_rgb(42, 130, 65), Color32::from_rgb(28, 100, 45), 
             [label_breite, 24.0],
             egui::Label::new(egui::RichText::new(bezeichnung).strong().size(11.0).color(LABEL_FARBE)),
         );
+        // Auf dem Toughpad: Standpunkt bekommt die volle Tastatur, alle anderen Felder den Ziffernblock
+        if art == FeldArt::Standpunkt {
+            bildschirmtastatur::text_feld(&antwort);
+        }
         antwort
+    }
+
+    /// Text des Toolbar-Feldes.
+    fn feld_text_mut(&mut self, art: FeldArt) -> &mut String {
+        match art {
+            FeldArt::Code => &mut self.txt_code,
+            FeldArt::PunktNr => &mut self.txt_punkt_nr,
+            FeldArt::Zielhoehe => &mut self.txt_zielhoehe,
+            FeldArt::ExzLaengs => &mut self.txt_exz_laengs,
+            FeldArt::ExzQuer => &mut self.txt_exz_quer,
+            FeldArt::Standpunkt => &mut self.txt_standpunkt,
+        }
     }
 
     fn toolbar_feld_mit_projekt(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt, bezeichnung: &str, label_breite: f32, breite: f32) {

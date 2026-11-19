@@ -10,6 +10,7 @@ use eframe::egui::{self, Color32, RichText, Vec2};
 
 use super::geraet::Geraet;
 use crate::daten::projekt::Projekt;
+use crate::gui::bildschirmtastatur;
 use crate::grundlagen::kommunikationslog;
 use crate::tachymeter::modell::{ALLE_MODELLE, Sprache, TachymeterModell};
 use crate::tachymeter::verbindung::{AnalyseTreffer, Zeilenende, analysiere, verfuegbare_ports};
@@ -494,6 +495,7 @@ impl KommunikationAnsicht {
             });
             ui.horizontal(|ui| {
                 let antwort = ui.add(egui::TextEdit::singleline(&mut self.befehl).desired_width(300.0).hint_text("Befehl, z. B. %R1Q,0,0:"));
+                bildschirmtastatur::text_feld(&antwort);
                 let senden = ui.button("Senden").clicked() || (antwort.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 if senden {
                     match geraet.sende(self.befehl.trim()) {

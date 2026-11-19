@@ -192,9 +192,17 @@ impl DxfViewer {
             Some(Dialog::Messdaten(d)) if d.wartet => {
                 d.wartet = false;
                 match &ergebnis {
-                    MessErgebnis::Messung(m) => d.uebernimm_messung(m),
+                    MessErgebnis::Messung(m) => {
+                        d.uebernimm_messung(m);
+                        if m.hz_gon.is_some() && m.v_gon.is_some() && m.schraegstrecke_m.is_some() {
+                            crate::grundlagen::ton::bestaetigung();
+                        } else {
+                            crate::grundlagen::ton::fehler();
+                        }
+                    }
                     MessErgebnis::Fehler(text) => {
                         d.info = format!("Messfehler: {text}");
+                        crate::grundlagen::ton::fehler();
                         d.info_farbe = Some(FARBE_FEHLER);
                     }
                 }
@@ -298,6 +306,10 @@ impl DxfViewer {
                 d.info_farbe = Some(FARBE_FEHLER);
             }
         }
+        // A-Taste des Toughpad löst wie „Messen" die Messung aus
+        if verbunden && !beschaeftigt && !d.wartet && self.mess_taste {
+            messen = true;
+        }
         if messen {
             let zielhoehe = parse_zahl(&d.zielhoehe).unwrap_or(0.0);
             match geraet.starte_messung(zielhoehe) {
@@ -309,6 +321,7 @@ impl DxfViewer {
                 Err(fehler) => {
                     d.info = fehler;
                     d.info_farbe = Some(FARBE_FEHLER);
+                    crate::grundlagen::ton::fehler();
                 }
             }
         }

@@ -5,6 +5,7 @@
 use eframe::egui;
 
 use crate::daten::projekt::Projekt;
+use crate::gui::bildschirmtastatur;
 use crate::daten::rechenparameter::{DXF_GROESSE_BEREICH_MM, DXF_MASSSTAB_BEREICH};
 use crate::rechnen::polar::MassstabModus;
 
@@ -65,7 +66,7 @@ impl RechenparameterAnsicht {
             ui.add(egui::DragValue::new(&mut p.polar_massstab_wert).speed(1e-6).fixed_decimals(6));
             ui.end_row();
             ui.label("Polar: Quelle des Maßstabs");
-            ui.text_edit_singleline(&mut p.polar_massstab_quelle);
+            bildschirmtastatur::text_feld(&ui.text_edit_singleline(&mut p.polar_massstab_quelle));
             ui.end_row();
         });
 
