@@ -102,22 +102,33 @@ mod zeichnen;
 const MESS_TASTE: egui::Key = egui::Key::E;
 const MESS_TASTE_ZEICHEN: &str = "€";
 
-/// Messanzeige (Zeichenzeit, Bildzeit, Bildrate, Objektzahl) links unten in der Zeichenfläche.
-const MESSUNG_ANZEIGEN: bool = true;
-/// Glättung der Messwerte: Anteil des alten Wertes im gleitenden Mittel.
-const MESSUNG_GLAETTUNG: f32 = 0.9;
-/// Bildabstände über dieser Dauer [s] zählen als Leerlauf und gehen nicht in die Bildrate ein.
-const MESSUNG_LEERLAUF_S: f32 = 0.25;
-/// Millisekunden je Sekunde.
-const MS_JE_S: f32 = 1000.0;
-
-/// Gleitender Mittelwert; der erste Wert (alter Wert 0) wird direkt übernommen.
-fn glaette(alt: f32, neu: f32) -> f32 {
-    if alt <= 0.0 { neu } else { MESSUNG_GLAETTUNG * alt + (1.0 - MESSUNG_GLAETTUNG) * neu }
-}
-
-/// Auffrischintervall des Viewers (Zielrichtung, Messablauf).
+/// Auffrischintervall des Viewers (Zielrichtung, Messablauf), solange ein Tachymeter verbunden ist oder misst.
 const REPAINT_INTERVALL: std::time::Duration = std::time::Duration::from_millis(100);
+/// Auffrischintervall ohne Tachymeter (nur noch für Statusmeldungen und Dialoge).
+const REPAINT_INTERVALL_RUHE: std::time::Duration = std::time::Duration::from_millis(1000);
+/// Nach einer Änderung der Ansicht (Zoom, Verschieben) wird so lange vereinfacht gezeichnet, danach folgt das volle Bild.
+const LOD_NACHLAUF: std::time::Duration = std::time::Duration::from_millis(180);
+/// Zuschlag zum Zeichenbereich, damit Symbole und Texte am Rand nicht abgeschnitten werden [px].
+const SICHT_RAND_PX: f64 = 40.0;
+/// Linien, Bögen und Polylinien, die kleiner sind (größte Ausdehnung in px), werden nicht gezeichnet.
+const KLEIN_PX: f64 = 0.8;
+/// Dasselbe während der Bewegung.
+const KLEIN_PX_BEWEGUNG: f64 = 2.5;
+/// Texte unter dieser Höhe [px] werden nicht gezeichnet.
+const TEXT_MIN_PX: f64 = 4.0;
+/// Geschätzte Zeichenbreite im Verhältnis zur Texthöhe (für die Sichtbarkeitsprüfung von Texten).
+const TEXT_BREITE_FAKTOR: f64 = 0.7;
+/// Kleinste Schrifthöhe beim Zeichnen [px] (wie in `DxfEntity::zeichne`).
+const TEXT_MIN_ZEICHEN_PX: f64 = 6.0;
+/// Während der Bewegung werden Polylinienpunkte, die näher als dieser Abstand [px] beieinander liegen, ausgelassen.
+const DUENN_PX: f32 = 2.0;
+/// Weiches Zoomen: Zeitkonstante [s], längster und kürzester Zeitschritt [s] und Abbruchschwelle (ln des Restfaktors).
+const ZOOM_ZEITKONSTANTE_S: f64 = 0.07;
+const ZOOM_DT_MAX_S: f32 = 0.05;
+const ZOOM_DT_MIN_S: f32 = 1.0 / 120.0;
+const ZOOM_ENDE_LOG: f64 = 0.003;
+/// Zulässige relative Abweichung des Maßstabs, bevor eine laufende Zoom-Animation verworfen wird (Maßstab wurde anderswo gesetzt).
+const ZOOM_FREMD_TOLERANZ: f64 = 1e-9;
 
 use zeichnen::{FeldArt, trenner, zeichne_lampe};
 
@@ -166,6 +177,28 @@ struct LoeschZiele {
     feldbuch: Vec<String>,
     neupunkte: Vec<(String, String)>,
     importpunkte: Vec<String>,
+}
+
+/// Zwischengespeicherte Daten der DXF-Zeichnung (einmal je Datei statt je Bild berechnet).
+#[derive(Default)]
+struct ZeichenCache {
+    /// Gültig für den Vec mit dieser Adresse und Länge.
+    schluessel: (usize, usize),
+    bounds: Vec<Rahmen>,
+    farben: Vec<Color32>,
+    /// Indizes der Linien, Bögen, Texte … und der Katasterpunkte (INSERT), in Zeichenreihenfolge.
+    linien: Vec<usize>,
+    inserts: Vec<usize>,
+}
+
+/// Ziel einer weichen Zoom-Animation.
+#[derive(Clone, Copy, Debug)]
+struct ZoomZiel {
+    scale: f64,
+    anker: Pos2,
+    ursprung: Pos2,
+    /// Maßstab nach dem letzten Animationsschritt; weicht er ab, wurde der Zoom anderswo geändert.
+    erwartet: f64,
 }
 
 /// Wunsch des Viewers an das Hauptfenster.
@@ -236,10 +269,14 @@ pub struct DxfViewer {
     txt_punkt_nr: String,
     /// Die A-Taste wurde in diesem Bildaufbau gedrückt.
     mess_taste: bool,
-    /// Messwerte der Zeichenfläche (gleitende Mittel): Zeichenzeit, Bildzeit des Viewers [ms], Bildrate [1/s].
-    mess_zeichnen_ms: f32,
-    mess_frame_ms: f32,
-    mess_fps: f32,
+    /// Zwischenspeicher für Umschließungsrechtecke und Farben der DXF-Zeichnung.
+    zeichen_cache: std::cell::RefCell<ZeichenCache>,
+    /// Bis dahin wird vereinfacht gezeichnet (Ansicht wurde gerade geändert).
+    bewegung_bis: Option<std::time::Instant>,
+    bewegung_aktiv: bool,
+    letzte_ansicht: (f64, [f64; 2]),
+    /// Laufende weiche Zoom-Animation (Mausrad).
+    zoom_ziel: Option<ZoomZiel>,
     /// Zuletzt gemessene Horizontalrichtung der Zielrichtung [gon].
     ziel_hz: Option<f64>,
     /// Zuletzt im Dialog „Messdaten eingeben" verwendeter Code und Zielhöhe.
@@ -312,9 +349,11 @@ impl Default for DxfViewer {
             txt_code: String::new(),
             txt_punkt_nr: String::new(),
             mess_taste: false,
-            mess_zeichnen_ms: 0.0,
-            mess_frame_ms: 0.0,
-            mess_fps: 0.0,
+            zeichen_cache: std::cell::RefCell::new(ZeichenCache::default()),
+            bewegung_bis: None,
+            bewegung_aktiv: false,
+            letzte_ansicht: (0.0, [0.0, 0.0]),
+            zoom_ziel: None,
             ziel_hz: None,
             letzter_code: String::new(),
             letzte_zielhoehe: messdaten_eingabe::STANDARD_ZIELHOEHE.to_string(),
@@ -634,6 +673,7 @@ impl DxfViewer {
             }
         };
         self.entities = entities;
+        *self.zeichen_cache.borrow_mut() = ZeichenCache::default();
         self.auswahl = None;
 
         let index_pfad = Self::punkt_index_pfad(projekt);
@@ -719,7 +759,57 @@ impl DxfViewer {
         self.mitte = [bb.mitte_x(), bb.mitte_y()];
     }
 
+    /// Sofortiger Zoom um einen Bildschirmpunkt (Knöpfe, Zwei-Finger-Geste).
     fn zoom(&mut self, faktor: f64, bildschirm: Pos2, ursprung: Pos2) {
+        self.zoom_ziel = None;
+        self.zoom_sofort(faktor, bildschirm, ursprung);
+    }
+
+    /// Mausrad: setzt nur ein Ziel, der Maßstab gleitet in wenigen Bildern dorthin.
+    fn zoom_animiert(&mut self, faktor: f64, bildschirm: Pos2, ursprung: Pos2) {
+        let max = if self.max_scale > 0.0 { self.max_scale } else { KEIN_MAX_MASSSTAB };
+        let basis = self.zoom_ziel.map_or(self.scale, |z| z.scale);
+        let ziel = (basis * faktor).clamp(MIN_MASSSTAB, max);
+        self.zoom_ziel = Some(ZoomZiel { scale: ziel, anker: bildschirm, ursprung, erwartet: self.scale });
+    }
+
+    /// Ein Schritt der weichen Zoom-Animation; wird in jedem Bild vor dem Zeichnen aufgerufen.
+    fn treibe_zoom_animation(&mut self, ctx: &egui::Context) {
+        let Some(ziel) = self.zoom_ziel else {
+            return;
+        };
+        if ((self.scale - ziel.erwartet) / ziel.erwartet).abs() > ZOOM_FREMD_TOLERANZ {
+            self.zoom_ziel = None;
+            return;
+        }
+        let dt = f64::from(ctx.input(|i| i.unstable_dt).clamp(ZOOM_DT_MIN_S, ZOOM_DT_MAX_S));
+        let anteil = 1.0 - (-dt / ZOOM_ZEITKONSTANTE_S).exp();
+        let rest = ziel.scale / self.scale;
+        if rest.ln().abs() < ZOOM_ENDE_LOG {
+            self.zoom_sofort(rest, ziel.anker, ziel.ursprung);
+            self.zoom_ziel = None;
+        } else {
+            self.zoom_sofort(rest.powf(anteil), ziel.anker, ziel.ursprung);
+            self.zoom_ziel = Some(ZoomZiel { erwartet: self.scale, ..ziel });
+            ctx.request_repaint();
+        }
+    }
+
+    /// Prüft den Zwischenspeicher der DXF-Zeichnung und baut ihn bei Bedarf neu auf.
+    fn pruefe_zeichen_cache(&self) {
+        let schluessel = (self.entities.as_ptr() as usize, self.entities.len());
+        let mut cache = self.zeichen_cache.borrow_mut();
+        if cache.schluessel == schluessel && cache.bounds.len() == self.entities.len() {
+            return;
+        }
+        cache.schluessel = schluessel;
+        cache.bounds = self.entities.iter().map(DxfEntity::bounds).collect();
+        cache.farben = self.entities.iter().map(|e| layer_farbe(&e.layer).or(e.farbe).unwrap_or(STANDARD_LINIE)).collect();
+        cache.linien = (0..self.entities.len()).filter(|&i| !self.entities[i].ist_insert()).collect();
+        cache.inserts = (0..self.entities.len()).filter(|&i| self.entities[i].ist_insert()).collect();
+    }
+
+    fn zoom_sofort(&mut self, faktor: f64, bildschirm: Pos2, ursprung: Pos2) {
         let anker = self.ansicht(ursprung).zu_welt(bildschirm);
         let max = if self.max_scale > 0.0 { self.max_scale } else { KEIN_MAX_MASSSTAB };
         self.scale = (self.scale * faktor).clamp(MIN_MASSSTAB, max);
@@ -834,7 +924,8 @@ impl DxfViewer {
                 self.bediene_geraet(projekt, geraet);
             }
             self.zeichne(ui, projekt, geraet);
-            ui.ctx().request_repaint_after(REPAINT_INTERVALL);
+            let ruhe = !(geraet.ist_verbunden() || geraet.verbindet() || geraet.beschaeftigt());
+            ui.ctx().request_repaint_after(if ruhe { REPAINT_INTERVALL_RUHE } else { REPAINT_INTERVALL });
 
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 if self.ist_auswahl() {
@@ -916,11 +1007,6 @@ impl DxfViewer {
     }
 
     fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt, geraet: &mut Geraet) {
-        let frame_start = std::time::Instant::now();
-        let bildabstand_s = ui.ctx().input(|i| i.unstable_dt);
-        if bildabstand_s > 0.0 && bildabstand_s <= MESSUNG_LEERLAUF_S {
-            self.mess_fps = glaette(self.mess_fps, 1.0 / bildabstand_s);
-        }
         self.mess_taste = Self::nimm_mess_taste(ui.ctx());
         // Fensterhintergrund
         let voll = ui.max_rect();
@@ -969,7 +1055,6 @@ impl DxfViewer {
 
         self.zeichne_dialog(ui.ctx().clone(), projekt, geraet);
         self.zeichne_auswahl_frage(&ui.ctx().clone());
-        self.mess_frame_ms = glaette(self.mess_frame_ms, frame_start.elapsed().as_secs_f32() * MS_JE_S);
     }
 
     // ── Toolbar ───────────────────────────────────────────────────────────────

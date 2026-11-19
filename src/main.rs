@@ -28,6 +28,22 @@ fn fenster_icon() -> Option<eframe::egui::IconData> {
     Some(eframe::egui::IconData { rgba: bild.into_raw(), width, height })
 }
 
+/// Umgebungsvariable, mit der die Grafikschnittstelle von Hand gewählt werden kann (z. B. `dx12`, `vulkan`, `opengl`).
+const UMGEBUNG_GRAFIK: &str = "WGPU_BACKEND";
+
+/// Wählt DirectX 12 (mit OpenGL als Ersatz) statt Vulkan: Der Vulkan-Treiber älterer Intel-Grafik (igvk64.dll) stürzt
+/// beim Start ab, zum Beispiel auf dem Panasonic Toughpad FZ-M1. Eine gesetzte Umgebungsvariable hat Vorrang.
+fn waehle_grafikschnittstelle(options: &mut eframe::NativeOptions) {
+    use eframe::egui_wgpu::WgpuSetup;
+    use eframe::wgpu::Backends;
+    if std::env::var_os(UMGEBUNG_GRAFIK).is_some() {
+        return;
+    }
+    if let WgpuSetup::CreateNew(neu) = &mut options.wgpu_options.wgpu_setup {
+        neu.instance_descriptor.backends = Backends::DX12 | Backends::GL;
+    }
+}
+
 fn main() -> eframe::Result {
     // Installationsmodus der neuen Version nach einem Update: kein Fenster, nur Dateien austauschen und neu starten
     let argumente: Vec<String> = std::env::args().collect();
@@ -39,7 +55,8 @@ fn main() -> eframe::Result {
     if let Some(icon) = fenster_icon() {
         viewport = viewport.with_icon(icon);
     }
-    let options = eframe::NativeOptions { viewport, ..Default::default() };
+    let mut options = eframe::NativeOptions { viewport, ..Default::default() };
+    waehle_grafikschnittstelle(&mut options);
     eframe::run_native(
         WINDOW_TITLE,
         options,

@@ -6,7 +6,9 @@
 # Autor:   Johann Gerner
 
 param(
-    [string]$Ausgabe = "dist"
+    [string]$Ausgabe = "dist",
+    # Zusatz für Testversionen, z. B. "Test1": erscheint in der Versionsanzeige und im Dateinamen (Tag v<Version>-<Zusatz>)
+    [string]$Zusatz = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +18,12 @@ $treffer = Select-String -Path "Cargo.toml" -Pattern '^version\s*=\s*"([^"]+)"' 
 if (-not $treffer) { throw "Die Version wurde in Cargo.toml nicht gefunden." }
 $version = $treffer.Matches[0].Groups[1].Value
 $tag = "v$version"
+if ($Zusatz) {
+    $tag = "v$version-$Zusatz"
+    $env:FELDBUCH_ZUSATZ = $Zusatz
+} else {
+    Remove-Item Env:FELDBUCH_ZUSATZ -ErrorAction SilentlyContinue
+}
 
 Write-Host "Baue Feldbuch-NT $version (Release) ..."
 cargo build --release

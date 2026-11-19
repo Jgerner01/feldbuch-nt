@@ -4,13 +4,33 @@
 
 use super::*;
 
-/// Darstellung der Messanzeige.
-const MESSUNG_FARBE: Color32 = Color32::from_rgb(20, 80, 200);
-const MESSUNG_SCHRIFT: f32 = 12.0;
-const MESSUNG_RAND: f32 = 8.0;
-const MESSUNG_ABSTAND_UEBER_BALKEN: f32 = 36.0;
-const MESSUNG_HINTERGRUND_RAND: f32 = 3.0;
-const MESSUNG_HINTERGRUND_ALPHA: u8 = 200;
+/// Zeichnet eine Entity; Polylinien werden während der Bewegung ausgedünnt (Punkte unter `DUENN_PX` Abstand entfallen).
+fn zeichne_entity(e: &DxfEntity, maler: &egui::Painter, a: &Ansicht, farbe: Color32, breite: f32, bewegung: bool) {
+    if let (true, Art::LwPolyline { punkte, geschlossen }) = (bewegung, &e.art) {
+        let mut pts: Vec<Pos2> = Vec::with_capacity(punkte.len().min(256));
+        for p in punkte {
+            let q = a.zu_bildschirm(p.0, p.1);
+            if pts.last().is_none_or(|l| (q.x - l.x).abs() + (q.y - l.y).abs() >= DUENN_PX) {
+                pts.push(q);
+            }
+        }
+        // Der letzte Punkt bleibt immer erhalten
+        if let Some(l) = punkte.last() {
+            let q = a.zu_bildschirm(l.0, l.1);
+            if pts.last() != Some(&q) {
+                pts.push(q);
+            }
+        }
+        if *geschlossen && pts.len() > 1 {
+            pts.push(pts[0]);
+        }
+        if pts.len() >= 2 {
+            maler.add(egui::Shape::line(pts, Stroke::new(breite, farbe)));
+        }
+        return;
+    }
+    e.zeichne_bildschirm(maler, a, farbe, breite);
+}
 
 /// Eingabefelder der Toolbar.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -498,6 +518,21 @@ impl DxfViewer {
             self.verarbeite_eingabe(ui, &antwort, projekt, ursprung);
         }
 
+        self.treibe_zoom_animation(ui.ctx());
+        // Ändert sich die Ansicht, wird kurz vereinfacht gezeichnet; danach folgt das volle Bild
+        let jetzt = std::time::Instant::now();
+        if self.letzte_ansicht != (self.scale, self.mitte) {
+            self.letzte_ansicht = (self.scale, self.mitte);
+            self.bewegung_bis = Some(jetzt + LOD_NACHLAUF);
+        }
+        self.bewegung_aktiv = self.bewegung_bis.is_some_and(|t| jetzt < t);
+        if self.bewegung_aktiv {
+            ui.ctx().request_repaint_after(LOD_NACHLAUF + std::time::Duration::from_millis(20));
+        }
+        // Während der Bewegung ohne Kantenglättung (halbiert die Zahl der Dreiecke)
+        let glaetten = !self.bewegung_aktiv;
+        ui.ctx().tessellation_options_mut(|o| o.feathering = glaetten);
+
         let maler = maler.with_clip_rect(rect);
         let a = self.ansicht(ursprung);
         let hat_daten = (self.dxf_sichtbar && !self.entities.is_empty())
@@ -515,24 +550,48 @@ impl DxfViewer {
         }
 
         let groesse = rect.size();
-        let zeichen_start = std::time::Instant::now();
-        let gezeichnet = std::cell::Cell::new(0usize);
+        let bewegung = self.bewegung_aktiv;
         let zeichne = |e: &DxfEntity, farbe: Color32, breite: f32, ausgewaehlt: bool| {
+            // Während der Bewegung entfallen Beschriftungen
+            if bewegung && matches!(e.art, Art::Text { .. } | Art::Marker { .. }) {
+                return;
+            }
             if self.ist_zeichenbar(e, ursprung, groesse) {
-                gezeichnet.set(gezeichnet.get() + 1);
                 let (f, b) = if ausgewaehlt { (AUSWAHL_FARBE, 2.0) } else { (farbe, breite) };
-                e.zeichne(&maler, &a, f, b);
+                zeichne_entity(e, &maler, &a, f, b, bewegung);
             }
         };
 
-        let mut gesamt = 0usize;
-        for (e, farbe, auswahl) in self.sichtbare_entities() {
-            gesamt += 1;
-            zeichne(e, farbe, 1.0, auswahl.is_some() && self.auswahl == auswahl);
+        // DXF-Zeichnung: nur Sichtbares, Umschließungsrechtecke und Farben aus dem Zwischenspeicher
+        if self.dxf_sichtbar {
+            self.pruefe_zeichen_cache();
+            let cache = self.zeichen_cache.borrow();
+            let links_oben = a.zu_welt(rect.left_top());
+            let rechts_unten = a.zu_welt(rect.right_bottom());
+            let rand = SICHT_RAND_PX / self.scale;
+            let sicht = Rahmen::neu(links_oben.0 - rand, rechts_unten.1 - rand, rechts_unten.0 + rand, links_oben.1 + rand);
+            let klein_px = if bewegung { KLEIN_PX_BEWEGUNG } else { KLEIN_PX };
+            for (liste, ist_insert) in [(&cache.linien, false), (&cache.inserts, true)] {
+                if ist_insert && !self.punkte_sichtbar {
+                    continue;
+                }
+                for &i in liste {
+                    let e = &self.entities[i];
+                    if !self.entity_im_bild(e, &cache.bounds[i], &sicht, klein_px, bewegung) {
+                        continue;
+                    }
+                    let ausgewaehlt = self.auswahl == Some(Auswahl::Zeichnung(i));
+                    let (f, b) = if ausgewaehlt {
+                        (AUSWAHL_FARBE, 2.0)
+                    } else {
+                        (if ist_insert { STANDARD_LINIE } else { cache.farben[i] }, 1.0)
+                    };
+                    zeichne_entity(e, &maler, &a, f, b, bewegung);
+                }
+            }
         }
-        self.mess_zeichnen_ms = glaette(self.mess_zeichnen_ms, zeichen_start.elapsed().as_secs_f32() * MS_JE_S);
-        if MESSUNG_ANZEIGEN {
-            self.zeichne_messung(&maler, rect, gezeichnet.get(), gesamt);
+        for (e, farbe, auswahl) in self.weitere_entities() {
+            zeichne(e, farbe, 1.0, auswahl.is_some() && self.auswahl == auswahl);
         }
         if self.residuen_sichtbar && !self.ellipsen.is_empty() {
             self.zeichne_ellipsen_massstab(&maler, rect);
@@ -578,21 +637,28 @@ impl DxfViewer {
         }
     }
 
-    /// Messanzeige links unten in blauer Schrift: Zeichenzeit, Bildzeit des Viewers, Bildrate, gezeichnete von allen Objekten.
-    fn zeichne_messung(&self, maler: &egui::Painter, rect: Rect, gezeichnet: usize, gesamt: usize) {
-        let text = format!(
-            "Zeichnen {} ms  |  Bild {} ms  |  {} fps  |  Objekte {gezeichnet}/{gesamt}",
-            f(f64::from(self.mess_zeichnen_ms), 1),
-            f(f64::from(self.mess_frame_ms), 1),
-            f(f64::from(self.mess_fps), 0),
-        );
-        // Über dem Maßstabsbalken der Ellipsen, falls dieser sichtbar ist
-        let balken_sichtbar = self.residuen_sichtbar && !self.ellipsen.is_empty();
-        let unten = rect.bottom() - if balken_sichtbar { MESSUNG_ABSTAND_UEBER_BALKEN } else { MESSUNG_RAND };
-        let galley = maler.layout_no_wrap(text, FontId::monospace(MESSUNG_SCHRIFT), MESSUNG_FARBE);
-        let box_rect = Align2::LEFT_BOTTOM.anchor_size(Pos2::new(rect.left() + MESSUNG_RAND, unten), galley.size());
-        maler.rect_filled(box_rect.expand(MESSUNG_HINTERGRUND_RAND), 2.0, Color32::from_rgba_unmultiplied(255, 255, 255, MESSUNG_HINTERGRUND_ALPHA));
-        maler.galley(box_rect.min, galley, MESSUNG_FARBE);
+    /// Liegt die Entity im sichtbaren Bereich und ist groß genug, um gezeichnet zu werden?
+    fn entity_im_bild(&self, e: &DxfEntity, b: &Rahmen, sicht: &Rahmen, klein_px: f64, bewegung: bool) -> bool {
+        if ![b.min_x, b.min_y, b.max_x, b.max_y].iter().all(|v| v.is_finite()) {
+            return false;
+        }
+        let mut max_x = b.max_x;
+        match &e.art {
+            Art::Text { text, hoehe, .. } => {
+                if bewegung || hoehe * self.scale < TEXT_MIN_PX {
+                    return false;
+                }
+                // Der Text läuft nach rechts über seinen Ankerpunkt hinaus
+                max_x += text.chars().count() as f64 * hoehe.max(TEXT_MIN_ZEICHEN_PX / self.scale) * TEXT_BREITE_FAKTOR;
+            }
+            Art::Line { .. } | Art::Circle { .. } | Art::Arc { .. } | Art::LwPolyline { .. } => {
+                if b.breite().max(b.hoehe()) * self.scale < klein_px {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+        b.min_x <= sicht.max_x && max_x >= sicht.min_x && b.min_y <= sicht.max_y && b.max_y >= sicht.min_y
     }
 
     /// Maßstabsbalken für die Ellipsen-Skalierung (links unten).
@@ -676,7 +742,7 @@ impl DxfViewer {
                 let scroll = ui.input(|i| i.raw.events.iter().filter_map(|e| if let egui::Event::MouseWheel { delta, .. } = e { Some(delta.y) } else { None }).sum::<f32>());
                 if scroll != 0.0 {
                     if let Some(pos) = antwort.hover_pos() {
-                        self.zoom(if scroll > 0.0 { ZOOM_RAD_FAKTOR } else { 1.0 / ZOOM_RAD_FAKTOR }, pos, ursprung);
+                        self.zoom_animiert(if scroll > 0.0 { ZOOM_RAD_FAKTOR } else { 1.0 / ZOOM_RAD_FAKTOR }, pos, ursprung);
                     }
                 }
             }
@@ -726,7 +792,7 @@ impl DxfViewer {
                 if self.residuen_sichtbar && !self.ellipsen.is_empty() {
                     self.setze_ellipsen_skalierung((self.ellipsen_skalierung * faktor).clamp(1e-9, 1e9));
                 } else if let Some(pos) = antwort.hover_pos() {
-                    self.zoom(faktor, pos, ursprung);
+                    self.zoom_animiert(faktor, pos, ursprung);
                 }
             }
         }
@@ -736,7 +802,7 @@ impl DxfViewer {
             let a = self.ansicht(ursprung);
             let (wx, wy) = a.zu_welt(pos);
             self.snap_punkt = None;
-            if self.snap_aktiv && !self.entities.is_empty() {
+            if self.snap_aktiv && !self.entities.is_empty() && !self.bewegung_aktiv {
                 if let Some(treffer) = self.pick((wx, wy)).and_then(|t| self.entity(t)) {
                     self.snap_punkt = Some(treffer.snap_point(wx, wy));
                 }
@@ -1016,6 +1082,7 @@ impl DxfViewer {
                 match antwort {
                     Some(true) => {
                         self.entities.clear();
+                        *self.zeichen_cache.borrow_mut() = ZeichenCache::default();
                         self.marker.clear();
                         self.punkt_index = None;
                         self.dxf_pfad.clear();
@@ -1226,6 +1293,82 @@ fn schoene_balken_mm(roh: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn linie(x1: f64, y1: f64, x2: f64, y2: f64) -> DxfEntity {
+        DxfEntity { layer: "0".into(), farbe: None, art: Art::Line { x1, y1, x2, y2 } }
+    }
+
+    #[test]
+    fn nur_sichtbare_und_ausreichend_grosse_entities_werden_gezeichnet() {
+        let mut v = DxfViewer::default();
+        v.scale = 1.0;
+        let sicht = Rahmen::neu(0.0, 0.0, 100.0, 100.0);
+        let im_bild = linie(10.0, 10.0, 50.0, 20.0);
+        let draussen = linie(500.0, 500.0, 600.0, 520.0);
+        let winzig = linie(10.0, 10.0, 10.2, 10.2);
+        let rahmen = |e: &DxfEntity| e.bounds();
+        assert!(v.entity_im_bild(&im_bild, &rahmen(&im_bild), &sicht, KLEIN_PX, false));
+        assert!(!v.entity_im_bild(&draussen, &rahmen(&draussen), &sicht, KLEIN_PX, false));
+        assert!(!v.entity_im_bild(&winzig, &rahmen(&winzig), &sicht, KLEIN_PX, false));
+        // Eine lange Linie, die den Bildausschnitt kreuzt, bleibt erhalten
+        let quer = linie(-1000.0, 50.0, 1000.0, 50.0);
+        assert!(v.entity_im_bild(&quer, &rahmen(&quer), &sicht, KLEIN_PX, false));
+        // Mittelgroße Linie: normal sichtbar, in der Bewegung entfällt sie
+        let mittel = linie(10.0, 10.0, 11.5, 10.0);
+        assert!(v.entity_im_bild(&mittel, &rahmen(&mittel), &sicht, KLEIN_PX, false));
+        assert!(!v.entity_im_bild(&mittel, &rahmen(&mittel), &sicht, KLEIN_PX_BEWEGUNG, true));
+    }
+
+    #[test]
+    fn texte_haben_mindesthoehe_und_fehlen_in_der_bewegung() {
+        let mut v = DxfViewer::default();
+        v.scale = 10.0;
+        let sicht = Rahmen::neu(0.0, 0.0, 100.0, 100.0);
+        let text = |hoehe: f64| DxfEntity { layer: "0".into(), farbe: None, art: Art::Text { x: 50.0, y: 50.0, hoehe, text: "Haus".into() } };
+        let gross = text(1.0);
+        let klein = text(0.2);
+        assert!(v.entity_im_bild(&gross, &gross.bounds(), &sicht, KLEIN_PX, false));
+        assert!(!v.entity_im_bild(&gross, &gross.bounds(), &sicht, KLEIN_PX, true));
+        assert!(!v.entity_im_bild(&klein, &klein.bounds(), &sicht, KLEIN_PX, false));
+        // Text links neben dem Bild, der in den Ausschnitt hineinragt
+        let ragt_hinein = DxfEntity { layer: "0".into(), farbe: None, art: Art::Text { x: -5.0, y: 50.0, hoehe: 1.0, text: "Langer Text".into() } };
+        let rand_links = Rahmen::neu(-2.0, 0.0, 100.0, 100.0);
+        assert!(v.entity_im_bild(&ragt_hinein, &ragt_hinein.bounds(), &rand_links, KLEIN_PX, false));
+    }
+
+    #[test]
+    fn weiches_zoomen_erreicht_das_ziel_und_haelt_den_ankerpunkt() {
+        let ctx = egui::Context::default();
+        let mut v = DxfViewer::default();
+        v.scale = 2.0;
+        v.mitte = [100.0, 200.0];
+        let (ursprung, maus) = (Pos2::new(400.0, 300.0), Pos2::new(500.0, 250.0));
+        let anker_vorher = v.ansicht(ursprung).zu_welt(maus);
+        v.zoom_animiert(2.0, maus, ursprung);
+        v.zoom_animiert(2.0, maus, ursprung);
+        // Das Ziel addiert sich (4-facher Zoom), erreicht wird es in endlich vielen Bildern
+        let mut schritte = 0;
+        while v.zoom_ziel.is_some() && schritte < 500 {
+            v.treibe_zoom_animation(&ctx);
+            schritte += 1;
+        }
+        assert!(v.zoom_ziel.is_none(), "Animation endet nicht");
+        assert!((v.scale - 8.0).abs() < 1e-6, "Maßstab {}", v.scale);
+        let anker_nachher = v.ansicht(ursprung).zu_welt(maus);
+        assert!((anker_vorher.0 - anker_nachher.0).abs() < 1e-6 && (anker_vorher.1 - anker_nachher.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn fremde_massstabsaenderung_bricht_die_animation_ab() {
+        let ctx = egui::Context::default();
+        let mut v = DxfViewer::default();
+        v.scale = 1.0;
+        v.zoom_animiert(4.0, Pos2::ZERO, Pos2::ZERO);
+        v.scale = 0.5; // z. B. „Alles zeigen"
+        v.treibe_zoom_animation(&ctx);
+        assert!(v.zoom_ziel.is_none());
+        assert_eq!(v.scale, 0.5);
+    }
 
     #[test]
     fn begleit_csv_pfad() {

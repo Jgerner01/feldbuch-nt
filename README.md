@@ -50,3 +50,13 @@ Alternativ lässt sich die Belegung in der Systemsteuerung unter *Hardware und S
   `bildschirmtastatur::text_feld(&antwort)` gekennzeichnet.
 - **Töne:** Nach einer erfolgreichen Messung erklingt ein Bestätigungston (400 Hz und 600 Hz,
   zusammen 0,5 s), nach einer fehlgeschlagenen Messung ein Fehlerton (dreimal 800 Hz, zusammen 0,5 s).
+
+## Grafik und Systemvoraussetzungen
+
+- Die EXE bringt die Windows-Laufzeit (VC++) fest mit und braucht keine Zusatzinstallation.
+- Die Darstellung nutzt standardmäßig **DirectX 12** (OpenGL als Ersatz). Vulkan wird nicht verwendet, weil der
+  Vulkan-Treiber älterer Intel-Grafik (`igvk64.dll`) auf dem Toughpad FZ-M1 beim Start abstürzt.
+- Eine andere Schnittstelle lässt sich über die Umgebungsvariable `WGPU_BACKEND` erzwingen
+  (`dx12`, `vulkan`, `opengl`); sie hat Vorrang vor der Voreinstellung.
+- Beim Zoomen und Verschieben zeichnet der DXF-Viewer kurz vereinfacht (ohne Texte, kleine Objekte entfallen,
+  Polylinien ausgedünnt) und danach wieder vollständig.

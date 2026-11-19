@@ -119,6 +119,13 @@ impl DxfViewer {
                 }
             }
         }
+        out.extend(self.weitere_entities());
+        out
+    }
+
+    /// Alle sichtbaren Entities außer der DXF-Zeichnung (Importpunkte, Overlays, Neupunkte, Residuen, Marker).
+    pub(super) fn weitere_entities(&self) -> Vec<(&DxfEntity, Color32, Option<Auswahl>)> {
+        let mut out = Vec::new();
         for (l, layer) in self
             .import_layer
             .iter()

@@ -138,6 +138,17 @@ pub struct DxfEntity {
     pub art: Art,
 }
 
+/// Kleinste und größte Schriftgröße beim Setzen von Text [px] und Stufenfaktor (verhindert ständig neue Glyphen beim Zoomen).
+const TEXT_MIN_LAYOUT_PX: f32 = 6.0;
+const TEXT_MAX_LAYOUT_PX: f32 = 128.0;
+const TEXT_STUFEN_FAKTOR: f32 = 1.12;
+
+/// Rundet die Schriftgröße auf die nächste Stufe (Faktor 1,12); der Rest wird über die Skalierung ausgeglichen.
+fn schrift_stufe(px: f32) -> f32 {
+    let stufe = (px / TEXT_MIN_LAYOUT_PX).max(1.0).ln() / TEXT_STUFEN_FAKTOR.ln();
+    (TEXT_MIN_LAYOUT_PX * TEXT_STUFEN_FAKTOR.powf(stufe.round())).min(TEXT_MAX_LAYOUT_PX)
+}
+
 fn dist(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
     (ax - bx).hypot(ay - by)
 }
@@ -355,6 +366,15 @@ impl DxfEntity {
 
     /// Zeichnet die Entity. `farbe` und `breite` gelten nur für reine Geometrie.
     pub fn zeichne(&self, maler: &Painter, a: &Ansicht, farbe: Color32, breite: f32) {
+        self.zeichne_intern(maler, a, farbe, breite, false);
+    }
+
+    /// Wie `zeichne`, aber mit gestuften Schriftgrößen (weniger neue Glyphen beim Zoomen); nur für die Bildschirmdarstellung.
+    pub fn zeichne_bildschirm(&self, maler: &Painter, a: &Ansicht, farbe: Color32, breite: f32) {
+        self.zeichne_intern(maler, a, farbe, breite, true);
+    }
+
+    fn zeichne_intern(&self, maler: &Painter, a: &Ansicht, farbe: Color32, breite: f32, schrift_stufen: bool) {
         let stift = Stroke::new(breite, farbe);
         let ts = |x: f64, y: f64| a.zu_bildschirm(x, y);
         match &self.art {
@@ -397,7 +417,7 @@ impl DxfEntity {
             Art::Text { x, y, hoehe, text } => {
                 let px = 6.0_f32.max((hoehe * a.scale) as f32);
                 let anker = ts(*x, *y);
-                let layout_px = px.min(128.0);
+                let layout_px = if schrift_stufen { schrift_stufe(px.min(TEXT_MAX_LAYOUT_PX)) } else { px.min(TEXT_MAX_LAYOUT_PX) };
                 let galley = maler.layout_no_wrap(text.clone(), FontId::proportional(layout_px), farbe);
                 let mut shape = Shape::Text(eframe::egui::epaint::TextShape::new(anker, galley, farbe));
                 let faktor = px / layout_px;
@@ -654,6 +674,20 @@ fn zeichne_lokaler_standpunkt(maler: &Painter, c: Pos2, name: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schriftstufen_liegen_nah_an_der_wunschgroesse() {
+        let halbe_stufe = TEXT_STUFEN_FAKTOR.ln() / 2.0 + 1e-3;
+        let mut px = TEXT_MIN_LAYOUT_PX;
+        while px <= TEXT_MAX_LAYOUT_PX {
+            let stufe = schrift_stufe(px);
+            assert!((px / stufe).ln().abs() <= halbe_stufe, "px {px} → {stufe}");
+            assert!((TEXT_MIN_LAYOUT_PX..=TEXT_MAX_LAYOUT_PX).contains(&stufe));
+            px += 0.7;
+        }
+        // Benachbarte Zoomschritte teilen sich dieselbe Stufe
+        assert_eq!(schrift_stufe(20.0), schrift_stufe(20.4));
+    }
 
     fn linie() -> DxfEntity {
         DxfEntity { layer: "0".into(), farbe: None, art: Art::Line { x1: 0.0, y1: 0.0, x2: 10.0, y2: 0.0 } }
