@@ -50,11 +50,9 @@ pub struct Einstellungen {
     pub transform_typ_index: i32,
 
     pub neupunkt_zaehler: i32,
-    pub stationierung_zaehler: i32,
     pub instrumenten_hoehe: f64,
     pub neupunkte_visible: bool,
     pub residual_visible: bool,
-    pub letzte_standpunkt_nr: String,
     pub letzter_modus_neupunkt: bool,
 
     pub tachymeter_modell: TachymeterModell,
@@ -100,11 +98,9 @@ impl Einstellungen {
             transform_fester_massstab: false,
             transform_typ_index: 0,
             neupunkt_zaehler: 1,
-            stationierung_zaehler: 1,
             instrumenten_hoehe: 0.0,
             neupunkte_visible: true,
             residual_visible: false,
-            letzte_standpunkt_nr: String::new(),
             letzter_modus_neupunkt: true,
             tachymeter_modell: TachymeterModell::Manuell,
             tachymeter_port: String::new(),
@@ -188,8 +184,6 @@ impl Einstellungen {
     /// Legt ein leeres Projekt an und setzt alle projektbezogenen Zähler zurück.
     pub fn neues_leeres_projekt(&mut self, name: &str, verzeichnis: &Path) -> Result<(), String> {
         self.neupunkt_zaehler = 1;
-        self.stationierung_zaehler = 1;
-        self.letzte_standpunkt_nr.clear();
         self.letzter_modus_neupunkt = true;
         self.instrumenten_hoehe = 0.0;
         self.dxf_zoom = DxfZoom::default();
@@ -256,13 +250,9 @@ impl Einstellungen {
         if let Some(n) = text("NeupunktZaehler").and_then(|t| t.parse().ok()) {
             self.neupunkt_zaehler = n;
         }
-        if let Some(n) = text("StationierungZaehler").and_then(|t| t.parse().ok()) {
-            self.stationierung_zaehler = n;
-        }
         self.instrumenten_hoehe = zahl("InstrumentenHoehe");
         self.neupunkte_visible = wahrheit("NeupunkteVisible", true);
         self.residual_visible = wahrheit("ResidualVisible", false);
-        self.letzte_standpunkt_nr = text("LetzteStandpunktNr").unwrap_or("").to_string();
         self.letzter_modus_neupunkt = wahrheit("LetzterModusNeupunkt", true);
 
         // Modell mit Migration alter Namen
@@ -322,11 +312,9 @@ impl Einstellungen {
             ("TonBeiBerechnung", wahr(self.ton_bei_berechnung)),
             ("ErweiterteProtokollierung", wahr(self.erweiterte_protokollierung)),
             ("NeupunktZaehler", self.neupunkt_zaehler.to_string()),
-            ("StationierungZaehler", self.stationierung_zaehler.to_string()),
             ("InstrumentenHoehe", f(self.instrumenten_hoehe, 3)),
             ("NeupunkteVisible", wahr(self.neupunkte_visible)),
             ("ResidualVisible", wahr(self.residual_visible)),
-            ("LetzteStandpunktNr", self.letzte_standpunkt_nr.clone()),
             ("LetzterModusNeupunkt", wahr(self.letzter_modus_neupunkt)),
             ("TachymeterModell", self.tachymeter_modell.name().to_string()),
             ("TachymeterPort", self.tachymeter_port.clone()),

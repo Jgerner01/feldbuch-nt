@@ -232,6 +232,141 @@ pub fn orientierung_aus_einem_ziel(
     })
 }
 
+/// Normiert eine Winkeldifferenz auf −200 … +200 gon.
+fn norm_200(gon: f64) -> f64 {
+    let w = norm_400(gon + VOLLKREIS_GON / 2.0);
+    w - VOLLKREIS_GON / 2.0
+}
+
+/// Umrechnung gon → cc.
+const CC_JE_GON: f64 = 10_000.0;
+/// Umrechnung gon → mgon.
+const MGON_JE_GON: f64 = 1000.0;
+
+/// Stationierung auf einem **bekannten Standpunkt**: Lage (und ggf. Höhe) stehen fest, bestimmt wird die
+/// Orientierung als Mittel über alle aktiven Richtungen. Die Residuen zeigen die Abweichung jedes Ziels vom Mittel
+/// (Winkel und Querabweichung) sowie die Streckendifferenz zur Koordinatenstrecke.
+/// Redundanz = (aktive Richtungen − 1) + aktive Strecken (− 1 bei freiem Maßstab).
+#[allow(clippy::too_many_arguments)]
+pub fn station_bekannter_punkt(
+    r_stand: f64,
+    h_stand: f64,
+    hoehe_stand: f64,
+    ziele: &[StationierungsPunkt],
+    instr_hoehe: f64,
+    aktiv: &crate::daten::projekt::Aktivierung,
+    berechnung_3d: bool,
+    freier_massstab: bool,
+) -> Result<StationierungsErgebnis, String> {
+    let akt = |liste: &[bool], i: usize| liste.get(i).copied().unwrap_or(true);
+    // Orientierungen je Ziel (nur aktive Richtungen mit Abstand zum Standpunkt)
+    let mut o_i: Vec<Option<f64>> = Vec::with_capacity(ziele.len());
+    for (i, z) in ziele.iter().enumerate() {
+        let (d_r, d_h) = (z.r - r_stand, z.h - h_stand);
+        let o = (akt(&aktiv.richtung, i) && d_r.hypot(d_h) >= MIN_ABSTAND_M).then(|| norm_400(d_r.atan2(d_h) / GON2RAD - z.hz));
+        o_i.push(o);
+    }
+    let gueltige: Vec<f64> = o_i.iter().flatten().copied().collect();
+    let Some(&bezug) = gueltige.first() else {
+        return Err("Keine aktive Richtung zu einem Anschlussziel mit Koordinaten.".into());
+    };
+    let o = norm_400(bezug + gueltige.iter().map(|w| norm_200(w - bezug)).sum::<f64>() / gueltige.len() as f64);
+
+    // Maßstab aus den aktiven Strecken (Koordinatenstrecke / gemessene Horizontalstrecke)
+    let strecken: Vec<(usize, f64, f64)> = ziele
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| akt(&aktiv.strecke, *i))
+        .map(|(i, z)| (i, (z.r - r_stand).hypot(z.h - h_stand), z.strecke * (z.v * GON2RAD).sin()))
+        .filter(|(_, dist, dh)| *dist >= MIN_ABSTAND_M && *dh > MIN_ABSTAND_M)
+        .collect();
+    let massstab = if freier_massstab && !strecken.is_empty() { strecken.iter().map(|(_, d, s)| d / s).sum::<f64>() / strecken.len() as f64 } else { 1.0 };
+
+    // Höhe: bekannt, sonst Mittel aus den aktiven Höhenzielen
+    let hoehe_aus_ziel = |z: &StationierungsPunkt| z.hoehe + z.zielhoehe - instr_hoehe - z.strecke * (z.v * GON2RAD).cos();
+    let hoehen_ziele: Vec<usize> = (0..ziele.len()).filter(|i| berechnung_3d && akt(&aktiv.hoehe, *i) && ziele[*i].hoehe.is_finite()).collect();
+    let hoehe = if !berechnung_3d {
+        0.0
+    } else if hoehe_stand.is_finite() && hoehe_stand != 0.0 {
+        hoehe_stand
+    } else if !hoehen_ziele.is_empty() {
+        hoehen_ziele.iter().map(|i| hoehe_aus_ziel(&ziele[*i])).sum::<f64>() / hoehen_ziele.len() as f64
+    } else {
+        0.0
+    };
+
+    let mut residuen = Vec::with_capacity(ziele.len());
+    let mut summe_quer2 = 0.0;
+    for (i, z) in ziele.iter().enumerate() {
+        let dist = (z.r - r_stand).hypot(z.h - h_stand);
+        let dh = z.strecke * (z.v * GON2RAD).sin();
+        let v_winkel = o_i[i].map(|oi| norm_200(o - oi));
+        if let Some(v) = v_winkel {
+            summe_quer2 += (v * GON2RAD * dist * MM_PRO_M).powi(2);
+        }
+        let strecke_aktiv = akt(&aktiv.strecke, i) && dh > MIN_ABSTAND_M;
+        let hoehe_aktiv = hoehen_ziele.contains(&i) && hoehe != 0.0;
+        residuen.push(PunktResiduum {
+            punkt_nr: z.punkt_nr.clone(),
+            strecke_h: dh,
+            v_winkel_cc: v_winkel.map_or(f64::NAN, |v| v * CC_JE_GON),
+            v_quer_mm: v_winkel.map_or(f64::NAN, |v| v * GON2RAD * dist * MM_PRO_M),
+            v_strecke_mm: if strecke_aktiv { (dist - massstab * dh) * MM_PRO_M } else { f64::NAN },
+            v_hoehe_mm: if hoehe_aktiv { (hoehe - hoehe_aus_ziel(z)) * MM_PRO_M } else { f64::NAN },
+            richtung_aktiv: v_winkel.is_some(),
+            strecke_aktiv,
+            hoehe_aktiv,
+            gewicht_richtung: f64::NAN,
+        });
+    }
+    let n_dir = gueltige.len() as i32;
+    let redundanz = (n_dir - 1) + strecken.len() as i32 - i32::from(freier_massstab && !strecken.is_empty());
+    let s0_mm = if n_dir > 1 { (summe_quer2 / f64::from(n_dir - 1)).sqrt() } else { 0.0 };
+    Ok(StationierungsErgebnis {
+        r: r_stand,
+        h: h_stand,
+        hoehe,
+        orientierung_gon: o,
+        massstab,
+        s0_mm,
+        redundanz: redundanz.max(0),
+        iterationen: 0,
+        konvergiert: true,
+        berechnung_3d: berechnung_3d && hoehe != 0.0,
+        ist_lokales_system: false,
+        warnung_hoehe: String::new(),
+        residuen,
+        konfidenz: None,
+    })
+}
+
+/// Ergebnis einer Orientierungskontrolle (Messung zu einem Anschlusspunkt bei bestehender Stationierung).
+#[derive(Clone, Debug, PartialEq)]
+pub struct KontrollErgebnis {
+    /// Richtungsabweichung gemessen − Soll [mgon].
+    pub d_hz_mgon: f64,
+    /// Querabweichung im Zielpunkt [mm].
+    pub quer_mm: f64,
+    /// Streckenabweichung (gemessen × Maßstab − Soll) [mm]; NaN ohne Strecke.
+    pub laengs_mm: f64,
+    /// Koordinatenstrecke Standpunkt → Ziel [m].
+    pub strecke_soll_m: f64,
+}
+
+/// Vergleicht eine Kontrollmessung mit der Stationierung. `None`, wenn Standpunkt und Ziel zusammenfallen.
+pub fn kontrolle(station: &StationierungsErgebnis, ziel_r: f64, ziel_h: f64, hz: f64, v: f64, strecke: f64) -> Option<KontrollErgebnis> {
+    let (d_r, d_h) = (ziel_r - station.r, ziel_h - station.h);
+    let dist = d_r.hypot(d_h);
+    if dist < MIN_ABSTAND_M {
+        return None;
+    }
+    let t = norm_400(d_r.atan2(d_h) / GON2RAD);
+    let d_hz = norm_200(norm_400(hz + station.orientierung_gon) - t);
+    let m = if station.massstab > 0.0 { station.massstab } else { 1.0 };
+    let laengs_mm = if strecke > 0.0 { (m * strecke * (v * GON2RAD).sin() - dist) * MM_PRO_M } else { f64::NAN };
+    Some(KontrollErgebnis { d_hz_mgon: d_hz * MGON_JE_GON, quer_mm: d_hz * GON2RAD * dist * MM_PRO_M, laengs_mm, strecke_soll_m: dist })
+}
+
 /// Standpunkthöhe: aus dem Anschlussziel, sonst die bekannte Höhe des Standpunkts.
 fn standpunkt_hoehe(aus_ziel: bool, z: &StationierungsPunkt, ih: f64, hoehe_stand: f64, berechnung_3d: bool) -> f64 {
     if !berechnung_3d {
@@ -296,6 +431,44 @@ mod tests {
         assert_eq!(ermittle_massstab(&p, None).wert, 1.0);
         let lokal = StationierungsErgebnis { ist_lokales_system: true, massstab: 0.9997, ..StationierungsErgebnis::default() };
         assert_eq!(ermittle_massstab(&p, Some(&lokal)).wert, 1.0);
+    }
+
+    fn ziel(nr: &str, r: f64, h: f64, hz: f64, strecke: f64) -> StationierungsPunkt {
+        StationierungsPunkt { punkt_nr: nr.into(), r, h, hoehe: 0.0, hz, v: 100.0, strecke, zielhoehe: 0.0 }
+    }
+
+    #[test]
+    fn bekannter_standpunkt_mittelt_die_orientierung() {
+        use crate::daten::projekt::Aktivierung;
+        // Standpunkt (0,0), wahre Orientierung 50 gon; Ziel B mit +2 mgon Richtungsfehler
+        let ziele = vec![ziel("A", 0.0, 100.0, 350.0, 100.0), ziel("B", 100.0, 0.0, 50.002, 100.0)];
+        let akt = Aktivierung { richtung: vec![true; 2], strecke: vec![true; 2], hoehe: vec![false; 2] };
+        let e = station_bekannter_punkt(0.0, 0.0, f64::NAN, &ziele, 1.5, &akt, false, false).unwrap();
+        assert!((e.orientierung_gon - 49.999).abs() < 1e-9);
+        assert!((e.residuen[0].v_winkel_cc + 10.0).abs() < 1e-6);
+        assert!((e.residuen[1].v_winkel_cc - 10.0).abs() < 1e-6);
+        assert_eq!(e.redundanz, 3);
+        assert!(e.konvergiert);
+        // Ein Ziel genügt, ohne Kontrolle
+        let e = station_bekannter_punkt(0.0, 0.0, f64::NAN, &ziele[..1], 1.5, &Aktivierung { richtung: vec![true], strecke: vec![false], hoehe: vec![false] }, false, false).unwrap();
+        assert!((e.orientierung_gon - 50.0).abs() < 1e-9);
+        assert_eq!(e.redundanz, 0);
+        // Orientierungen beiderseits von 0 gon werden richtig gemittelt
+        let um_null = vec![ziel("A", 0.0, 100.0, 0.001, 100.0), ziel("B", 100.0, 0.0, 99.999, 100.0)];
+        let e = station_bekannter_punkt(0.0, 0.0, f64::NAN, &um_null, 0.0, &Aktivierung { richtung: vec![true; 2], strecke: vec![false; 2], hoehe: vec![false; 2] }, false, false).unwrap();
+        assert!(e.orientierung_gon.abs() < 1e-9 || (e.orientierung_gon - 400.0).abs() < 1e-9);
+        assert!(station_bekannter_punkt(0.0, 0.0, 0.0, &ziele, 0.0, &Aktivierung { richtung: vec![false; 2], ..akt }, false, false).is_err());
+    }
+
+    #[test]
+    fn kontrolle_zeigt_abweichungen() {
+        let st = StationierungsErgebnis { r: 0.0, h: 0.0, orientierung_gon: 10.0, massstab: 1.0, ..StationierungsErgebnis::default() };
+        // Ziel genau östlich (t = 100 gon): erwartetes Hz = 90 gon; gemessen 90.001 gon und 100.004 m
+        let k = kontrolle(&st, 100.0, 0.0, 90.001, 100.0, 100.004).unwrap();
+        assert!((k.d_hz_mgon - 1.0).abs() < 1e-6);
+        assert!((k.quer_mm - 1.0 * GON2RAD / 1000.0 * 100.0 * 1000.0).abs() < 1e-6);
+        assert!((k.laengs_mm - 4.0).abs() < 1e-6);
+        assert!(kontrolle(&st, 0.0, 0.0, 0.0, 100.0, 1.0).is_none());
     }
 
     #[test]

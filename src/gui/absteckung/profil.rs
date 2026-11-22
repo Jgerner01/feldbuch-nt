@@ -4,14 +4,14 @@
 
 use eframe::egui::{self, Color32, RichText, Vec2};
 
-use super::gemeinsam::{PLAN_HOEHE, PlanDaten, ProtokollZiel, lese_zahl, zeichne_lageplan, zeige_standpunkt};
+use super::gemeinsam::{PLAN_HOEHE, PlanDaten, ProtokollZiel, lese_zahl, zeichne_lageplan, standpunkt_fuer_absteckung, zeige_standpunkt};
 use crate::daten::projekt::Projekt;
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::gui::tabelle::Raster;
 use crate::protokolle::absteckung::{AbsteckProtokoll, ProfilEingabe, profilabsteckung};
 use crate::protokolle::signiert;
 use crate::rechnen::absteckung::{
-    AbsteckPunkt, ProfilAbsteckPunkt, StandpunktInfo, aktualisiere_profilpunkt, berechne_profilpunkte, lade_standpunkt,
+    AbsteckPunkt, ProfilAbsteckPunkt, StandpunktInfo, aktualisiere_profilpunkt, berechne_profilpunkte,
 };
 
 /// Spaltenbreiten: Station, R, H, H_Plan, H_Gelände, ΔH, Böschung, Hz, s.
@@ -37,6 +37,8 @@ struct Hoehen {
 /// Formular der Profilabsteckung.
 pub struct ProfilAnsicht {
     station: Option<StandpunktInfo>,
+    /// Standpunkt aus dem Rückwärtsschnitt statt aus der aktiven Aufstellung.
+    rueckwaerts: bool,
     r_a: String,
     h_a: String,
     r_e: String,
@@ -64,7 +66,8 @@ impl Drop for ProfilAnsicht {
 impl ProfilAnsicht {
     pub fn neu(projekt: &Projekt) -> Self {
         Self {
-            station: lade_standpunkt(&projekt.projektdaten),
+            station: standpunkt_fuer_absteckung(projekt, false),
+            rueckwaerts: false,
             r_a: String::new(),
             h_a: String::new(),
             r_e: String::new(),
@@ -99,7 +102,7 @@ impl ProfilAnsicht {
 
     /// Erzeugt die Profilpunkte; vorhandene Planhöhen bleiben erhalten.
     fn generiere(&mut self, projekt: &Projekt) {
-        self.station = lade_standpunkt(&projekt.projektdaten);
+        self.station = standpunkt_fuer_absteckung(projekt, self.rueckwaerts);
         self.ziel.aktualisiere(projekt);
         match self.rechne() {
             Ok(()) => self.meldung.clear(),
@@ -162,7 +165,9 @@ impl ProfilAnsicht {
 
     pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &Projekt) {
         ui.heading("Profilabsteckung");
-        zeige_standpunkt(ui, self.station.as_ref());
+        if zeige_standpunkt(ui, projekt, self.station.as_ref(), &mut self.rueckwaerts) {
+            self.station = standpunkt_fuer_absteckung(projekt, self.rueckwaerts);
+        }
         ui.add_space(4.0);
         egui::Grid::new("profil_eingabe").num_columns(8).spacing([8.0, 4.0]).show(ui, |ui| {
             for (name, text) in [("R_A [m]:", &mut self.r_a), ("H_A [m]:", &mut self.h_a), ("R_E [m]:", &mut self.r_e), ("H_E [m]:", &mut self.h_e)] {
@@ -248,6 +253,7 @@ mod tests {
     fn ansicht() -> ProfilAnsicht {
         ProfilAnsicht {
             station: None,
+            rueckwaerts: false,
             r_a: "0".into(),
             h_a: "0".into(),
             r_e: "0".into(),

@@ -92,16 +92,18 @@ pub fn norm400(gon: f64) -> f64 {
     ((gon % VOLLKREIS) + VOLLKREIS) % VOLLKREIS
 }
 
-/// Lädt den Standpunkt aus den Projektdaten: zuerst Rückwärtsschnitt, dann Freie Stationierung.
-pub fn lade_standpunkt(projektdaten: &ProjektdatenManager) -> Option<StandpunktInfo> {
-    for kategorie in ["Rückwärtschnitt", "Freie Stationierung"] {
-        let zahl = |parameter: &str| projektdaten.get_value(kategorie, parameter).and_then(parse_zahl);
-        if let (Some(r), Some(h), Some(z)) = (zahl("R [m]"), zahl("H [m]"), zahl("Orientierung [gon]")) {
-            let punkt_nr = projektdaten.get_value(kategorie, "Standpunkt").unwrap_or("?").to_string();
-            return Some(StandpunktInfo { punkt_nr, r, h, orientierung_gon: z });
-        }
-    }
-    None
+/// Kategorie des Rückwärtsschnitts in den Projektdaten.
+pub const KATEGORIE_RUECKWAERTS: &str = "Rückwärtschnitt";
+
+/// Lädt einen Standpunkt aus einer Kategorie der Projektdaten (z. B. Rückwärtsschnitt).
+/// Die aktive Aufstellung hat in der Absteckung Vorrang; der Rückwärtsschnitt wird nur ausdrücklich gewählt.
+pub fn lade_standpunkt_aus(projektdaten: &ProjektdatenManager, kategorie: &str) -> Option<StandpunktInfo> {
+    let zahl = |parameter: &str| projektdaten.get_value(kategorie, parameter).and_then(parse_zahl);
+    let (Some(r), Some(h), Some(z)) = (zahl("R [m]"), zahl("H [m]"), zahl("Orientierung [gon]")) else {
+        return None;
+    };
+    let punkt_nr = projektdaten.get_value(kategorie, "Standpunkt").unwrap_or("?").to_string();
+    Some(StandpunktInfo { punkt_nr, r, h, orientierung_gon: z })
 }
 
 /// Richtung und Strecke vom Standpunkt zu einem Sollpunkt: (Hz [gon], s [m]).
@@ -647,18 +649,14 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut pd = ProjektdatenManager::initialisiere(&dir.join("Projektdaten.csv"));
-        assert!(lade_standpunkt(&pd).is_none());
-        pd.set_value("Freie Stationierung", "Standpunkt", "S7").unwrap();
-        pd.set_value("Freie Stationierung", "R [m]", "100.5").unwrap();
-        pd.set_value("Freie Stationierung", "H [m]", "200,25").unwrap();
-        pd.set_value("Freie Stationierung", "Orientierung [gon]", "12.3456").unwrap();
-        let st = lade_standpunkt(&pd).unwrap();
+        assert!(lade_standpunkt_aus(&pd, KATEGORIE_RUECKWAERTS).is_none());
+        pd.set_value(KATEGORIE_RUECKWAERTS, "Standpunkt", "S7").unwrap();
+        pd.set_value(KATEGORIE_RUECKWAERTS, "R [m]", "100.5").unwrap();
+        pd.set_value(KATEGORIE_RUECKWAERTS, "H [m]", "200,25").unwrap();
+        pd.set_value(KATEGORIE_RUECKWAERTS, "Orientierung [gon]", "12.3456").unwrap();
+        let st = lade_standpunkt_aus(&pd, KATEGORIE_RUECKWAERTS).unwrap();
         assert_eq!(st, StandpunktInfo { punkt_nr: "S7".into(), r: 100.5, h: 200.25, orientierung_gon: 12.3456 });
-        // Rückwärtsschnitt hat Vorrang
-        pd.set_value("Rückwärtschnitt", "R [m]", "1").unwrap();
-        pd.set_value("Rückwärtschnitt", "H [m]", "2").unwrap();
-        pd.set_value("Rückwärtschnitt", "Orientierung [gon]", "3").unwrap();
-        assert_eq!(lade_standpunkt(&pd).unwrap().punkt_nr, "?");
+        assert!(lade_standpunkt_aus(&pd, "Freie Stationierung").is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 }

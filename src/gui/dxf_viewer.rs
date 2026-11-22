@@ -50,6 +50,8 @@ const MODUS_KNOPF_BREITE: f32 = 100.0;
 const MODUS_KNOPF_ABSTAND: f32 = 12.0;
 /// Breite des Messen-Knopfs (bzw. „Übernehmen“).
 const MESSEN_KNOPF_BREITE: f32 = 80.0;
+/// Breite der Knöpfe „Neuer Stp" und „Kontrolle".
+const NEUER_STP_BREITE: f32 = 52.0;
 /// Breite des Umschalters für die getrennte Messung.
 const GETRENNT_KNOPF_BREITE: f32 = 54.0;
 const STATUS_LABEL_BREITE: f32 = 480.0;
@@ -95,6 +97,7 @@ mod export;
 mod pdf_export;
 mod messdaten_eingabe;
 mod messen;
+mod standpunkt;
 mod zeichnen;
 
 /// A-Taste des Panasonic Toughpad (Panasonic-Einstellungen → Tablet-Tasten): Strg+Alt+E, löst „Messen" aus.
@@ -170,6 +173,14 @@ enum Dialog {
     Prisma { auswahl: Option<usize>, konstante: String },
     DxfExport { massstab: String, symbol: String, text: String },
     Messdaten(Box<messdaten_eingabe::MessdatenEingabe>),
+    /// Dialog „Neuer Stp" (neu, fortsetzen, umbenennen).
+    Standpunkt(Box<crate::gui::standpunkt_dialog::StandpunktDialog>),
+    /// Rückfrage zur Korrektur der Instrumentenhöhe der aktiven Aufstellung.
+    IhKorrektur { alt: f64, neu: f64 },
+    /// Rückfrage beim Öffnen: gilt eine ältere Aufstellung noch?
+    Aufstellungspruefung { text: String },
+    /// Orientierungskontrolle auf einen Anschlusspunkt.
+    Kontrolle(Box<standpunkt::KontrollDialog>),
 }
 
 /// Zu löschende Punkte.
@@ -260,7 +271,8 @@ pub struct DxfViewer {
     /// Strecke der getrennten Messung, bis Hz/V übernommen werden.
     getrennt_messung: Option<crate::tachymeter::messung::TachymeterMessung>,
     neupunkt_zaehler: i32,
-    txt_standpunkt: String,
+    /// Zielstrahlen vom Standpunkt zu den Anschlusspunkten anzeigen.
+    zielstrahlen_sichtbar: bool,
     txt_instr_hoehe: String,
     txt_zielhoehe: String,
     txt_exz_laengs: String,
@@ -341,7 +353,7 @@ impl Default for DxfViewer {
             gesehene_station_version: 0,
             getrennt_messung: None,
             neupunkt_zaehler: 1,
-            txt_standpunkt: String::new(),
+            zielstrahlen_sichtbar: true,
             txt_instr_hoehe: "0.000".to_string(),
             txt_zielhoehe: "0.000".to_string(),
             txt_exz_laengs: "0.000".to_string(),
@@ -416,18 +428,9 @@ impl DxfViewer {
         self.neupunkt_zaehler = projekt.einstellungen.neupunkt_zaehler;
 
         projekt.lade_aktuellen_standpunkt();
-        if projekt.station.instrumenten_hoehe > 0.0 {
-            self.txt_instr_hoehe = f(projekt.station.instrumenten_hoehe, 3);
-        }
-        if !projekt.station.standpunkt_nr.is_empty() {
-            self.txt_standpunkt = projekt.station.standpunkt_nr.clone();
-        } else if !projekt.einstellungen.letzte_standpunkt_nr.is_empty() {
-            self.txt_standpunkt = projekt.einstellungen.letzte_standpunkt_nr.clone();
-        } else {
-            self.txt_standpunkt = format!("STP{}", projekt.einstellungen.stationierung_zaehler);
-            projekt.einstellungen.letzte_standpunkt_nr = self.txt_standpunkt.clone();
-            let _ = projekt.einstellungen.speichern();
-        }
+        let ih = if projekt.hat_aktive_aufstellung() { projekt.station.instrumenten_hoehe } else { projekt.einstellungen.instrumenten_hoehe };
+        self.txt_instr_hoehe = f(ih, 3);
+        self.gesehene_station_version = projekt.station_version;
 
         self.snap_aktiv = projekt.projektdaten.get_value("Einstellungen", "Snap") != Some("Inaktiv");
         self.punkte_sichtbar = projekt.projektdaten.get_value("Einstellungen", "Katasterpunkte") != Some("Inaktiv");
@@ -449,6 +452,7 @@ impl DxfViewer {
 
         self.neupunkt_modus = projekt.hat_gueltige_station() && projekt.einstellungen.letzter_modus_neupunkt;
         self.aktualisiere_lokales_system(projekt);
+        self.pruefe_aufstellung_beim_start(projekt);
         if !self.lokales_system
             && !projekt.einstellungen.hat_dxf_datei()
             && (!self.overlay.is_empty() || !self.import_layer.is_empty() || !self.neupunkte.is_empty())
@@ -468,7 +472,7 @@ impl DxfViewer {
         if self.lokales_system {
             self.overlay.push(DxfEntity::overlay(
                 "Standpunkt",
-                Art::LokalerStandpunkt { name: self.txt_standpunkt.trim().to_string() },
+                Art::LokalerStandpunkt { name: projekt.station.standpunkt_nr.clone() },
             ));
         }
     }
@@ -955,10 +959,7 @@ impl DxfViewer {
 
     fn bei_aktivierung(&mut self, projekt: &mut Projekt) {
         projekt.lade_aktuellen_standpunkt();
-        self.aktualisiere_lokales_system(projekt);
-        self.baue_overlay(projekt);
-        self.baue_neupunkte_overlay(projekt);
-        self.baue_qualitaets_overlay(projekt);
+        self.nach_standpunktwechsel(projekt);
     }
 
     /// Baut Residuen und Ellipsen aus der aktuellen Stationierung neu auf (oder leert sie, wenn es keine gibt).
@@ -1049,7 +1050,7 @@ impl DxfViewer {
             if self.getrennt_messung.is_some() {
                 self.uebernimm_getrennte_messung(projekt, geraet);
             } else {
-                self.messen_geklickt(geraet);
+                self.messen_geklickt(projekt, geraet);
             }
         }
 
@@ -1094,7 +1095,7 @@ impl DxfViewer {
                     if uebernehmen {
                         self.uebernimm_getrennte_messung(projekt, geraet);
                     } else {
-                        self.messen_geklickt(geraet);
+                        self.messen_geklickt(projekt, geraet);
                     }
                 }
                 ui.add_space(4.0);
@@ -1110,25 +1111,35 @@ auswählen").strong().size(11.0).color(Color32::from_rgb(255, 190, 100))),
             ui.add_space(6.0);
             trenner(ui);
             ui.add_space(4.0);
-            if self.toolbar_feld(ui, "SP", 24.0, 64.0, FeldArt::Standpunkt).lost_focus() {
-                self.standpunkt_verlassen(projekt);
-            }
+            // Instrumentenhöhe der aktiven Aufstellung (Korrektur mit Rückfrage); Standpunkt und Qualität stehen im Infofeld
             self.toolbar_feld_mit_projekt(ui, projekt, "IH", 22.0, 58.0);
-            ui.add_space(4.0);
-            let (farbe, tooltip, info) = self.signal(projekt);
-            ui.add_sized(
-                [60.0, 20.0],
-                egui::Label::new(egui::RichText::new(info).monospace().size(11.0).color(Color32::from_rgb(200, 220, 255))),
-            );
-            let (rect, antwort) = ui.allocate_exact_size(Vec2::splat(26.0), Sense::hover());
-            antwort.on_hover_text(tooltip);
-            zeichne_lampe(ui, rect, farbe);
             ui.add_space(6.0);
             trenner(ui);
 
-            // Links (feste Positionen): Prisma, EDM, Laser, PDF
+            // Links (feste Positionen): Neuer Stp, Kontrolle, Prisma, EDM, Laser, PDF, DXF, Modus
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_space(4.0);
+                let neuer_stp = egui::Button::new(RichText::new("Neuer\nStp").strong().size(11.0).color(Color32::WHITE))
+                    .fill(standpunkt::NEUER_STP_FARBE)
+                    .stroke(Stroke::new(1.0, standpunkt::NEUER_STP_RAND))
+                    .min_size(Vec2::new(NEUER_STP_BREITE, KNOPF_GROESSE));
+                if ui.add(neuer_stp).on_hover_text("Neuen Standpunkt anlegen, vorhandenen fortsetzen oder umbenennen").clicked() {
+                    self.oeffne_standpunkt_dialog(projekt, geraet);
+                }
+                let kontrolle_moeglich = projekt.hat_gueltige_station() && !self.lokales_system;
+                let kontrolle = egui::Button::new(RichText::new("Kon-\ntrolle").strong().size(11.0).color(Color32::WHITE))
+                    .fill(TOOLBAR_KNOPF)
+                    .stroke(Stroke::new(1.0, TOOLBAR_KNOPF_RAND))
+                    .min_size(Vec2::new(NEUER_STP_BREITE, KNOPF_GROESSE));
+                if ui
+                    .add_enabled(kontrolle_moeglich, kontrolle)
+                    .on_hover_text("Orientierungskontrolle: einen Anschlusspunkt anzielen und messen")
+                    .on_disabled_hover_text("Erst nach einer gültigen Stationierung möglich")
+                    .clicked()
+                {
+                    self.oeffne_kontrolle(projekt);
+                }
+                ui.add_space(6.0);
                 let prisma = egui::Button::image(egui::Image::new(egui::include_image!("../../icons/toolbar_prisma.png")).fit_to_exact_size(Vec2::splat(24.0)))
                     .fill(TOOLBAR_KNOPF)
                     .stroke(Stroke::new(1.0, TOOLBAR_KNOPF_RAND))
@@ -1249,8 +1260,8 @@ Stationierung", Color32::from_rgb(42, 130, 65), Color32::from_rgb(28, 100, 45), 
             [label_breite, 24.0],
             egui::Label::new(egui::RichText::new(bezeichnung).strong().size(11.0).color(LABEL_FARBE)),
         );
-        // Auf dem Toughpad: Standpunkt bekommt die volle Tastatur, alle anderen Felder den Ziffernblock
-        if art == FeldArt::Standpunkt {
+        // Auf dem Toughpad: der Code bekommt die volle Tastatur, alle anderen Felder den Ziffernblock
+        if art == FeldArt::Code {
             bildschirmtastatur::text_feld(&antwort);
         }
         antwort
@@ -1264,7 +1275,6 @@ Stationierung", Color32::from_rgb(42, 130, 65), Color32::from_rgb(28, 100, 45), 
             FeldArt::Zielhoehe => &mut self.txt_zielhoehe,
             FeldArt::ExzLaengs => &mut self.txt_exz_laengs,
             FeldArt::ExzQuer => &mut self.txt_exz_quer,
-            FeldArt::Standpunkt => &mut self.txt_standpunkt,
         }
     }
 

@@ -9,6 +9,7 @@ use eframe::egui::{self, Align, Color32, Layout, RichText, Vec2};
 
 use super::polarpunkte::{ist_gruen, wert_zelle};
 use super::rechenparameter_ansicht::RechenparameterAnsicht;
+use super::standpunkt_dialog::{self, Ergebnis as DialogErgebnis, StandpunktDialog};
 use super::stationierungs_hinweis;
 use super::tabelle::Raster;
 use crate::daten::modelle::{StationierungsErgebnis, StationierungsPunkt, jetzt};
@@ -17,7 +18,7 @@ use crate::daten::stationierung_csv;
 use crate::grundlagen::format::{de, f, parse_zahl};
 use crate::grundlagen::{fehler_log, pfade, protokoll};
 use crate::protokolle::{ausgabeverzeichnis, letztes_protokoll, oeffne, schreibe_fuer_projekt, stationierung};
-use crate::rechnen::freie_stationierung::{self, Optionen};
+
 use crate::rechnen::neupunkt::{ist_verwendbar, pruefe_station};
 
 /// Anzahl der Tabellenzeilen = Messzeilen (Mehrfachmessungen derselben Anschlusspunkte sind möglich).
@@ -53,8 +54,6 @@ const IH_STELLEN: usize = 3;
 const MUSTER_DATEI: &str = "Muster.csv";
 /// Dateinamenspräfix der Berechnungsprotokolle.
 const PROTOKOLL_PRAEFIX: &str = "FreieStationierung";
-/// Präfix automatisch vergebener Standpunktnummern.
-const STANDPUNKT_PRAEFIX: &str = "STP";
 
 /// Farben und Maße der Originalversion.
 const FARBE_AUTO_MATCH_HINTERGRUND: Color32 = Color32::from_rgb(240, 248, 255);
@@ -67,7 +66,7 @@ const FARBE_HOEHE_WARNUNG: Color32 = Color32::from_rgb(139, 0, 0);
 const KNOPF_HOEHE: f32 = 36.0;
 const KOPF_KNOPF_HOEHE: f32 = 30.0;
 const KNOPF_BREITE_CSV: f32 = 120.0;
-const KNOPF_BREITE_NEUER_STANDPUNKT: f32 = 195.0;
+const KNOPF_BREITE_NEUER_STP: f32 = 130.0;
 const KNOPF_BREITE_AUTO_MATCH_PROTOKOLL: f32 = 195.0;
 const KNOPF_BREITE_RECHENPARAMETER: f32 = 230.0;
 const KNOPF_BREITE_TESTDATEN: f32 = 240.0;
@@ -130,6 +129,24 @@ pub struct FreieStationierungAnsicht {
     ausstehend: Option<Ausstehend>,
     /// Rückfrage „Stationierung übernehmen?“ (Warnung bei fehlender Kontrolle und/oder Änderungen gegenüber der bisherigen).
     bestaetigung: Option<Bestaetigung>,
+    /// Dialog „Neuer Stp“.
+    standpunkt_dialog: Option<StandpunktDialog>,
+    /// Nach dem Anlegen eines Standpunkts aus dieser CSV-Datei die Anschlussmessungen übernehmen.
+    import_nach_anlage: Option<std::path::PathBuf>,
+    /// Rückfrage zur Korrektur der Instrumentenhöhe (neuer Wert).
+    ih_frage: Option<f64>,
+    /// Rückfrage beim Laden einer CSV-Datei eines anderen Standpunkts.
+    csv_frage: Option<CsvFrage>,
+    /// Stand von `Projekt::station_version`, für den Standpunkt und Höhe zuletzt übernommen wurden.
+    gesehene_version: u64,
+}
+
+/// Geladene CSV-Datei, deren Standpunkt nicht zur aktiven Aufstellung passt.
+#[derive(Clone)]
+struct CsvFrage {
+    pfad: std::path::PathBuf,
+    nr: String,
+    ih: f64,
 }
 
 /// Inhalt der Rückfrage vor dem Übernehmen.
@@ -207,20 +224,13 @@ fn dateizeit(pfad: &std::path::Path) -> Option<SystemTime> {
 }
 
 impl FreieStationierungAnsicht {
-    /// Öffnet die Maske: Anschlusspunkte laden, Standpunktnummer und Instrumentenhöhe vorbelegen.
+    /// Öffnet die Maske: Anschlusspunkte laden; Standpunkt und Instrumentenhöhe kommen aus der aktiven Aufstellung.
     pub fn neu(projekt: &Projekt) -> Self {
         let e = &projekt.einstellungen;
-        let standpunkt = if !projekt.station.standpunkt_nr.is_empty() {
-            projekt.station.standpunkt_nr.clone()
-        } else if !e.letzte_standpunkt_nr.is_empty() {
-            e.letzte_standpunkt_nr.clone()
-        } else {
-            format!("{STANDPUNKT_PRAEFIX}{}", e.stationierung_zaehler)
-        };
-        let ih = if projekt.station.instrumenten_hoehe > 0.0 { projekt.station.instrumenten_hoehe } else { e.instrumenten_hoehe };
+        let ih = if projekt.hat_aktive_aufstellung() { projekt.station.instrumenten_hoehe } else { e.instrumenten_hoehe };
         let mut ansicht = Self {
             dokument: None,
-            standpunkt,
+            standpunkt: projekt.station.standpunkt_nr.clone(),
             instr_hoehe: if ih > 0.0 { ih.clamp(0.0, IH_MAX) } else { IH_VORGABE },
             zeilen: vec![leere_zeile(); MAX_ROWS],
             speichern_frei: false,
@@ -233,9 +243,34 @@ impl FreieStationierungAnsicht {
             anschluss_zeit: None,
             ausstehend: None,
             bestaetigung: None,
+            standpunkt_dialog: None,
+            import_nach_anlage: None,
+            ih_frage: None,
+            csv_frage: None,
+            gesehene_version: projekt.station_version,
         };
         ansicht.lade_anschlusspunkte(projekt);
         ansicht
+    }
+
+    /// Übernimmt Standpunkt und Instrumentenhöhe der aktiven Aufstellung, wenn sie sich geändert hat.
+    fn folge_aufstellung(&mut self, projekt: &Projekt) {
+        if self.gesehene_version == projekt.station_version && self.standpunkt == projekt.station.standpunkt_nr {
+            return;
+        }
+        let wechsel = self.standpunkt != projekt.station.standpunkt_nr;
+        self.gesehene_version = projekt.station_version;
+        self.standpunkt.clone_from(&projekt.station.standpunkt_nr);
+        if projekt.hat_aktive_aufstellung() {
+            self.instr_hoehe = projekt.station.instrumenten_hoehe.clamp(0.0, IH_MAX);
+        }
+        if wechsel {
+            self.zeilen = vec![leere_zeile(); MAX_ROWS];
+            self.dokument = None;
+            self.speichern_frei = false;
+            self.ausstehend = None;
+            self.lade_anschlusspunkte(projekt);
+        }
     }
 
     // ── Dateien ───────────────────────────────────────────────────────────────
@@ -246,12 +281,13 @@ impl FreieStationierungAnsicht {
         self.anschluss_zeit = dateizeit(&pfad);
         if let Ok(d) = crate::daten::csv_datei::CsvDatei::laden(&pfad) {
             if d.zeilen.is_empty() {
+                self.zeilen = vec![leere_zeile(); MAX_ROWS];
                 self.dokument = Some(d);
                 return;
             }
         }
         if pfad.exists() {
-            self.lade_csv(&pfad);
+            self.lade_csv(&pfad, projekt, false);
         }
     }
 
@@ -288,18 +324,17 @@ impl FreieStationierungAnsicht {
         csv
     }
 
-    /// Inhalt der Standpunkt-Datei: Metadaten (Standpunktnummer, Instrumentenhöhe) und die Tabellenzeilen.
-    /// Die Datenzeilen entsprechen dem Original; die Metadaten stehen in Kommentar- bzw. Schlüssel-Zeilen davor.
-    fn standpunkt_datei(&self, standpunkt: &str, ih: f64, projekt: &Projekt) -> crate::daten::csv_datei::CsvDatei {
+    /// Inhalt der Standpunkt-Datei: Metadaten der **aktiven Aufstellung** (Nummer, Instrumentenhöhe, Id, Code)
+    /// und die Tabellenzeilen.
+    fn standpunkt_datei(&self, projekt: &Projekt) -> crate::daten::csv_datei::CsvDatei {
         use crate::daten::csv_datei::{CsvDatei, TYP_STANDPUNKT};
         let mut d = self.dokument.clone().unwrap_or_else(|| CsvDatei::neu(TYP_STANDPUNKT));
         d.datentyp = TYP_STANDPUNKT.into();
         d.projekt = projekt.einstellungen.projekt_name.clone();
-        d.standpunkt_nr = standpunkt.trim().into();
-        d.instr_hoehe = f(ih, 3);
-        if d.meta("AufstellungId").unwrap_or("").is_empty() {
-            d.set_meta("AufstellungId", &crate::daten::messdaten::aufstellung_id(&projekt.einstellungen, standpunkt, ih));
-        }
+        d.standpunkt_nr = projekt.station.standpunkt_nr.clone();
+        d.instr_hoehe = f(self.instr_hoehe, 3);
+        d.standpunkt_code = projekt.station.code.clone();
+        d.set_meta("AufstellungId", &projekt.station.aufstellung_id);
         let ap_indices: Vec<_> = d.zeilen.iter().enumerate().filter(|(_, z)| !d.zelle(z, "Typ").eq_ignore_ascii_case("NP")).map(|(i, _)| i).collect();
         let mut entfernen = std::collections::HashSet::new();
         for (n, z) in self.zeilen.iter().enumerate() {
@@ -324,7 +359,7 @@ impl FreieStationierungAnsicht {
         d.zeilen = d.zeilen.into_iter().enumerate().filter(|(i, _)| !entfernen.contains(i)).map(|(_, z)| z).collect();
         // Ein altes Ergebnis ist nach Tabellenbearbeitung nicht mehr verlässlich.
         d.stationierung.clear();
-        if let Some(erg) = projekt.station.ergebnis.as_ref().filter(|_| projekt.station.standpunkt_nr == standpunkt && self.speichern_frei) {
+        if let Some(erg) = projekt.station.ergebnis.as_ref().filter(|_| self.speichern_frei) {
             d.stationierung = vec![
                 ["X", "Y", "Z", "Orientierung_gon", "Massstab", "s0_mm", "Redundanz"].map(str::to_string).to_vec(),
                 vec![f(erg.r, 4), f(erg.h, 4), f(erg.hoehe, 4), f(erg.orientierung_gon, 4), f(erg.massstab, 8), f(erg.s0_mm, 2), erg.redundanz.to_string()],
@@ -333,53 +368,49 @@ impl FreieStationierungAnsicht {
         d
     }
 
+    /// Schreibt die Tabelle in die Anschlusspunktdatei der aktiven Aufstellung.
+    fn speichere_anschlusspunkte(&mut self, projekt: &Projekt) {
+        if !projekt.hat_aktive_aufstellung() {
+            return;
+        }
+        let mut datei = self.standpunkt_datei(projekt);
+        let anschluss = projekt.anschlusspunkte_zielpfad();
+        datei.pfad = anschluss.clone();
+        let ergebnis = datei.speichern();
+        self.dokument = Some(datei);
+        self.anschluss_zeit = dateizeit(&anschluss);
+        if let Err(fehler) = ergebnis {
+            self.melde("Fehler", format!("Fehler beim Schreiben der Anschlusspunktdatei: {fehler}"));
+        }
+    }
+
     fn melde(&mut self, titel: &str, text: impl Into<String>) {
         self.meldung = Some((titel.to_string(), text.into()));
     }
 
-    /// Merkt Standpunktnummer und Instrumentenhöhe für den nächsten Aufruf.
-    fn merke(&self, projekt: &mut Projekt) {
-        let nr = self.standpunkt.trim();
-        if !nr.is_empty() {
-            projekt.einstellungen.letzte_standpunkt_nr = nr.to_string();
+    /// Instrumentenhöhe geändert: bei aktiver Aufstellung Rückfrage (Korrektur), sonst Vorgabe für „Neuer Stp“.
+    fn ih_geaendert(&mut self, projekt: &mut Projekt) {
+        if projekt.hat_aktive_aufstellung() {
+            if (projekt.station.instrumenten_hoehe - self.instr_hoehe).abs() > 0.0005 {
+                self.ih_frage = Some(self.instr_hoehe);
+            }
+            return;
         }
         projekt.einstellungen.instrumenten_hoehe = self.instr_hoehe;
         if let Err(fehler) = projekt.einstellungen.speichern() {
-            fehler_log::log("FreieStationierung.merke", &fehler.to_string());
+            fehler_log::log("FreieStationierung.ih_geaendert", &fehler.to_string());
         }
     }
 
     // ── Aktionen ──────────────────────────────────────────────────────────────
 
-    /// „Neuer Standpunkt“: Anschlusspunktdatei mit Zeitstempel archivieren und die Tabelle leeren.
-    fn neuer_standpunkt(&mut self, projekt: &mut Projekt) {
-        let pfad = projekt.anschlusspunkte_pfad();
-        if pfad.exists() {
-            let zeitstempel = chrono::Local::now().format("%Y-%m-%d_%H-%M-%S");
-            let archiv = pfad.with_file_name(format!("Anschlusspunkte_{zeitstempel}-stp.csv"));
-            if let Err(fehler) = std::fs::rename(&pfad, &archiv) {
-                self.melde("Fehler", format!("Die Anschlusspunktdatei konnte nicht archiviert werden: {fehler}"));
-                return;
-            }
-        }
-        self.zeilen = vec![leere_zeile(); MAX_ROWS];
-        self.dokument = None;
-        if let Err(e) = projekt.neue_aufstellung(&self.standpunkt, self.instr_hoehe) {
-            self.melde("Fehler", e.to_string());
-            return;
-        }
-        let mut d = stationierung_csv::datei(&self.standpunkt, self.instr_hoehe, &[]);
-        d.set_meta("AufstellungId", &projekt.station.aufstellung_id);
-        d.pfad = projekt.anschlusspunkte_zielpfad();
-        if let Err(e) = d.speichern() {
-            self.melde("Fehler", e.to_string());
-        }
-        self.speichern_frei = false;
-        self.ausstehend = None;
-        self.anschluss_zeit = None;
+    /// „Neuer Stp“: gemeinsamer Dialog (neu, fortsetzen, umbenennen).
+    fn neuer_standpunkt(&mut self, projekt: &Projekt) {
+        let zustand = standpunkt_dialog::geraetezustand(projekt, None);
+        self.standpunkt_dialog = Some(StandpunktDialog::neu(projekt, zustand));
     }
 
-    /// Entfernt eine Zeile, schließt die Lücke und schreibt die CSV-Dateien neu.
+    /// Entfernt eine Zeile, schließt die Lücke und schreibt die Anschlusspunktdatei neu.
     fn zeile_entfernen(&mut self, index: usize, projekt: &Projekt) {
         self.zeilen.remove(index);
         self.zeilen.push(leere_zeile());
@@ -391,19 +422,11 @@ impl FreieStationierungAnsicht {
                 d.zeilen.remove(*i);
             }
         }
-        let mut datei = self.standpunkt_datei(&self.standpunkt, self.instr_hoehe, projekt);
-        let anschluss = projekt.anschlusspunkte_zielpfad();
-        datei.pfad = anschluss.clone();
-        let ergebnis = datei.speichern();
-        self.dokument = Some(datei);
-        self.anschluss_zeit = dateizeit(&anschluss);
-        if let Err(fehler) = ergebnis {
-            self.melde("Fehler", format!("Fehler beim Schreiben der CSV-Dateien: {fehler}"));
-        }
+        self.speichere_anschlusspunkte(projekt);
     }
 
-    fn lade_testdaten(&mut self) {
-        self.lade_csv(&pfade::get(MUSTER_DATEI));
+    fn lade_testdaten(&mut self, projekt: &Projekt) {
+        self.lade_csv(&pfade::get(MUSTER_DATEI), projekt, false);
     }
 
     /// „CSV laden“: Dateiauswahl, dann die Zeilen (PunktNr, R, H, Höhe, HZ, V, Strecke, Zielhöhe) in die Tabelle übernehmen.
@@ -413,42 +436,70 @@ impl FreieStationierungAnsicht {
             dialog = dialog.set_directory(&projekt.einstellungen.projekt_verzeichnis);
         }
         if let Some(pfad) = dialog.pick_file() {
-            self.lade_csv(&pfad);
+            self.lade_csv(&pfad, projekt, true);
         }
     }
 
-    fn lade_csv(&mut self, pfad: &std::path::Path) {
+    /// Liest eine Anschlusspunkt-CSV. Die Standpunktnummer der Datei ändert **nie** still den Standpunkt:
+    /// mit `nachfragen` erscheint bei abweichendem Standpunkt bzw. fehlender Aufstellung eine Rückfrage.
+    fn lade_csv(&mut self, pfad: &std::path::Path, projekt: &Projekt, nachfragen: bool) {
         let Ok(text) = std::fs::read_to_string(pfad) else {
             let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             self.melde("Datei nicht gefunden", format!("{name} nicht gefunden.\nErwartet in: {}", pfad.display()));
             return;
         };
-        match stationierung_csv::parse(&text) {
+        let import = match stationierung_csv::parse(&text) {
+            Ok(i) => i,
+            Err(fehler) => {
+                self.melde("CSV laden", format!("Die Datei konnte nicht gelesen werden:\n{fehler}"));
+                return;
+            }
+        };
+        if import.punkte.len() > MAX_ROWS {
+            self.melde("CSV laden", format!("Die Datei enthält mehr als {MAX_ROWS} Anschlussmessungen. Import abgebrochen, damit keine Daten verloren gehen."));
+            return;
+        }
+        if nachfragen {
+            let nr = import.standpunkt.clone().filter(|n| !n.trim().is_empty());
+            let id = import.dokument.meta("AufstellungId").filter(|i| !i.is_empty());
+            let aktiv = projekt.hat_aktive_aufstellung();
+            let fremd = !aktiv
+                || nr.as_deref().is_some_and(|n| n != projekt.station.standpunkt_nr)
+                || id.is_some_and(|i| i != projekt.station.aufstellung_id && nr.as_deref() != Some(projekt.station.standpunkt_nr.as_str()));
+            if fremd {
+                let ih = import.instrumentenhoehe.unwrap_or(self.instr_hoehe);
+                self.csv_frage = Some(CsvFrage { pfad: pfad.to_path_buf(), nr: nr.unwrap_or_else(|| projekt.naechste_standpunkt_nr()), ih });
+                return;
+            }
+        }
+        self.uebernimm_import(&import);
+        if nachfragen {
+            self.speichere_anschlusspunkte(projekt);
+        }
+    }
+
+    /// Übernimmt die Anschlussmessungen einer gelesenen CSV-Datei in die Tabelle.
+    fn uebernimm_import(&mut self, import: &stationierung_csv::StationierungsImport) {
+        self.dokument = Some(import.dokument.clone());
+        let zeilen: Vec<String> = import
+            .dokument
+            .zeilen
+            .iter()
+            .filter(|z| !import.dokument.zelle(z, "Typ").eq_ignore_ascii_case("NP"))
+            .map(|z| crate::daten::csv_basis::zeile(["PunktNr", "X", "Y", "Z", "HZ_gon", "V_gon", "Strecke_m", "Zielhoehe_m"].map(|name| import.dokument.zelle(z, name)), ','))
+            .collect();
+        let refs: Vec<&str> = zeilen.iter().map(String::as_str).collect();
+        self.fuelle_zeilen(&refs);
+        self.speichern_frei = false;
+        self.ausstehend = None;
+    }
+
+    /// Liest eine CSV-Datei nach der Rückfrage endgültig in die (inzwischen passende) aktive Aufstellung ein.
+    fn lade_csv_in_aktive(&mut self, pfad: &std::path::Path, projekt: &Projekt) {
+        match std::fs::read_to_string(pfad).map_err(|e| e.to_string()).and_then(|t| stationierung_csv::parse(&t)) {
             Ok(import) => {
-                if import.punkte.len() > MAX_ROWS {
-                    self.melde("CSV laden", format!("Die Datei enthält mehr als {MAX_ROWS} Anschlussmessungen. Import abgebrochen, damit keine Daten verloren gehen."));
-                    return;
-                }
-                self.dokument = Some(import.dokument.clone());
-                if let Some(nr) = import.standpunkt.filter(|nr| !nr.is_empty()) {
-                    self.standpunkt = nr;
-                }
-                if let Some(ih) = import.instrumentenhoehe {
-                    self.instr_hoehe = ih.clamp(0.0, IH_MAX);
-                }
-                let zeilen: Vec<String> = import
-                    .dokument
-                    .zeilen
-                    .iter()
-                    .filter(|z| !import.dokument.zelle(z, "Typ").eq_ignore_ascii_case("NP"))
-                    .map(|z| {
-                        crate::daten::csv_basis::zeile(["PunktNr", "X", "Y", "Z", "HZ_gon", "V_gon", "Strecke_m", "Zielhoehe_m"].map(|name| import.dokument.zelle(z, name)), ',')
-                    })
-                    .collect();
-                let refs: Vec<&str> = zeilen.iter().map(String::as_str).collect();
-                self.fuelle_zeilen(&refs);
-                self.speichern_frei = false;
-                self.ausstehend = None;
+                self.uebernimm_import(&import);
+                self.speichere_anschlusspunkte(projekt);
             }
             Err(fehler) => self.melde("CSV laden", format!("Die Datei konnte nicht gelesen werden:\n{fehler}")),
         }
@@ -478,8 +529,7 @@ impl FreieStationierungAnsicht {
         let Some(a) = self.ausstehend.clone() else {
             return;
         };
-        let id = self.dokument.as_ref().and_then(|d| d.meta("AufstellungId"));
-        match projekt.uebernehme_manuelle_stationierung(&a.standpunkt, a.ih, a.punkte, a.aktivierung, a.ergebnis, id) {
+        match projekt.uebernehme_manuelle_stationierung(&a.standpunkt, a.ih, a.punkte, a.aktivierung, a.ergebnis) {
             Ok(()) => {
                 self.ausstehend = None;
                 self.schreibe_csv(projekt);
@@ -509,8 +559,8 @@ impl FreieStationierungAnsicht {
 
     fn schreibe_csv(&mut self, projekt: &Projekt) {
         let anzahl = self.tabellen_csv().len() - 1;
-        let mut d = self.standpunkt_datei(&self.speicher_standpunkt, self.instr_hoehe, projekt);
-        let id = d.meta("AufstellungId").unwrap_or(&self.speicher_standpunkt);
+        let mut d = self.standpunkt_datei(projekt);
+        let id = d.meta("AufstellungId").filter(|i| !i.is_empty()).unwrap_or(&self.speicher_standpunkt);
         let sicher: String = id.chars().map(|c| if r#"\/:*?"<>|"#.contains(c) { '_' } else { c }).collect();
         let name = format!("{}-{sicher}-stp.csv", projekt.einstellungen.projekt_name);
         let pfad = if projekt.einstellungen.ist_geladen() { projekt.einstellungen.get_pfad(&name) } else { pfade::get(&name) };
@@ -555,7 +605,11 @@ impl FreieStationierungAnsicht {
     }
 
     fn berechnen(&mut self, projekt: &mut Projekt) {
-        self.merke(projekt);
+        if !projekt.hat_aktive_aufstellung() {
+            self.melde("Kein Standpunkt", "Bitte zuerst über „Neuer Stp“ einen Standpunkt anlegen oder fortsetzen.");
+            return;
+        }
+        let minimum = projekt.min_anschlusspunkte();
         let punkte = match self.lese_punkte() {
             Ok(p) => p,
             Err(text) => {
@@ -563,13 +617,13 @@ impl FreieStationierungAnsicht {
                 return;
             }
         };
-        if punkte.len() < MIN_ZEILEN {
-            self.melde("Zu wenig Punkte", "Mindestens 2 vollständige Zeilen erforderlich.");
+        if punkte.len() < minimum {
+            self.melde("Zu wenig Punkte", format!("Mindestens {minimum} vollständige Zeile(n) erforderlich."));
             return;
         }
         let verschiedene = anzahl_verschiedene(&punkte);
-        if verschiedene < MIN_ZEILEN {
-            self.melde("Zu wenig Punkte", format!("Mindestens {MIN_ZEILEN} verschiedene Anschlusspunkte erforderlich (vorhanden: {verschiedene})."));
+        if verschiedene < minimum {
+            self.melde("Zu wenig Punkte", format!("Mindestens {minimum} verschiedene Anschlusspunkte erforderlich (vorhanden: {verschiedene})."));
             return;
         }
         if verschiedene > MAX_ANSCHLUSSPUNKTE {
@@ -579,7 +633,7 @@ impl FreieStationierungAnsicht {
             );
             return;
         }
-        let standpunkt = self.standpunkt.trim().to_string();
+        let standpunkt = projekt.station.standpunkt_nr.clone();
         let vorgabe = gespeicherte_aktivierung(projekt, &standpunkt, &punkte);
         let hinweis = verworfene_auswahl(projekt, &standpunkt, vorgabe.is_some());
         match ErgebnisDialog::neu(standpunkt, self.instr_hoehe, punkte, vorgabe, projekt) {
@@ -591,7 +645,7 @@ impl FreieStationierungAnsicht {
         }
     }
 
-    /// Nach dem Schließen des Ergebnisdialogs: Protokoll schreiben, Speichern freigeben, Standpunktzähler erhöhen.
+    /// Nach dem Schließen des Ergebnisdialogs: Protokoll schreiben, Speichern freigeben (keine Hochzählung der Nummer).
     fn nach_dialog(&mut self, dialog: &ErgebnisDialog, projekt: &mut Projekt) {
         // Scheiterte die letzte Neuberechnung (nach geänderten Haken), passt das angezeigte Ergebnis nicht zur Auswahl:
         // weder Protokoll noch Übernahme
@@ -623,14 +677,6 @@ impl FreieStationierungAnsicht {
             eingaben: self.eingaben_stand(),
         });
 
-        let nr = dialog.standpunkt.as_str();
-        if nr.len() > STANDPUNKT_PRAEFIX.len() && nr[..STANDPUNKT_PRAEFIX.len()].eq_ignore_ascii_case(STANDPUNKT_PRAEFIX) {
-            if let Ok(n) = nr[STANDPUNKT_PRAEFIX.len()..].parse::<i32>() {
-                projekt.einstellungen.stationierung_zaehler = n + 1;
-                self.standpunkt = format!("{STANDPUNKT_PRAEFIX}{}", n + 1);
-            }
-        }
-        self.merke(projekt);
     }
 
     // ── Darstellung ───────────────────────────────────────────────────────────
@@ -650,11 +696,17 @@ impl FreieStationierungAnsicht {
 
     pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
         let ctx = ui.ctx().clone();
+        self.folge_aufstellung(projekt);
         self.beobachte_anschlusspunkte(projekt);
         self.pruefe_eingaben();
         ctx.request_repaint_after(std::time::Duration::from_secs_f32(ABFRAGE_SEKUNDEN));
 
-        let gesperrt = self.ergebnis_dialog.is_some() || self.meldung.is_some() || self.bestaetigung.is_some();
+        let gesperrt = self.ergebnis_dialog.is_some()
+            || self.meldung.is_some()
+            || self.bestaetigung.is_some()
+            || self.standpunkt_dialog.is_some()
+            || self.ih_frage.is_some()
+            || self.csv_frage.is_some();
         ui.add_enabled_ui(!gesperrt, |ui| self.zeichne_maske(ui, projekt));
 
         if let Some(mut dialog) = self.ergebnis_dialog.take() {
@@ -666,7 +718,119 @@ impl FreieStationierungAnsicht {
         }
         self.zeige_rechenparameter(&ctx, projekt);
         self.zeige_bestaetigung(&ctx, projekt);
+        self.zeige_standpunkt_dialog(&ctx, projekt);
+        self.zeige_ih_frage(&ctx, projekt);
+        self.zeige_csv_frage(&ctx, projekt);
         self.zeige_meldung(&ctx);
+    }
+
+    /// Dialog „Neuer Stp“; danach Tabelle aus der Anschlusspunktdatei der (neuen) Aufstellung.
+    fn zeige_standpunkt_dialog(&mut self, ctx: &egui::Context, projekt: &mut Projekt) {
+        let Some(mut dialog) = self.standpunkt_dialog.take() else {
+            return;
+        };
+        match dialog.zeige(ctx, projekt) {
+            DialogErgebnis::Offen => self.standpunkt_dialog = Some(dialog),
+            DialogErgebnis::Abgebrochen => self.import_nach_anlage = None,
+            DialogErgebnis::Fertig { meldung, .. } => {
+                self.gesehene_version = u64::MAX;
+                self.standpunkt.clear();
+                self.folge_aufstellung(projekt);
+                if let Some(pfad) = self.import_nach_anlage.take() {
+                    self.lade_csv_in_aktive(&pfad, projekt);
+                }
+                protokoll::log("STANDPKT", &meldung);
+            }
+        }
+    }
+
+    /// Rückfrage zur Korrektur der Instrumentenhöhe der aktiven Aufstellung.
+    fn zeige_ih_frage(&mut self, ctx: &egui::Context, projekt: &mut Projekt) {
+        let Some(neu) = self.ih_frage else {
+            return;
+        };
+        let alt = projekt.station.instrumenten_hoehe;
+        let mut antwort = None;
+        egui::Window::new("Instrumentenhöhe korrigieren").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            ui.label(format!(
+                "Instrumentenhöhe für {} von {} m auf {} m korrigieren?\n\nDie Aufstellung bleibt dieselbe. Vorhandene Neupunkte dieser Aufstellung werden neu berechnet.",
+                projekt.station.standpunkt_nr,
+                de(alt, 3),
+                de(neu, 3)
+            ));
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new("Korrigieren").strong()).clicked() {
+                    antwort = Some(true);
+                }
+                if ui.button("Abbrechen").clicked() {
+                    antwort = Some(false);
+                }
+            });
+        });
+        match antwort {
+            Some(true) => {
+                self.ih_frage = None;
+                if let Err(e) = projekt.set_instrumenten_hoehe(neu) {
+                    self.instr_hoehe = alt;
+                    self.melde("Fehler", format!("Instrumentenhöhe konnte nicht gespeichert werden:\n{e}"));
+                } else {
+                    self.gesehene_version = projekt.station_version;
+                    self.speichere_anschlusspunkte(projekt);
+                }
+            }
+            Some(false) => {
+                self.ih_frage = None;
+                self.instr_hoehe = alt;
+            }
+            None => {}
+        }
+    }
+
+    /// Rückfrage beim Laden einer CSV-Datei, deren Standpunkt nicht zur aktiven Aufstellung passt.
+    fn zeige_csv_frage(&mut self, ctx: &egui::Context, projekt: &mut Projekt) {
+        let Some(frage) = self.csv_frage.clone() else {
+            return;
+        };
+        let aktiv = projekt.hat_aktive_aufstellung();
+        let name = frage.pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut antwort = None;
+        egui::Window::new("Standpunkt der CSV-Datei").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
+            if aktiv {
+                ui.label(format!(
+                    "Die Datei {name} gehört zu Standpunkt {}.\nAktiv ist die Aufstellung {}.\n\nWie sollen die Anschlussmessungen verwendet werden?",
+                    frage.nr, projekt.station.standpunkt_nr
+                ));
+            } else {
+                ui.label(format!("Es ist kein Standpunkt aktiv.\nDie Datei {name} kann als neuer Standpunkt {} angelegt werden.", frage.nr));
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button(RichText::new(format!("Als neuen Standpunkt {} anlegen …", frage.nr)).strong()).clicked() {
+                    antwort = Some(1);
+                }
+                if aktiv && ui.button(format!("Der aktiven Aufstellung {} zuordnen", projekt.station.standpunkt_nr)).clicked() {
+                    antwort = Some(2);
+                }
+                if ui.button("Abbrechen").clicked() {
+                    antwort = Some(0);
+                }
+            });
+        });
+        match antwort {
+            Some(1) => {
+                self.csv_frage = None;
+                let zustand = standpunkt_dialog::geraetezustand(projekt, None);
+                self.standpunkt_dialog = Some(StandpunktDialog::mit_nummer(projekt, &frage.nr, frage.ih, zustand));
+                self.import_nach_anlage = Some(frage.pfad);
+            }
+            Some(2) => {
+                self.csv_frage = None;
+                self.lade_csv_in_aktive(&frage.pfad, projekt);
+            }
+            Some(_) => self.csv_frage = None,
+            None => {}
+        }
     }
 
     fn zeichne_maske(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
@@ -675,18 +839,39 @@ impl FreieStationierungAnsicht {
 
         // ── Kopfzeile ────────────────────────────────────────────────────────
         let mut csv_laden = false;
+        let mut neuer_stp = false;
         ui.horizontal(|ui| {
-            ui.label("Standpunktnummer:");
-            let nr = ui.add(egui::TextEdit::singleline(&mut self.standpunkt).desired_width(110.0));
+            let knopf = egui::Button::new(RichText::new("Neuer Stp").strong().size(SCHRIFT_KOPF).color(Color32::WHITE))
+                .fill(FARBE_NEUER_STANDPUNKT)
+                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(180, 90, 10)))
+                .min_size(Vec2::new(KNOPF_BREITE_NEUER_STP, KOPF_KNOPF_HOEHE));
+            neuer_stp = ui.add(knopf).on_hover_text("Neuen Standpunkt anlegen, vorhandenen fortsetzen oder umbenennen").clicked();
+            ui.add_space(16.0);
+            ui.label("Standpunkt:");
+            if projekt.hat_aktive_aufstellung() {
+                let mut text = RichText::new(&self.standpunkt).strong().size(SCHRIFT_KOPF);
+                if projekt.station.bekannt.is_some() {
+                    text = RichText::new(format!("{}  (bekannter Punkt)", self.standpunkt)).strong().size(SCHRIFT_KOPF);
+                }
+                ui.label(text).on_hover_text(format!("Aufstellung {}", projekt.station.aufstellung_id));
+            } else {
+                ui.label(RichText::new("– kein Standpunkt, bitte „Neuer Stp“ –").color(FARBE_HOEHE_WARNUNG));
+            }
             ui.add_space(24.0);
             ui.label("Instrumentenhöhe (m):");
             let ih = ui.add(egui::DragValue::new(&mut self.instr_hoehe).range(0.0..=IH_MAX).speed(IH_SCHRITT).fixed_decimals(IH_STELLEN));
-            if nr.lost_focus() || ih.lost_focus() || ih.drag_stopped() {
-                self.merke(projekt);
+            if ih.lost_focus() || ih.drag_stopped() {
+                self.ih_geaendert(projekt);
             }
             ui.add_space(24.0);
             csv_laden = ui.add(egui::Button::new("CSV laden …").min_size(Vec2::new(KNOPF_BREITE_CSV, KOPF_KNOPF_HOEHE))).clicked();
         });
+        if let Some(h) = projekt.ih_hinweis(self.instr_hoehe) {
+            ui.colored_label(FARBE_FREIGABE_BESTAETIGUNG, format!("⚠ {h}"));
+        }
+        if neuer_stp {
+            self.neuer_standpunkt(projekt);
+        }
         if csv_laden {
             self.waehle_csv(projekt);
         }
@@ -781,20 +966,12 @@ impl FreieStationierungAnsicht {
     }
 
     fn zeichne_knoepfe(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
-        let mut neuer_standpunkt = false;
         let mut testdaten = false;
         let mut speichern = false;
         let mut berechnen = false;
 
-        // Zeile 1: [Neuer Standpunkt] [Auto-Match-Protokoll] … [Rechenparameter]
+        // Zeile 1: [Auto-Match-Protokoll] … [Rechenparameter]  („Neuer Stp“ steht oben in der Kopfzeile)
         ui.horizontal(|ui| {
-            if projekt.anschlusspunkte_pfad().exists() {
-                let knopf = egui::Button::new(RichText::new("Neuer Standpunkt").strong().size(SCHRIFT_KOPF).color(Color32::WHITE))
-                    .fill(FARBE_NEUER_STANDPUNKT)
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(180, 90, 10)))
-                    .min_size(Vec2::new(KNOPF_BREITE_NEUER_STANDPUNKT, KNOPF_HOEHE));
-                neuer_standpunkt = ui.add(knopf).clicked();
-            }
             ui.add_enabled(false, egui::Button::new("Auto-Match-Protokoll").min_size(Vec2::new(KNOPF_BREITE_AUTO_MATCH_PROTOKOLL, KNOPF_HOEHE)))
                 .on_disabled_hover_text("Die automatische Punktsuche ist in Feldbuch-NT noch nicht umgesetzt.");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -831,11 +1008,8 @@ impl FreieStationierungAnsicht {
             });
         });
 
-        if neuer_standpunkt {
-            self.neuer_standpunkt(projekt);
-        }
         if testdaten {
-            self.lade_testdaten();
+            self.lade_testdaten(projekt);
         }
         if speichern {
             self.speichern(projekt);
@@ -895,6 +1069,19 @@ impl FreieStationierungAnsicht {
 fn bewerte_freigabe(e: &StationierungsErgebnis, verschiedene: usize, projekt: &Projekt) -> Freigabe {
     if !ist_verwendbar(Some(e)) {
         return Freigabe::Gesperrt("Die Berechnung ist nicht verwendbar (nicht konvergiert oder ungültige Werte).".to_string());
+    }
+    // Bekannter Standpunkt: ein Ziel genügt (ohne Kontrolle); ab zwei Zielen kontrollieren die Querabweichungen
+    if projekt.station.bekannt.is_some() {
+        if verschiedene <= 1 {
+            return Freigabe::NurMitBestaetigung("Nur ein Anschlussziel: Orientierung ohne Kontrolle.".to_string());
+        }
+        let grenze = projekt.rechenparameter.params.fehlergrenze_mm_strecke;
+        let (gruen, aktiv) = e.residuen.iter().filter(|r| r.richtung_aktiv && !r.v_quer_mm.is_nan()).fold((0, 0), |(g, a), r| (g + usize::from(ist_gruen(r.v_quer_mm.abs(), grenze)), a + 1));
+        return if aktiv > 0 && gruen == aktiv {
+            Freigabe::Frei
+        } else {
+            Freigabe::Gesperrt(format!("{gruen} von {aktiv} Querabweichungen im grünen Bereich."))
+        };
     }
     if verschiedene <= MIN_ZEILEN {
         return Freigabe::NurMitBestaetigung(format!("Nur {verschiedene} verschiedene Anschlusspunkte: geringe Kontrolle (Redundanz r = {}).", e.redundanz));
@@ -978,21 +1165,11 @@ impl ErgebnisDialog {
     fn rechne(&mut self, projekt: &Projekt) -> Result<(), String> {
         // Bis zum erfolgreichen Abschluss gilt das angezeigte Ergebnis nicht mehr für die aktuelle Auswahl
         self.gueltig = false;
-        let optionen = {
-            let par = &projekt.rechenparameter.params;
-            Optionen {
-                freier_massstab: par.freier_massstab,
-                aktiv_richtung: Some(self.akt_hz.clone()),
-                aktiv_strecke: Some(self.akt_str.clone()),
-                aktiv_hoehe: Some(self.akt_hoe.clone()),
-                berechnung_3d: par.berechnung_3d,
-                fehlergrenze_mm_hoehe: par.fehlergrenze_mm_hoehe,
-                ..Optionen::default()
-            }
-        };
-        let ergebnis = freie_stationierung::berechnen(&self.punkte, self.ih, &optionen)?;
+        let aktivierung = Aktivierung { richtung: self.akt_hz.clone(), strecke: self.akt_str.clone(), hoehe: self.akt_hoe.clone() };
+        let ergebnis = projekt.berechne_station(&self.punkte, self.ih, &aktivierung)?;
         pruefe_station(&ergebnis)?;
-        protokoll::log("RECHNUNG", &format!("Freie Stationierung berechnet, s0 = {} mm", de(ergebnis.s0_mm, 2)));
+        let art = if projekt.station.bekannt.is_some() { "Stationierung (bekannter Standpunkt)" } else { "Freie Stationierung" };
+        protokoll::log("RECHNUNG", &format!("{art} berechnet, s0 = {} mm", de(ergebnis.s0_mm, 2)));
         self.ergebnis = ergebnis;
         self.gueltig = true;
         Ok(())
@@ -1062,6 +1239,9 @@ impl ErgebnisDialog {
             ui.label(RichText::new(text).monospace());
         };
         zeile(ui, format!("Standpunktnummer:        {}", self.standpunkt));
+        if let Some(b) = &projekt.station.bekannt {
+            zeile(ui, format!("Bekannter Standpunkt:    {}  (Lage fest, nur Orientierung bestimmt)", b.punkt_nr));
+        }
         zeile(ui, format!("Instrumentenhöhe:        {} m", de(self.ih, 3)));
         zeile(ui, format!("R  (Rechtswert):         {} m", de(e.r, 3)));
         zeile(ui, format!("H  (Hochwert):           {} m", de(e.h, 3)));
@@ -1093,7 +1273,9 @@ impl ErgebnisDialog {
         );
         zeile(
             ui,
-            if self.punkte.len() == 2 && e.iterationen == 0 && e.redundanz == 0 {
+            if projekt.station.bekannt.is_some() {
+                "Methode:                 Orientierungsmittel auf bekanntem Standpunkt".to_string()
+            } else if self.punkte.len() == 2 && e.iterationen == 0 && e.redundanz == 0 {
                 "Methode:                 Ähnlichkeitstransformation  (2 Punkte, Direktlösung)".to_string()
             } else {
                 format!("Iterationen:             {}{}", e.iterationen, if e.konvergiert { "  (konvergiert)" } else { "  !! NICHT konvergiert !!" })

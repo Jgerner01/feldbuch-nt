@@ -64,6 +64,13 @@ pub(super) struct MessdatenEingabe {
     /// Zuletzt aus der Live-Abfrage in die Felder übernommene Werte (Hz, V [gon]).
     pub folge_hz: Option<f64>,
     pub folge_v: Option<f64>,
+    /// Punktnummer und Höhe aus dem Plan (Erkennung von Handänderungen für das Messprotokoll).
+    pub plan_nr: String,
+    pub plan_hoehe: String,
+    /// Vollständige Gerätemessung (Bezug der Korrekturzeilen im Messprotokoll).
+    pub geraet_messung: Option<TachymeterMessung>,
+    /// Beschriftungen der Felder, die per Tastatur geändert wurden.
+    pub hand_felder: Vec<String>,
 }
 
 impl MessdatenEingabe {
@@ -95,6 +102,10 @@ impl MessdatenEingabe {
             mess_v: None,
             folge_hz: None,
             folge_v: None,
+            plan_nr: punkt_nr.to_string(),
+            plan_hoehe: if hoehe != 0.0 { f(hoehe, 3) } else { f(0.0, 3) },
+            geraet_messung: None,
+            hand_felder: Vec::new(),
         }
     }
 
@@ -115,6 +126,8 @@ impl MessdatenEingabe {
                 self.hz = f(hz, 4);
                 self.v = f(v, 4);
                 self.strecke = f(s, 3);
+                self.geraet_messung = Some(m.clone());
+                self.hand_felder.clear();
                 self.info = format!("Hz={} gon   V={} gon   D={} m", f(hz, 4), f(v, 4), f(s, 3));
                 self.info_farbe = Some(FARBE_OK);
             }
@@ -153,13 +166,23 @@ pub(super) fn anschluss_zeile(p: &StationierungsPunkt) -> String {
     crate::daten::csv_basis::zeile(crate::daten::stationierung_csv::zeile(p), ';')
 }
 
-/// Hängt eine Messung an die Anschlusspunktdatei an (gleiche Nummer bleibt als Mehrfachmessung erhalten).
+/// Hängt eine Messung an die Anschlusspunktdatei der aktiven Aufstellung an (gleiche Nummer bleibt als
+/// Mehrfachmessung erhalten). Nummer, Instrumentenhöhe und AufstellungId kommen immer aus der aktiven Station.
 pub(super) fn schreibe_anschlusspunkt(projekt: &Projekt, p: &StationierungsPunkt, code: &str) -> std::io::Result<()> {
+    if !projekt.hat_aktive_aufstellung() {
+        return Err(crate::daten::csv_basis::fehler("Kein Standpunkt aktiv – bitte zuerst „Neuer Stp“."));
+    }
     let quelle = projekt.anschlusspunkte_pfad();
-    let mut d = if quelle.exists() {
-        crate::daten::csv_datei::CsvDatei::laden(&quelle)?
-    } else {
-        crate::daten::stationierung_csv::datei(&projekt.station.standpunkt_nr, projekt.einstellungen.instrumenten_hoehe, &[])
+    let mut d = match crate::daten::csv_datei::CsvDatei::laden(&quelle) {
+        // Eine Datei einer anderen Aufstellung wird nicht fortgeschrieben
+        Ok(d) if d.meta("AufstellungId") == Some(projekt.station.aufstellung_id.as_str()) => d,
+        Ok(_) => {
+            return Err(crate::daten::csv_basis::fehler(
+                "Die Anschlusspunktdatei gehört zu einer anderen Aufstellung. Bitte die Aufstellung über „Neuer Stp“ fortsetzen oder neu anlegen.",
+            ));
+        }
+        Err(_) if !quelle.exists() => crate::daten::stationierung_csv::datei(&projekt.station.standpunkt_nr, projekt.station.instrumenten_hoehe, &[]),
+        Err(e) => return Err(e),
     };
     d.datentyp = crate::daten::csv_datei::TYP_STANDPUNKT.into();
     d.projekt = projekt.einstellungen.projekt_name.clone();
@@ -169,13 +192,64 @@ pub(super) fn schreibe_anschlusspunkt(projekt: &Projekt, p: &StationierungsPunkt
         d.set_zelle(i, spalte, wert);
     }
     d.set_zelle(i, "Code", code.into());
-    let ih = if projekt.station.standpunkt_nr.is_empty() { projekt.einstellungen.instrumenten_hoehe } else { projekt.station.instrumenten_hoehe };
     d.standpunkt_nr = projekt.station.standpunkt_nr.clone();
-    d.instr_hoehe = f(ih, 3);
-    d.set_meta("AufstellungId", &crate::daten::messdaten::aufstellung_id(&projekt.einstellungen, &d.standpunkt_nr.clone(), ih));
+    d.instr_hoehe = f(projekt.station.instrumenten_hoehe, 3);
+    d.standpunkt_code = projekt.station.code.clone();
+    d.set_meta("AufstellungId", &projekt.station.aufstellung_id);
     d.stationierung.clear();
     d.pfad = projekt.anschlusspunkte_zielpfad();
     d.speichern()
+}
+
+/// Messprotokoll einer übernommenen Anschlussmessung: MESSUNG (Gerätewerte oder Handeingabe) und je Feld,
+/// das danach geändert wurde, eine KORREKTUR mit Bezug (Hz/V aus der Live-Abfrage gelten als „Getrennt“).
+fn protokolliere_anschlussmessung(projekt: &Projekt, d: &MessdatenEingabe, p: &StationierungsPunkt) {
+    use crate::daten::messdaten::TYP_ANSCHLUSSPUNKT;
+    use crate::daten::messprotokoll::{self as mp, Eintrag, Ereignis};
+    let e = &projekt.einstellungen;
+    let mut basis = Eintrag::neu(Ereignis::Messung)
+        .mit_aufstellung(&projekt.station)
+        .punkt(&p.punkt_nr, TYP_ANSCHLUSSPUNKT, d.code.trim())
+        .koordinaten(p.r, p.h, parse_zahl(&d.hoehe).unwrap_or(f64::NAN));
+    let Some(m) = &d.geraet_messung else {
+        basis = basis.werte(p.hz, p.v, p.strecke, p.zielhoehe).mit_prisma(e).quelle(mp::QUELLE_HAND).text("Messwerte von Hand eingegeben");
+        mp::protokolliere(e, ergaenze_plan_hinweise(basis, d, p));
+        return;
+    };
+    let Some(lfd) = mp::protokolliere(e, ergaenze_plan_hinweise(basis.mit_messung(m).mit_prisma(e), d, p)) else {
+        return;
+    };
+    let felder = [
+        ("Hz_gon", "Hz:", m.hz_gon, p.hz, 4),
+        ("V_gon", "V:", m.v_gon, p.v, 4),
+        ("S_m", "Strecke:", m.schraegstrecke_m, p.strecke, 3),
+        ("ZH_m", "Zielhöhe:", m.zielhoehe_m, p.zielhoehe, 3),
+    ];
+    for (feld, titel, geraet, neu, stellen) in felder {
+        let alt = geraet.map_or_else(String::new, |w| f(w, stellen));
+        let neu = f(neu, stellen);
+        if alt == neu {
+            continue;
+        }
+        let hand = d.hand_felder.iter().any(|t| t == titel);
+        let quelle = if hand || !matches!(feld, "Hz_gon" | "V_gon") { mp::QUELLE_HAND } else { mp::QUELLE_GETRENNT };
+        let mut k = Eintrag::neu(Ereignis::Korrektur).mit_aufstellung(&projekt.station).punkt(&p.punkt_nr, TYP_ANSCHLUSSPUNKT, "").bezug(Some(lfd)).aenderung(feld, &alt, &neu).quelle(quelle);
+        if quelle == mp::QUELLE_GETRENNT {
+            k = k.text("Winkel nach der Messung vom Gerät nachgeführt (getrennte Erfassung)");
+        }
+        mp::protokolliere(e, k);
+    }
+}
+
+/// Hinweise auf von Hand geänderte Punktnummer oder Höhe gegenüber dem Plan.
+fn ergaenze_plan_hinweise(mut eintrag: crate::daten::messprotokoll::Eintrag, d: &MessdatenEingabe, p: &StationierungsPunkt) -> crate::daten::messprotokoll::Eintrag {
+    if p.punkt_nr != d.plan_nr.trim() {
+        eintrag = eintrag.text(format!("Punktnummer von Hand (Plan: {})", d.plan_nr.trim()));
+    }
+    if d.hoehe.trim() != d.plan_hoehe.trim() {
+        eintrag = eintrag.text(format!("Hoehe von Hand ({} -> {})", d.plan_hoehe.trim(), d.hoehe.trim()));
+    }
+    eintrag
 }
 
 impl DxfViewer {
@@ -206,6 +280,10 @@ impl DxfViewer {
                         d.info_farbe = Some(FARBE_FEHLER);
                     }
                 }
+                None
+            }
+            Some(Dialog::Kontrolle(k)) if k.wartet => {
+                k.uebernimm(ergebnis);
                 None
             }
             _ => Some(ergebnis),
@@ -246,13 +324,15 @@ impl DxfViewer {
             ui.add_space(4.0);
             egui::Grid::new("messdaten_felder").num_columns(3).spacing([8.0, 4.0]).show(ui, |ui| {
                 let mut manuell = false;
+                let mut geaendert: Vec<String> = Vec::new();
                 let schrift_groesse = egui::TextStyle::Monospace.resolve(ui.style()).size;
                 let feld_groesse = Vec2::new(FELD_ZEICHEN * schrift_groesse * ZEICHEN_BREITE_FAKTOR + FELD_INNENABSTAND, ui.spacing().interact_size.y);
                 let mut feld = |ui: &mut egui::Ui, titel: &str, text: &mut String, einheit: &str, messwert: bool| {
                     ui.label(titel);
                     let antwort = ui.add_sized(feld_groesse, egui::TextEdit::singleline(text).font(egui::TextStyle::Monospace));
-                    if messwert && antwort.changed() {
-                        manuell = true;
+                    if antwort.changed() {
+                        manuell |= messwert;
+                        geaendert.push(titel.to_string());
                     }
                     ui.label(einheit);
                     ui.end_row();
@@ -266,6 +346,11 @@ impl DxfViewer {
                 feld(ui, "Code:", &mut d.code, "", true);
                 if manuell {
                     d.aktiv = true;
+                }
+                for titel in geaendert {
+                    if !d.hand_felder.contains(&titel) {
+                        d.hand_felder.push(titel);
+                    }
                 }
             });
             ui.add_space(4.0);
@@ -339,7 +424,10 @@ impl DxfViewer {
                         self.letzte_zielhoehe.clone_from(&d.zielhoehe);
                     }
                     match schreibe_anschlusspunkt(projekt, &p, &d.code) {
-                        Ok(()) => self.status = format!("Punkt '{}' gespeichert  |  R: {}   H: {}", p.punkt_nr, f(p.r, 3), f(p.h, 3)),
+                        Ok(()) => {
+                            protokolliere_anschlussmessung(projekt, &d, &p);
+                            self.status = format!("Punkt '{}' gespeichert  |  R: {}   H: {}", p.punkt_nr, f(p.r, 3), f(p.h, 3));
+                        }
                         Err(fehler) => {
                             self.dialog = Some(Dialog::Hinweis { titel: "Fehler".into(), text: format!("Punkt konnte nicht geschrieben werden:\n{fehler}") });
                         }

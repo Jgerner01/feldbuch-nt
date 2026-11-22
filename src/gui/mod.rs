@@ -20,6 +20,7 @@ mod hauptfenster;
 mod kommunikation;
 mod libelle;
 mod stationierungs_hinweis;
+mod standpunkt_dialog;
 mod projekt_dialog;
 mod projektdaten_ansicht;
 mod rechenparameter_ansicht;
@@ -77,6 +78,8 @@ pub struct FeldbuchApp {
     konvertierung_merker: Option<Box<konvertierung::KonvertierungAnsicht>>,
     /// Eigene DXF-Viewer-Instanz zur Punktauswahl für die Konvertierung.
     auswahl_viewer: Option<Box<dxf_viewer::DxfViewer>>,
+    /// Erkennt Änderungen von Verbindung, EDM-Modus und Prisma für das Messprotokoll.
+    messprotokoll_beobachter: crate::daten::messprotokoll::Beobachter,
 }
 
 /// Gewünschte Fenstergröße (Innenfläche) beim Start in Punkten: Full HD.
@@ -197,6 +200,7 @@ impl FeldbuchApp {
             hauptfenster_minimiert: false,
             konvertierung_merker: None,
             auswahl_viewer: None,
+            messprotokoll_beobachter: crate::daten::messprotokoll::Beobachter::default(),
         }
     }
 
@@ -435,6 +439,7 @@ impl FeldbuchApp {
     /// Zeigt aufgelaufene Fehlermeldungen als Fenster.
     fn zeige_meldungen(&mut self, ctx: &egui::Context) {
         self.meldungen.extend(datei_speicher::hole_meldungen());
+        self.meldungen.extend(crate::daten::messprotokoll::hole_fehler());
         if self.meldungen.is_empty() {
             return;
         }
@@ -467,6 +472,7 @@ impl eframe::App for FeldbuchApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.titel()));
         // Gerät: Verbindungsversuch und Empfang verarbeiten, auch wenn das Kommunikationsfenster zu ist
         self.geraet.aktualisiere();
+        self.messprotokoll_beobachter.pruefe(&self.projekt.einstellungen, self.geraet.ist_verbunden(), self.geraet.reflektorlos, self.geraet.modell.name());
         if self.geraet.verbindet() || self.geraet.test.is_some() || self.geraet.schalter.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }

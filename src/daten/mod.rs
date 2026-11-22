@@ -12,6 +12,7 @@ pub mod json_speicher;
 pub mod konvertierung;
 pub mod kor_csv;
 pub mod messdaten;
+pub mod messprotokoll;
 pub mod modelle;
 pub mod polar_messdaten;
 pub mod projekt;

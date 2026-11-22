@@ -1,0 +1,422 @@
+{
+  "software": "Feldbuch-NT",
+  "version": "0.5.2",
+  "build": 34,
+  "documentation_revision": "1.0",
+  "date": "2026-11-06",
+  "scope": "Quellstand; keine Zusicherung identischer EXE",
+  "files": [
+    {
+      "path": "BUILDNUMMER",
+      "sha256": "86e50149658661312a9e0b35558d84f6c6d3da797f552a9657fe0558ca40cdef"
+    },
+    {
+      "path": "Cargo.toml",
+      "sha256": "4771f8ec5b102ef15ff352ead98e7bf5ddeac585948f95a576ad6987e262c5e1"
+    },
+    {
+      "path": "src/daten/aufnahmetest.rs",
+      "sha256": "258398a62d0d733018f1b55d2a2b6dac53955a19e3ad0f39e6af28617103774c"
+    },
+    {
+      "path": "src/daten/csv_datei.rs",
+      "sha256": "6d50adfad7530457259039ac4a9fc34d365ae7642222f93c06c41b31db89061d"
+    },
+    {
+      "path": "src/daten/einstellungen.rs",
+      "sha256": "8894dfd10c303133c9411590639b7d0c48001a5098649a2c1fc7b005e396965c"
+    },
+    {
+      "path": "src/daten/json_speicher.rs",
+      "sha256": "c5e1cfc73c0797fe4753d09b534a0025010b77908a0ef3e28c942efc0fdb60a4"
+    },
+    {
+      "path": "src/daten/konvertierung.rs",
+      "sha256": "c1b9715614adecb7c7a4d7cd135f6877865c10bc92e84f103f4a517f7bd85866"
+    },
+    {
+      "path": "src/daten/kor_csv.rs",
+      "sha256": "870af68c218bbee1b1d34d4d961345d2292537745a7123a14fd016094442b621"
+    },
+    {
+      "path": "src/daten/messdaten.rs",
+      "sha256": "d49d6380ebb2989422f21cbe24c23d04ccca81e652e2d8b8fd5242f5cc0a5d09"
+    },
+    {
+      "path": "src/daten/mod.rs",
+      "sha256": "f32348297b5c3c5f2cfe80fda1cbf648c63f5718b1ee0a55b4b08130d5cfe0cc"
+    },
+    {
+      "path": "src/daten/modelle.rs",
+      "sha256": "86817de34a9c5be3bd3b2d6d3d259ed567d6ce1ace0945c9e75404e7898f74d2"
+    },
+    {
+      "path": "src/daten/polar_messdaten.rs",
+      "sha256": "84d5c8ffbe09adc994236c79bbdbc3ea786d05dd53520e2202ed60221b024f39"
+    },
+    {
+      "path": "src/daten/projekt.rs",
+      "sha256": "9302932e87c650eb57f37f70a048a58833939b544f6515c3c05ede6913382511"
+    },
+    {
+      "path": "src/daten/projektdaten.rs",
+      "sha256": "e7c446767ee4bf1de2a90b63d95dbfbc90316e71f26ea514503f94c57af67b30"
+    },
+    {
+      "path": "src/daten/punktlisten.rs",
+      "sha256": "1fb2bbab25e98a996d24764869d6bb4f03786125356dd29a5e3110be0e98a24e"
+    },
+    {
+      "path": "src/daten/rechenparameter.rs",
+      "sha256": "988cecc173dcdb5357319b9f2006fe06b5b36c2fae749371d878a55e21581325"
+    },
+    {
+      "path": "src/daten/stationierung_csv.rs",
+      "sha256": "a8859856554d34815b69b73fb8820fb13503b57dba2187203c542e4fd67c1e13"
+    },
+    {
+      "path": "src/dxf/entity.rs",
+      "sha256": "9914ad758daf9d094a43411e1ba637437754cac6455bd4e072fad419f523ae45"
+    },
+    {
+      "path": "src/dxf/exporter.rs",
+      "sha256": "9bea98296192188fe26ae12df74fb0a90ba5cdfb54ee5d6d82a32ce3567d95c1"
+    },
+    {
+      "path": "src/dxf/leser.rs",
+      "sha256": "47aab0b60637c3fc750f1fa3827d282bdd6695fda8c5deeccf7bde2daf982af5"
+    },
+    {
+      "path": "src/dxf/mod.rs",
+      "sha256": "d575fa1c59dd566a523c1dbad05ad5db8ae2fba86cac18f5661f83115f709717"
+    },
+    {
+      "path": "src/dxf/pdf.rs",
+      "sha256": "3a531895f62f3d5710e6c472521aad55cc23b48a0ea15e49e082f8296a12ba2a"
+    },
+    {
+      "path": "src/dxf/punktindex.rs",
+      "sha256": "0988745714880f639797dac103e14cd1809aad9405bf9714a8de05ff1f5cbfc2"
+    },
+    {
+      "path": "src/grundlagen/datei_speicher.rs",
+      "sha256": "762adec41c826d07c19068a915948c9e157e6afb635622f9af6ede2e37be946a"
+    },
+    {
+      "path": "src/grundlagen/fehler_log.rs",
+      "sha256": "8fdc0424cac0923f86b3a3eed0a84dc8dad8bd73404dcfc78fd678bf6434276a"
+    },
+    {
+      "path": "src/grundlagen/format.rs",
+      "sha256": "edf5176baebc858783df06e4964e52c48ace0ec440d88a4feb3c7b953d6073f0"
+    },
+    {
+      "path": "src/grundlagen/kommunikationslog.rs",
+      "sha256": "4caa4367b722191dda131f7202e0ea833b7f852191712dc28a49b4245ddbceda"
+    },
+    {
+      "path": "src/grundlagen/mod.rs",
+      "sha256": "89afd1443ceb5c8ba720c618d38f85f018add00b3e55d0a6c44e8a77f517011a"
+    },
+    {
+      "path": "src/grundlagen/pfade.rs",
+      "sha256": "2ee8e06ea9c3fd565180283b918b4b9202889528bc9ac9738ef097391421113d"
+    },
+    {
+      "path": "src/grundlagen/protokoll.rs",
+      "sha256": "9a76a83a4385ccdf16093975240ee185e1dc386c2db631762788c16fbeceeb9e"
+    },
+    {
+      "path": "src/grundlagen/serde_hilfen.rs",
+      "sha256": "4d1d03b1a0abcb7ee52ba847458cb44442a82ddddc8070b704d256e13a761084"
+    },
+    {
+      "path": "src/grundlagen/xml_einfach.rs",
+      "sha256": "7ae111d5454f0b325786d839541d810f74d4513d4c26fd551fd10eb9ee8f9294"
+    },
+    {
+      "path": "src/gui/absteckung/achse.rs",
+      "sha256": "1feddd8990d2ea969665456ae3558e5eb930ce358de5f03655cec93a1bc1b408"
+    },
+    {
+      "path": "src/gui/absteckung/gemeinsam.rs",
+      "sha256": "54e3b176bdb8d9d2bcc053e75f3c24c1ec3766ef73581182628090d808805b17"
+    },
+    {
+      "path": "src/gui/absteckung/mod.rs",
+      "sha256": "8d5e3d6f5232729aaa9c3e7402d8bb5af7aea17d3b2b80e93ae61fd8128a2fb8"
+    },
+    {
+      "path": "src/gui/absteckung/profil.rs",
+      "sha256": "c14d5e4fa36051ea9dffd07be43c800f98a30b1fa1867be6b6224443bd465c82"
+    },
+    {
+      "path": "src/gui/absteckung/punkt.rs",
+      "sha256": "194839fa3d2aab5a8d12dec90c97965458f9085bb773abd27cfbfb6f841f1e9a"
+    },
+    {
+      "path": "src/gui/absteckung/raster.rs",
+      "sha256": "27d9312ce7e06c3ed18cc9669faf62d9e82e31304395d83afa9043c84e213ed6"
+    },
+    {
+      "path": "src/gui/absteckung/schnurgeruest.rs",
+      "sha256": "450d876d2d0cb14808ab6e187d3be46feba1fdcd5221403c7f282f66e904be96"
+    },
+    {
+      "path": "src/gui/aufnahmetest.rs",
+      "sha256": "58395eeedee971a9f53885596a638fc652b5069886702f71626461bfddef902e"
+    },
+    {
+      "path": "src/gui/berechnungen.rs",
+      "sha256": "a6ba743f93e2a0de1839d5faade24abec960d15aac7b2d36ecee521b1ddf725a"
+    },
+    {
+      "path": "src/gui/bildschirmfoto.rs",
+      "sha256": "dd07d2dc124d0af17fd38946bbd14d6ee7e266161e35133f5e45797f02be2c02"
+    },
+    {
+      "path": "src/gui/daten_editor.rs",
+      "sha256": "37accbfb0e16a1a8f1d5a728baea66ed51babed8dda8fc76846475fca41aa408"
+    },
+    {
+      "path": "src/gui/dxf_viewer.rs",
+      "sha256": "10c14309accc8a1164fc7459762d3fc93680f69a24cdfe473edc9df1038c1222"
+    },
+    {
+      "path": "src/gui/dxf_viewer/export.rs",
+      "sha256": "fee2adb0bf1ca32fec22770d232f57caa70efad6027aa19a22d6da753b07df64"
+    },
+    {
+      "path": "src/gui/dxf_viewer/messdaten_eingabe.rs",
+      "sha256": "4a2cb93f0893e14f4b818b014cb4f8460b0721956a9320cb9381c8819175e90b"
+    },
+    {
+      "path": "src/gui/dxf_viewer/messen.rs",
+      "sha256": "7777d12c39921b9d54dbc3b13ba5c7465b4f934f7ba3f606ecc941795bb9cc8c"
+    },
+    {
+      "path": "src/gui/dxf_viewer/pdf_export.rs",
+      "sha256": "693a7a7982604fc29e60532debb9e8abc19c20e08a18f2bfbf00fb95efe05961"
+    },
+    {
+      "path": "src/gui/dxf_viewer/zeichnen.rs",
+      "sha256": "7928b6245d069ca85ba4056c62f8e60462d0a56624734dbfb6beae67355da54c"
+    },
+    {
+      "path": "src/gui/flaechenteilung.rs",
+      "sha256": "7c06dc0c36192719e32f495bcc158abe702473b535c8535afadaceeff9a11c7a"
+    },
+    {
+      "path": "src/gui/freie_stationierung.rs",
+      "sha256": "fd8050aeb829b02392a6ccc18e7922fc3151eaf6c7f9bd3b04cb75ffcad58b56"
+    },
+    {
+      "path": "src/gui/geraet.rs",
+      "sha256": "faf4f90dbec4111037db1598f53e7673a66bfd6fb637770d79490fa8e0d59dfa"
+    },
+    {
+      "path": "src/gui/hauptfenster.rs",
+      "sha256": "ad36fc6f0a2d64097026173f95a75e0b35e762f5d04c619dd6c0cc994fa4c0be"
+    },
+    {
+      "path": "src/gui/kommunikation.rs",
+      "sha256": "457df878335aaf8e885272becf09949ce368040554bed777b48a0653565d0960"
+    },
+    {
+      "path": "src/gui/konvertierung.rs",
+      "sha256": "005bc61174e788dc8c62652548654ef6cfc20fa576ac33528edd0acbdc1df06a"
+    },
+    {
+      "path": "src/gui/koord_transformation.rs",
+      "sha256": "31208476cc98876d6d83c0982b9dc37a1b8f948575355a1a2f78b6439d815392"
+    },
+    {
+      "path": "src/gui/libelle.rs",
+      "sha256": "e2564c66825f2896648f2cc97ae55e38b3f3f8de45524773b1c8922b01010b2c"
+    },
+    {
+      "path": "src/gui/mod.rs",
+      "sha256": "19e94dce00e1bf821d6ba40e465a40075dc5748d206c989b326c35d014ccc133"
+    },
+    {
+      "path": "src/gui/polarpunkte.rs",
+      "sha256": "ce87e6051af6dc64015980b10461118793d03861277fab8aee3134467505d635"
+    },
+    {
+      "path": "src/gui/projekt_dialog.rs",
+      "sha256": "97a365d324b425acc5a9f700b5fa968b0388f113602fa0e4a1857c8309324e1c"
+    },
+    {
+      "path": "src/gui/projektdaten_ansicht.rs",
+      "sha256": "3612d8d392b31170ac98a4f8c722f4692010ce7bbca58d56432337484bf4e79f"
+    },
+    {
+      "path": "src/gui/rechenparameter_ansicht.rs",
+      "sha256": "d70ec0676c7393e9ca91694b78c1d06f834dd34da81b6ce2dce566bf40555490"
+    },
+    {
+      "path": "src/gui/stationierungs_hinweis.rs",
+      "sha256": "15bc61297464b5cccf795b816dd97e4e8d3af074f4b1d1528bbd24dd548cf8e2"
+    },
+    {
+      "path": "src/gui/tabelle.rs",
+      "sha256": "6c9d8fe817c37b992bbc384cb7a6c07fd3847dff2427b596d2f91d149d38046b"
+    },
+    {
+      "path": "src/gui/testmessungen.rs",
+      "sha256": "09d8c397762562205abf05fe016a4dcfdbf8fdfc77175eab2bf4dbb4377ee0d0"
+    },
+    {
+      "path": "src/gui/update_dialog.rs",
+      "sha256": "9cca4fbb0fd146aa8f61e55503b243ae13b64be297e08a4f6ca90f8eac3cc002"
+    },
+    {
+      "path": "src/main.rs",
+      "sha256": "aa2816c4e6221930f908fa31e67d89a00a659c1c8a62131a80202e5446297392"
+    },
+    {
+      "path": "src/protokolle/absteckung.rs",
+      "sha256": "1d9dddb75cd6aa452db804ff178a55566bd009cd8895852e5b69174320df5958"
+    },
+    {
+      "path": "src/protokolle/berechnungen.rs",
+      "sha256": "8c50830c8c83d838491b62b565ce6e28efc7d04d5b49d572754107748699d933"
+    },
+    {
+      "path": "src/protokolle/fl_teilung.rs",
+      "sha256": "101c23c4978dd89dca2e6272b7ec5a44508bf4f68fa81c2cb5afa0361dff9cc7"
+    },
+    {
+      "path": "src/protokolle/mod.rs",
+      "sha256": "4c04b029e64a73a94f196d29bd6e0fa9dba0f5fc802be5289787503a8526136a"
+    },
+    {
+      "path": "src/protokolle/polar.rs",
+      "sha256": "ebe531d55dc387dbdcc4d6dfcba8739424a45b0e235bbfad004b62e0e59d036f"
+    },
+    {
+      "path": "src/protokolle/rtf.rs",
+      "sha256": "78bbe66a7147c826cf4a2b5e5d3c569f9cc81455ff9b178a5a6c4d2dcddd7bc6"
+    },
+    {
+      "path": "src/protokolle/stationierung.rs",
+      "sha256": "bce92d2e6949d7db961a2a012c0c87c30f9ece4c7fa07559c5b1143f25c3826f"
+    },
+    {
+      "path": "src/protokolle/transformation.rs",
+      "sha256": "1b89129af2d735784b864c7977cfb113119e40fb4de836c2ac89eeea6be67802"
+    },
+    {
+      "path": "src/rechnen/absteckung.rs",
+      "sha256": "687be982b772bd7d3262f7175a9b21e563bf3658bb0105119c4c590d3c6d62e5"
+    },
+    {
+      "path": "src/rechnen/bogenschnitt.rs",
+      "sha256": "b1f6519c8249ffe70ba9289f91090e2f6060e8cb1d1854d9bf1fcc0ef4e67c91"
+    },
+    {
+      "path": "src/rechnen/flaechenteilung.rs",
+      "sha256": "4ef41d324d4e709c8d8b4988ef5014fdb3b85bab98458fda33c3c2f63ec3fcdf"
+    },
+    {
+      "path": "src/rechnen/freie_stationierung.rs",
+      "sha256": "a3a1e94b9721cd4edb8779f5b3f4c913aff69605018cf4e57087b2c9a9a8bbb6"
+    },
+    {
+      "path": "src/rechnen/gauss.rs",
+      "sha256": "a70b0cb5bf54b7326e62b7101220194d891eba1f294340307232c25ec1f7be56"
+    },
+    {
+      "path": "src/rechnen/hochpunkt.rs",
+      "sha256": "940cbacd2beb6ce1fe543bbe7cd682abbb1da444f145cf86a9494f7d62dce133"
+    },
+    {
+      "path": "src/rechnen/koord_transformation.rs",
+      "sha256": "198d4eb07b1f0204d0b3a7f14997e90a2686f2bc912d1c13c8dcc482a6abab57"
+    },
+    {
+      "path": "src/rechnen/mod.rs",
+      "sha256": "1a4083aff2f661948a9bcf3a86cdc99010365a4878f69a1d2adb988fe7ad3be0"
+    },
+    {
+      "path": "src/rechnen/neupunkt.rs",
+      "sha256": "913be0e2aa646ff96943b10396a16b6ff3f04321ad50da020be69d8242cee7b3"
+    },
+    {
+      "path": "src/rechnen/polar.rs",
+      "sha256": "9801ab2c561547ba015c71bb9277f596d233308b16ef365b6308d5dab7c57754"
+    },
+    {
+      "path": "src/rechnen/rueckwaertsschnitt.rs",
+      "sha256": "c5986ba072c0dd318a85dde4698826c21a5b1d3c32bc10471042ddedaae935c3"
+    },
+    {
+      "path": "src/rechnen/vorwaertsschnitt.rs",
+      "sha256": "4ac885e5d792da5c87a7056261340a96371b108df892ce05f2643c9082eb67ac"
+    },
+    {
+      "path": "src/tachymeter/anfahren.rs",
+      "sha256": "3f750fff2f306034ade15fcde3d08e616d7fcbb6503ba7030624944970d554d2"
+    },
+    {
+      "path": "src/tachymeter/befehle.rs",
+      "sha256": "9754a107e514d47011b4e3d60df02f682aa8efc7288fe46174cb22dfe02da77d"
+    },
+    {
+      "path": "src/tachymeter/geocom.rs",
+      "sha256": "f3710c976eb9d220bbb0c22883d26ad76c2f0dee78ac6d8315edfb28fa8340b4"
+    },
+    {
+      "path": "src/tachymeter/gnss.rs",
+      "sha256": "fe9ffcba712e940e4a584935659e6e99f8cd8ae95f28a5863b88787a1b1b417c"
+    },
+    {
+      "path": "src/tachymeter/gsi.rs",
+      "sha256": "358cee0fa00e8b35244f7cee11baa752115cb114797169d264d7389e32bbbff8"
+    },
+    {
+      "path": "src/tachymeter/hilfen.rs",
+      "sha256": "f65f6a688a42144234324885e759e0aa6ee539c88b8f639e4ed5c590b44d4844"
+    },
+    {
+      "path": "src/tachymeter/konfiguration.rs",
+      "sha256": "967be5902e25da3e3574af4b58a427ff54db5d6559dc3323501d3624a47fd09a"
+    },
+    {
+      "path": "src/tachymeter/messablauf.rs",
+      "sha256": "8afc10c64da37098a69bf88e23763913e57b603f3b93562c5374db8fef156f82"
+    },
+    {
+      "path": "src/tachymeter/messung.rs",
+      "sha256": "447f73463f1f608fef79963eb8018557ab7691906a962a9d372b827cf53dfb14"
+    },
+    {
+      "path": "src/tachymeter/mod.rs",
+      "sha256": "e4a60e77a9ac7c91ebb9f7d1f237e57bc4848b4647744aeef5b2ef01baf91d3c"
+    },
+    {
+      "path": "src/tachymeter/modell.rs",
+      "sha256": "18213ebebf65ad37584d06e046f2c74ad84554575c74c165a11e8dedde7aa5b6"
+    },
+    {
+      "path": "src/tachymeter/schalter.rs",
+      "sha256": "8de348389a0415f9bb1a8c76dafc8dcb8aa464da07f72d214bfd1a5c3ebe9c17"
+    },
+    {
+      "path": "src/tachymeter/testmessung.rs",
+      "sha256": "27da089bb1bc6739b0405ae98085023eacacc2e51580073045b583fe9099abb0"
+    },
+    {
+      "path": "src/tachymeter/topcon.rs",
+      "sha256": "a20904e40d0a777f30aefc1a080740689708b291f5ce8ecb653103c1eea4ee98"
+    },
+    {
+      "path": "src/tachymeter/verbindung.rs",
+      "sha256": "faaffce0416c8f1db9f75e2611fd438150ec87b66c7934a06ef006fe25420764"
+    },
+    {
+      "path": "src/update.rs",
+      "sha256": "74112465725e5acb03a45e71541adbacecb64d1e101f824d3cf46e62154986ab"
+    }
+  ]
+}

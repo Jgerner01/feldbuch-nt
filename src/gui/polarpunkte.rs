@@ -18,6 +18,7 @@ use crate::daten::modelle::{NeupunktErgebnis, NeupunktRohdaten, PunktResiduum, S
 use crate::daten::polar_messdaten::{self, PolarMessdaten, PolarMessung};
 use crate::daten::projekt::Projekt;
 use crate::daten::punktlisten::QUELLE_POLAR;
+use crate::daten::stationierung_csv::{self, StationierungsImport};
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::grundlagen::{fehler_log, protokoll};
 use crate::protokolle::polar::{self as prot_polar, PolarAnschluss, PolarDaten, PolarPunkt, STATUS_ERSETZT, STATUS_NEU};
@@ -27,8 +28,8 @@ use crate::rechnen::neupunkt;
 use crate::rechnen::polar::{self, EXZ_INFO_GRENZE_M, FESTPUNKT_ABWEICHUNG_INFO_M, MIN_ANSCHLUSSPUNKTE_INFO, MassstabErgebnis, UEBERSCHREIBEN_RUECKFRAGE_M};
 use crate::tachymeter::modell::TachymeterModell;
 
-/// Standardstandpunkt für Messungen ohne Standpunktangabe.
-const STANDPUNKT_STANDARD: &str = "SP01";
+/// Gruppenname für Messungen ohne Standpunktangabe (keine erfundene Standpunktnummer).
+const OHNE_STANDPUNKT: &str = "(ohne Standpunkt)";
 /// Platzhalter für nicht vorhandene Werte.
 const STRICH: &str = "–";
 /// Prozent.
@@ -53,6 +54,8 @@ const UNTEN_HOEHE: f32 = 62.0;
 const KNOPF_HOEHE: f32 = 36.0;
 /// Höhe der Kopfschaltflächen.
 const KOPF_KNOPF_HOEHE: f32 = 30.0;
+/// Breite der Schaltflächen zum Laden der stp.csv und dat.csv.
+const DATEI_KNOPF_BREITE: f32 = 260.0;
 /// Breite des Statustexts im Fußbereich.
 const STATUS_BREITE: f32 = 420.0;
 /// Höhe des Ergebnisfelds unter der Anschlusspunkttabelle.
@@ -92,13 +95,26 @@ enum Frage {
     Kor(PathBuf),
 }
 
+/// Herkunft der Anschlussmessungen (obere Tabelle).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AnschlussQuelle {
+    /// Gespeicherte Stationierung (Station-{SP}.json).
+    Station,
+    /// AP-Zeilen der Messdaten-Datei (dat.csv).
+    Dat,
+    /// Vom Benutzer gewählte Standpunkt-Datei (stp.csv).
+    Stp,
+}
+
 /// Formular der Polarpunkte.
 pub struct PolarpunkteAnsicht {
     daten: Option<PolarMessdaten>,
     standpunkte: Vec<String>,
     sp_index: usize,
     instr_hoehe: String,
-    quelle_station: bool,
+    quelle: AnschlussQuelle,
+    /// Gewählte Standpunkt-Datei (stp.csv) für die Anschlusspunkte.
+    stp_datei: Option<(PathBuf, StationierungsImport)>,
     ap: Vec<StationierungsPunkt>,
     akt: Vec<[bool; 3]>,
     np: Vec<PolarMessung>,
@@ -183,7 +199,8 @@ impl PolarpunkteAnsicht {
             standpunkte: Vec::new(),
             sp_index: 0,
             instr_hoehe: String::new(),
-            quelle_station: false,
+            quelle: AnschlussQuelle::Dat,
+            stp_datei: None,
             ap: Vec::new(),
             akt: Vec::new(),
             np: Vec::new(),
@@ -216,16 +233,74 @@ impl PolarpunkteAnsicht {
         self.eigene_datei.clone().unwrap_or_else(|| messdaten::messdatei_pfad(&projekt.einstellungen))
     }
 
-    /// „CSV laden“: Messdaten-Datei wählen und einlesen.
-    fn waehle_csv(&mut self, projekt: &Projekt) {
-        let mut dialog = rfd::FileDialog::new().set_title("Messdaten-CSV laden").add_filter("CSV-Dateien (*.csv)", &["csv"]);
+    /// Dateidialog für CSV-Dateien im Projektverzeichnis.
+    fn csv_dialog(projekt: &Projekt, titel: &str) -> Option<PathBuf> {
+        let mut dialog = rfd::FileDialog::new().set_title(titel).add_filter("CSV-Dateien (*.csv)", &["csv"]);
         if projekt.einstellungen.ist_geladen() {
             dialog = dialog.set_directory(&projekt.einstellungen.projekt_verzeichnis);
         }
-        if let Some(pfad) = dialog.pick_file() {
+        dialog.pick_file()
+    }
+
+    /// „Messdaten (dat.csv) laden“: Messdaten-Datei für die Polarpunkte wählen und einlesen.
+    fn waehle_dat(&mut self, projekt: &Projekt) {
+        if let Some(pfad) = Self::csv_dialog(projekt, "Messdaten (dat.csv) laden") {
             self.eigene_datei = Some(pfad);
             self.lade_datei(projekt);
         }
+    }
+
+    /// „Standpunktdaten (stp.csv) laden“: Anschlussmessungen für die Orientierung wählen und einlesen.
+    fn waehle_stp(&mut self, projekt: &Projekt) {
+        let Some(pfad) = Self::csv_dialog(projekt, "Standpunktdaten (stp.csv) laden") else {
+            return;
+        };
+        let import = std::fs::read_to_string(&pfad).map_err(|e| e.to_string()).and_then(|text| stationierung_csv::parse(&text));
+        match import {
+            Ok(import) => {
+                self.stp_datei = Some((pfad, import));
+                self.quelle = AnschlussQuelle::Stp;
+                self.lade_datei(projekt);
+            }
+            Err(fehler) => {
+                fehler_log::log("Polarpunkte.waehle_stp", &fehler);
+                self.melde("Standpunktdaten laden", format!("Die Datei konnte nicht gelesen werden:\n{}\n\n{fehler}", pfad.display()));
+            }
+        }
+    }
+
+    /// AufstellungId aus dem Kopf der gewählten stp.csv.
+    fn stp_aufstellung_id(&self) -> Option<&str> {
+        self.stp_datei.as_ref().and_then(|(_, i)| i.dokument.meta("AufstellungId")).filter(|id| !id.trim().is_empty())
+    }
+
+    /// Standpunktgruppe der Messdaten, die zur stp.csv gehört: zuerst gleiche AufstellungId
+    /// (bei mehreren Gruppen die mit den meisten Polarmessungen), sonst gleiche Standpunktnummer.
+    fn passender_standpunkt_zur_stp(&self) -> Option<usize> {
+        let daten = self.daten.as_ref()?;
+        let anzahl_np = |g: &String, bedingung: &dyn Fn(&PolarMessung) -> bool| {
+            daten.messungen.iter().filter(|m| m.gruppe() == *g && !m.ist_anschlusspunkt() && bedingung(m)).count()
+        };
+        let beste = |bedingung: &dyn Fn(&PolarMessung) -> bool| {
+            self.standpunkte
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| daten.messungen.iter().any(|m| m.gruppe() == **g && bedingung(m)))
+                .max_by_key(|(i, g)| (anzahl_np(g, bedingung), std::cmp::Reverse(*i)))
+                .map(|(i, _)| i)
+        };
+        if let Some(id) = self.stp_aufstellung_id() {
+            if let Some(i) = beste(&|m: &PolarMessung| m.aufstellung_id == id) {
+                return Some(i);
+            }
+        }
+        let sp = self.stp_kopf().0?;
+        beste(&|m: &PolarMessung| m.standpunkt_nr.eq_ignore_ascii_case(sp))
+    }
+
+    /// Standpunktnummer und Instrumentenhöhe aus der gewählten stp.csv.
+    fn stp_kopf(&self) -> (Option<&str>, Option<f64>) {
+        self.stp_datei.as_ref().map_or((None, None), |(_, i)| (i.standpunkt.as_deref(), i.instrumentenhoehe))
     }
 
     fn sp_gruppe(&self) -> String {
@@ -274,15 +349,17 @@ impl PolarpunkteAnsicht {
             }
         };
         for m in daten.messungen.iter_mut().filter(|m| m.standpunkt_nr.is_empty()) {
-            m.standpunkt_nr = STANDPUNKT_STANDARD.to_string();
+            m.standpunkt_nr = OHNE_STANDPUNKT.to_string();
         }
         self.standpunkte = daten.standpunkte();
         self.daten = Some(daten);
         let aktuell = &projekt.station.standpunkt_nr;
-        match self
-            .standpunkte
-            .iter()
-            .position(|s| s == aktuell || self.daten.as_ref().is_some_and(|d| d.messungen.iter().any(|m| m.gruppe() == **s && m.aufstellung_id == projekt.station.aufstellung_id)))
+        // Bei gewählter stp.csv den passenden Standpunkt der Messdaten wählen.
+        let stp_index = if self.quelle == AnschlussQuelle::Stp { self.passender_standpunkt_zur_stp() } else { None };
+        match stp_index
+            .or_else(|| {
+                self.standpunkte.iter().position(|s| s == aktuell || self.daten.as_ref().is_some_and(|d| d.messungen.iter().any(|m| m.gruppe() == **s && m.aufstellung_id == projekt.station.aufstellung_id)))
+            })
             .or_else(|| self.standpunkte.len().checked_sub(1))
         {
             Some(i) => {
@@ -303,7 +380,10 @@ impl PolarpunkteAnsicht {
         }
         let gruppe = self.sp_gruppe();
         let messung = daten.messungen.iter().find(|m| m.gruppe() == gruppe);
-        let ih = if let Some(ih) = messung.and_then(|m| m.instrumenten_hoehe) {
+        let stp_ih = self.stp_kopf().1.filter(|_| self.quelle == AnschlussQuelle::Stp);
+        let ih = if let Some(ih) = stp_ih {
+            ih
+        } else if let Some(ih) = messung.and_then(|m| m.instrumenten_hoehe) {
             ih
         } else if &projekt.station.standpunkt_nr == &sp && projekt.station.instrumenten_hoehe > 0.0 {
             projekt.station.instrumenten_hoehe
@@ -313,9 +393,12 @@ impl PolarpunkteAnsicht {
             projekt.einstellungen.instrumenten_hoehe
         };
         self.instr_hoehe = f(ih, 3);
-        self.quelle_station = projekt
-            .lese_station_datei(&sp)
-            .is_some_and(|d| !d.messungen.is_empty() && messung.is_some_and(|m| m.aufstellung_id.is_empty() || m.aufstellung_id == d.aufstellung_id));
+        if self.quelle != AnschlussQuelle::Stp || self.stp_datei.is_none() {
+            let gespeichert = projekt
+                .lese_station_datei(&sp)
+                .is_some_and(|d| !d.messungen.is_empty() && messung.is_some_and(|m| m.aufstellung_id.is_empty() || m.aufstellung_id == d.aufstellung_id));
+            self.quelle = if gespeichert { AnschlussQuelle::Station } else { AnschlussQuelle::Dat };
+        }
         self.fuelle_tabellen(projekt);
     }
 
@@ -323,6 +406,12 @@ impl PolarpunkteAnsicht {
         let sp = self.sp_name();
         self.lade_hinweise.clear();
         if let Some(d) = &self.daten {
+            self.lade_hinweise.extend(d.hinweise.iter().cloned());
+            let ohne_strecke: Vec<&str> =
+                d.messungen.iter().filter(|m| m.gruppe() == self.sp_gruppe() && !m.ist_anschlusspunkt() && m.strecke_m <= 0.0).map(|m| m.punkt_nr.as_str()).collect();
+            if !ohne_strecke.is_empty() {
+                self.lade_hinweise.push(format!("Ohne Strecke, daher nicht berechenbar: {}", ohne_strecke.join(", ")));
+            }
             if d.messungen.iter().any(|m| m.gruppe() == self.sp_gruppe() && m.typ_geschaetzt) {
                 self.lade_hinweise.push("Altdatei: AP/NP wurde aus vorhandenen Koordinaten abgeleitet. Zuordnung prüfen.".into());
             }
@@ -334,10 +423,10 @@ impl PolarpunkteAnsicht {
         self.ap.clear();
         self.np.clear();
         if let Some(daten) = self.daten.clone().filter(|_| !sp.is_empty()) {
-            if self.quelle_station {
-                self.lade_anschluss_aus_station(projekt, &sp);
-            } else {
-                self.lade_anschluss_aus_dat(projekt, &daten, &sp);
+            match self.quelle {
+                AnschlussQuelle::Station => self.lade_anschluss_aus_station(projekt, &sp),
+                AnschlussQuelle::Dat => self.lade_anschluss_aus_dat(projekt, &daten, &sp),
+                AnschlussQuelle::Stp => self.lade_anschluss_aus_stp(&sp),
             }
             self.akt = self.ap.iter().map(|p| [true, true, p.hoehe.is_finite()]).collect();
             self.np = daten.messungen.iter().filter(|m| !m.ist_anschlusspunkt() && m.gruppe() == self.sp_gruppe()).cloned().collect();
@@ -352,6 +441,24 @@ impl PolarpunkteAnsicht {
         match projekt.lese_station_datei(sp) {
             Some(datei) => self.ap = datei.messungen,
             None => self.station_fehler = format!("Keine gespeicherte Stationierung für {sp}. Quelle „neu aus dat.csv“ wählen."),
+        }
+    }
+
+    fn lade_anschluss_aus_stp(&mut self, sp: &str) {
+        let Some((pfad, import)) = &self.stp_datei else {
+            self.station_fehler = "Keine Standpunktdaten (stp.csv) geladen.".to_string();
+            return;
+        };
+        self.ap = import.punkte.clone();
+        if let Some(stp_sp) = import.standpunkt.as_deref().filter(|s| !s.eq_ignore_ascii_case(sp)) {
+            let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let id = import.dokument.meta("AufstellungId").unwrap_or("");
+            let gleiche_aufstellung = !id.is_empty() && id == self.sp_id();
+            self.lade_hinweise.push(if gleiche_aufstellung {
+                format!("stp.csv ({name}) gehört zur selben Aufstellung, aber mit Standpunktnummer {stp_sp} statt {sp}.")
+            } else {
+                format!("Standpunkt der stp.csv ({name}: {stp_sp}) weicht vom Standpunkt der Messdaten ({sp}) ab. Zuordnung prüfen.")
+            });
         }
     }
 
@@ -472,7 +579,7 @@ impl PolarpunkteAnsicht {
         (akt_hz, akt_str, akt_hoe): (&[bool], &[bool], &[bool]),
         je_zeile: &mut [Option<PunktResiduum>],
     ) -> Result<StationierungsErgebnis, String> {
-        let (r, h, hoehe) = projekt.finde_anschlusspunkt(sp).ok_or_else(|| format!("Nur ein Anschlussziel: Der Standpunkt {sp} hat keine bekannten Koordinaten."))?;
+        let (r, h, hoehe) = projekt.finde_punkt_mit_standpunkten(sp).ok_or_else(|| format!("Nur ein Anschlussziel: Der Standpunkt {sp} hat keine bekannten Koordinaten."))?;
         let idx = akt_hz.iter().position(|a| *a).ok_or("Keine aktive Richtung zum Anschlussziel.")?;
         let erg = polar::orientierung_aus_einem_ziel(r, h, hoehe, &self.ap[idx], ih, akt_hz[idx], akt_str[idx], akt_hoe[idx], projekt.rechenparameter.params.berechnung_3d)
             .ok_or("Orientierung aus dem Anschlussziel nicht berechenbar (Standpunkt und Ziel identisch?).")?;
@@ -577,6 +684,13 @@ impl PolarpunkteAnsicht {
     // ── Speichern ─────────────────────────────────────────────────────────────
 
     fn speichern(&mut self, projekt: &mut Projekt) {
+        if self.sp_name() == OHNE_STANDPUNKT {
+            self.melde(
+                "Polarpunkte",
+                "Diese Messungen haben keine Standpunktnummer und werden nicht gespeichert.\nBitte die Standpunktnummer in der Messdatei ergänzen (Daten-Editor).",
+            );
+            return;
+        }
         self.neuberechnen(projekt);
         let anzahl = self.ergebnisse.iter().flatten().count();
         if self.station.is_none() || anzahl == 0 {
@@ -738,10 +852,12 @@ impl PolarpunkteAnsicht {
         };
         let quelle = if self.lokal {
             "lokales System"
-        } else if self.quelle_station {
-            "gespeicherter Stationierung"
         } else {
-            "Anschlusspunkten der dat.csv"
+            match self.quelle {
+                AnschlussQuelle::Station => "gespeicherter Stationierung",
+                AnschlussQuelle::Dat => "Anschlusspunkten der dat.csv",
+                AnschlussQuelle::Stp => "Standpunktdaten der stp.csv",
+            }
         };
         let drei_d = par.berechnung_3d && (self.lokal || station.hoehe != 0.0);
         let daten = PolarDaten {
@@ -792,9 +908,34 @@ impl PolarpunkteAnsicht {
         if aenderungen.is_empty() {
             return;
         }
+        // Für das Messprotokoll: Punkt, Aufstellung, alte und neue Werte
+        let protokoll_aenderungen: Vec<(String, String, String, (f64, f64), (f64, f64))> = self
+            .np
+            .iter()
+            .zip(&self.exz_original)
+            .filter(|(m, (l, q))| (l - m.exz_laengs_m).abs() > 1e-9 || (q - m.exz_quer_m).abs() > 1e-9)
+            .map(|(m, (l, q))| (m.punkt_nr.clone(), m.aufstellung_id.clone(), m.standpunkt_nr.clone(), (*l, *q), (m.exz_laengs_m, m.exz_quer_m)))
+            .collect();
         let pfad = self.datei_pfad(projekt);
         match messdaten::schreibe_exzentrizitaeten(&pfad, &aenderungen) {
             Ok(()) => {
+                {
+                    use crate::daten::messprotokoll::{self as mp, Eintrag, Ereignis};
+                    let e = &projekt.einstellungen;
+                    let eintraege = if mp::pfad(e).exists() { mp::lese(&mp::pfad(e)).unwrap_or_default() } else { Vec::new() };
+                    for (nr, id, sp, (l0, q0), (l1, q1)) in &protokoll_aenderungen {
+                        let mut z = Eintrag::neu(Ereignis::Exz)
+                            .punkt(nr, messdaten::TYP_NEUPUNKT, "")
+                            .exzentrizitaet(*l1, *q1)
+                            .aenderung("Exz", &format!("{} / {}", f(*l0, 3), f(*q0, 3)), &format!("{} / {}", f(*l1, 3), f(*q1, 3)))
+                            .bezug(mp::letzte_messung(&eintraege, id, nr, messdaten::TYP_NEUPUNKT))
+                            .quelle(mp::QUELLE_HAND)
+                            .text("Exzentrizität in der Polarpunktberechnung geändert (längs / quer)");
+                        z.aufstellung_id.clone_from(id);
+                        z.standpunkt_nr.clone_from(sp);
+                        mp::protokolliere(e, z);
+                    }
+                }
                 self.exz_original = self.np.iter().map(|m| (m.exz_laengs_m, m.exz_quer_m)).collect();
                 // Die kanonische Ausgabe kann Kopfzeilen/mehrzeilige Felder
                 // verschieben. Indizes vor dem nächsten Speichern aktualisieren.
@@ -908,15 +1049,60 @@ impl PolarpunkteAnsicht {
                 self.rechenparameter = Some(RechenparameterAnsicht::default());
             }
             laden = ui.add(egui::Button::new("Neu laden").min_size(egui::Vec2::new(100.0, KOPF_KNOPF_HOEHE))).clicked();
-            csv_laden = ui.add(egui::Button::new("CSV laden …").min_size(egui::Vec2::new(120.0, KOPF_KNOPF_HOEHE))).clicked();
         });
+        let (mut stp_laden, mut stp_entfernen, mut projekt_datei) = (false, false, false);
+        let knopf = egui::Vec2::new(DATEI_KNOPF_BREITE, KOPF_KNOPF_HOEHE);
+        let dateiname = |pfad: &Path| pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| STRICH.to_string());
+        egui::Grid::new("polar_dateien").num_columns(4).spacing([12.0, 4.0]).show(ui, |ui| {
+            // Obere Tabelle: Anschlussmessungen aus der stp.csv
+            stp_laden = ui.add(egui::Button::new("Standpunktdaten (stp.csv) laden …").min_size(knopf)).clicked();
+            match &self.stp_datei {
+                Some((pfad, import)) => {
+                    let text = format!("{}  ({} AP)", dateiname(pfad), import.punkte.len());
+                    ui.label(RichText::new(text).monospace().strong()).on_hover_text(pfad.display().to_string());
+                }
+                None => {
+                    ui.label(RichText::new("keine stp.csv gewählt").italics());
+                }
+            }
+            stp_entfernen = ui.add_enabled(self.stp_datei.is_some(), egui::Button::new("stp.csv entfernen").min_size(egui::Vec2::new(140.0, KOPF_KNOPF_HOEHE))).clicked();
+            ui.end_row();
+            // Untere Tabelle: Polarmessungen aus der dat.csv
+            csv_laden = ui.add(egui::Button::new("Messdaten (dat.csv) laden …").min_size(knopf)).clicked();
+            let pfad = self.datei_pfad(projekt);
+            ui.label(RichText::new(dateiname(&pfad)).monospace().strong()).on_hover_text(pfad.display().to_string());
+            projekt_datei = ui
+                .add_enabled(self.eigene_datei.is_some(), egui::Button::new("Projekt-dat.csv").min_size(egui::Vec2::new(140.0, KOPF_KNOPF_HOEHE)))
+                .on_hover_text("Zurück zur Messdatei des Projekts")
+                .clicked();
+            ui.end_row();
+        });
+        if projekt_datei {
+            self.eigene_datei = None;
+            laden = true;
+        }
+        if stp_entfernen {
+            self.stp_datei = None;
+            self.quelle = AnschlussQuelle::Dat;
+            laden = true;
+        }
         ui.horizontal(|ui| {
             ui.label("Orientierung aus:");
-            quelle_neu |= ui.radio_value(&mut self.quelle_station, true, "gespeicherter Station").changed();
-            quelle_neu |= ui.radio_value(&mut self.quelle_station, false, "neu aus dat.csv").changed();
+            quelle_neu |= ui.radio_value(&mut self.quelle, AnschlussQuelle::Station, "gespeicherter Station").changed();
+            quelle_neu |= ui.radio_value(&mut self.quelle, AnschlussQuelle::Dat, "neu aus dat.csv").changed();
+            ui.add_enabled_ui(self.stp_datei.is_some(), |ui| {
+                quelle_neu |= ui.radio_value(&mut self.quelle, AnschlussQuelle::Stp, "Standpunktdaten (stp.csv)").changed();
+            });
         });
-        if csv_laden {
-            self.waehle_csv(projekt);
+        if quelle_neu && self.quelle == AnschlussQuelle::Stp {
+            if let Some(ih) = self.stp_kopf().1 {
+                self.instr_hoehe = f(ih, 3);
+            }
+        }
+        if stp_laden {
+            self.waehle_stp(projekt);
+        } else if csv_laden {
+            self.waehle_dat(projekt);
         } else if laden {
             self.lade_datei(projekt);
         } else if standpunkt_neu {

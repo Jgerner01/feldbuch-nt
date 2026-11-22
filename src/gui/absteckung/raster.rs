@@ -4,12 +4,12 @@
 
 use eframe::egui::{self, Color32, RichText, Vec2};
 
-use super::gemeinsam::{PLAN_HOEHE, PlanDaten, ProtokollZiel, lese_zahl, zeichne_lageplan, zeige_standpunkt};
+use super::gemeinsam::{PLAN_HOEHE, PlanDaten, ProtokollZiel, lese_zahl, zeichne_lageplan, standpunkt_fuer_absteckung, zeige_standpunkt};
 use crate::daten::projekt::Projekt;
 use crate::grundlagen::format::f;
 use crate::gui::tabelle::Raster;
 use crate::protokolle::absteckung::{AbsteckProtokoll, RasterEingabe, rasterabsteckung};
-use crate::rechnen::absteckung::{AbsteckPunkt, StandpunktInfo, berechne_raster, lade_standpunkt};
+use crate::rechnen::absteckung::{AbsteckPunkt, StandpunktInfo, berechne_raster};
 
 /// Spaltenbreiten: Punkt, R, H, Hz, s, Status.
 const BREITEN: [f32; 6] = [70.0, 110.0, 110.0, 90.0, 80.0, 90.0];
@@ -23,6 +23,8 @@ const MAX_RASTERZEILEN: usize = 26;
 /// Formular der Rasterabsteckung.
 pub struct RasterAnsicht {
     station: Option<StandpunktInfo>,
+    /// Standpunkt aus dem Rückwärtsschnitt statt aus der aktiven Aufstellung.
+    rueckwaerts: bool,
     r0: String,
     h0: String,
     richtung: String,
@@ -45,7 +47,8 @@ impl Drop for RasterAnsicht {
 impl RasterAnsicht {
     pub fn neu(projekt: &Projekt) -> Self {
         Self {
-            station: lade_standpunkt(&projekt.projektdaten),
+            station: standpunkt_fuer_absteckung(projekt, false),
+            rueckwaerts: false,
             r0: String::new(),
             h0: String::new(),
             richtung: "0.0000".to_string(),
@@ -76,7 +79,7 @@ impl RasterAnsicht {
 
     /// Prüft die Eingaben und berechnet das Raster.
     fn berechne(&mut self, projekt: &Projekt) {
-        self.station = lade_standpunkt(&projekt.projektdaten);
+        self.station = standpunkt_fuer_absteckung(projekt, self.rueckwaerts);
         self.ziel.aktualisiere(projekt);
         match self.rechne() {
             Ok(punkte) => {
@@ -112,7 +115,9 @@ impl RasterAnsicht {
 
     pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &Projekt) {
         ui.heading("Rasterabsteckung");
-        zeige_standpunkt(ui, self.station.as_ref());
+        if zeige_standpunkt(ui, projekt, self.station.as_ref(), &mut self.rueckwaerts) {
+            self.station = standpunkt_fuer_absteckung(projekt, self.rueckwaerts);
+        }
         ui.add_space(4.0);
         egui::Grid::new("raster_eingabe").num_columns(6).spacing([8.0, 4.0]).show(ui, |ui| {
             for (name, text) in [("R0 [m]:", &mut self.r0), ("H0 [m]:", &mut self.h0), ("Richtung [gon]:", &mut self.richtung)] {
@@ -174,6 +179,7 @@ mod tests {
     fn ansicht() -> RasterAnsicht {
         RasterAnsicht {
             station: None,
+            rueckwaerts: false,
             r0: "100".into(),
             h0: "200,5".into(),
             richtung: "0".into(),

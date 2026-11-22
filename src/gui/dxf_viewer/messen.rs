@@ -6,10 +6,11 @@
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Stroke, Vec2};
 
 use crate::daten::messdaten;
-use crate::daten::modelle::{NeupunktRohdaten, StationierungsErgebnis, StationierungsPunkt};
+use crate::daten::messprotokoll::{self, Eintrag, Ereignis};
+use crate::daten::modelle::{NeupunktRohdaten, StationierungsErgebnis};
 use crate::daten::projekt::Projekt;
 use crate::grundlagen::format::{f, parse_zahl};
-use crate::grundlagen::{fehler_log, protokoll, ton};
+use crate::grundlagen::{protokoll, ton};
 use crate::rechnen::neupunkt;
 use crate::rechnen::polar::{EXZ_INFO_GRENZE_M, exzentrizitaet_gross, ist_massstab_eins};
 use crate::tachymeter::konfiguration::Konfiguration;
@@ -19,12 +20,6 @@ use super::{Dialog, DxfViewer};
 use crate::gui::geraet::Geraet;
 use crate::tachymeter::messablauf::MessErgebnis;
 
-/// Standard-Standpunktnummer, wenn das Feld leer ist.
-const STANDARD_STANDPUNKT: &str = "SP01";
-/// Präfix der automatisch vergebenen Anschlusspunktnummer.
-const ANSCHLUSS_PRAEFIX: &str = "AP";
-/// Mindestanzahl Anschlusspunkte für eine Stationierung.
-const MIN_ANSCHLUSSPUNKTE: usize = 2;
 /// Nachkommastellen der Exzentrizitätsfelder nach dem Zurücksetzen.
 const EXZ_NULL_TEXT: &str = "0.000";
 /// Vollkreis in gon.
@@ -152,10 +147,7 @@ impl DxfViewer {
     pub(super) fn bediene_geraet(&mut self, projekt: &mut Projekt, geraet: &mut Geraet) {
         // Wurde die Stationierung außerhalb des Viewers geändert (Fenster Freie Stationierung), Anzeigen erneuern
         if self.gesehene_station_version != projekt.station_version {
-            self.gesehene_station_version = projekt.station_version;
-            self.baue_overlay(projekt);
-            self.baue_neupunkte_overlay(projekt);
-            self.baue_qualitaets_overlay(projekt);
+            self.nach_standpunktwechsel(projekt);
         }
         geraet.live_hz_aktiv = true;
         // V wird nur für die getrennte Messung (hier) und den Messdaten-Dialog (schaltet selbst ein) abgefragt
@@ -177,7 +169,7 @@ impl DxfViewer {
                     ton::fehler();
                 }
             }
-            Some(MessErgebnis::Messung(m)) => self.verarbeite_messung(projekt, geraet, &m),
+            Some(MessErgebnis::Messung(m)) => self.verarbeite_messung(projekt, geraet, &m, false),
             Some(MessErgebnis::Fehler(text)) => {
                 self.status = format!("Messung fehlgeschlagen: {text}");
                 ton::fehler();
@@ -187,7 +179,12 @@ impl DxfViewer {
     }
 
     /// Reaktion auf den Messen-Button.
-    pub(super) fn messen_geklickt(&mut self, geraet: &mut Geraet) {
+    pub(super) fn messen_geklickt(&mut self, projekt: &Projekt, geraet: &mut Geraet) {
+        if !projekt.hat_aktive_aufstellung() {
+            self.status = "Kein Standpunkt – bitte zuerst „Neuer Stp“ (oben links).".to_string();
+            ton::fehler();
+            return;
+        }
         let zielhoehe = parse_zahl(&self.txt_zielhoehe).unwrap_or(0.0);
         match geraet.starte_messung(zielhoehe) {
             Ok(()) => self.status = "Messung startet …".to_string(),
@@ -210,7 +207,7 @@ impl DxfViewer {
         m.hz_gon = Some(hz);
         m.v_gon = Some(v);
         self.getrennt_messung = None;
-        self.verarbeite_messung(projekt, geraet, &m);
+        self.verarbeite_messung(projekt, geraet, &m, true);
     }
 
     fn lese_exzentrizitaet(text: &str) -> f64 {
@@ -227,8 +224,14 @@ impl DxfViewer {
         StationierungsErgebnis { massstab: 1.0, konvergiert: true, ist_lokales_system: true, ..StationierungsErgebnis::default() }
     }
 
-    /// Port von VerarbeiteMiessung des Originals.
-    fn verarbeite_messung(&mut self, projekt: &mut Projekt, geraet: &Geraet, m: &TachymeterMessung) {
+    /// Port von VerarbeiteMiessung des Originals. Standpunkt, Instrumentenhöhe und AufstellungId kommen immer aus
+    /// der aktiven Aufstellung; ohne aktive Aufstellung wird nichts gespeichert.
+    fn verarbeite_messung(&mut self, projekt: &mut Projekt, geraet: &Geraet, m: &TachymeterMessung, getrennt: bool) {
+        if !projekt.hat_aktive_aufstellung() {
+            self.status = "Kein Standpunkt – bitte zuerst „Neuer Stp“ (oben links). Messung nicht gespeichert.".to_string();
+            ton::fehler();
+            return;
+        }
         let (Some(hz), Some(v), Some(strecke)) = (m.hz_gon, m.v_gon, m.schraegstrecke_m) else {
             self.status = "Messung unvollständig (Hz, V oder Strecke fehlt).".to_string();
             ton::fehler();
@@ -243,27 +246,26 @@ impl DxfViewer {
 
         let mut punkt_nr = self.txt_punkt_nr.trim().to_string();
         let code = self.txt_code.trim().to_string();
-        let instr_hoehe = parse_zahl(&self.txt_instr_hoehe).filter(|v| *v >= 0.0).unwrap_or(projekt.einstellungen.instrumenten_hoehe);
-        let mut standpunkt = self.txt_standpunkt.trim().to_string();
-        if standpunkt.is_empty() {
-            standpunkt = STANDARD_STANDPUNKT.to_string();
-        }
         let zielhoehe = m.zielhoehe_m.unwrap_or(0.0);
-
-        // Lückenloses Tagesprotokoll: jede Messung sofort sichern
-        let protokoll_nr = if self.neupunkt_modus && punkt_nr.is_empty() { self.neupunkt_zaehler.to_string() } else { punkt_nr.clone() };
-        let methode = if self.neupunkt_modus { "Neupunkt" } else { "Stationierung" };
-        if let Err(fehler) = messdaten::schreibe_tagesprotokoll(&projekt.einstellungen, methode, &standpunkt, instr_hoehe, &protokoll_nr, &code, m) {
-            fehler_log::log("DxfViewer.verarbeite_messung", &format!("Tagesprotokoll: {fehler}"));
-        }
 
         if self.neupunkt_modus {
             if punkt_nr.is_empty() {
                 punkt_nr = self.neupunkt_zaehler.to_string();
             }
-            self.verarbeite_neupunkt(projekt, m, punkt_nr, code, standpunkt, instr_hoehe, (hz, v, strecke, zielhoehe));
+            self.verarbeite_neupunkt(projekt, m, punkt_nr, code, (hz, v, strecke, zielhoehe), getrennt);
         } else {
-            self.verarbeite_stationierung(projekt, m, punkt_nr, standpunkt, instr_hoehe, (hz, v, strecke, zielhoehe));
+            // Anschlusspunkte werden über den identischen Punkt im Plan gemessen (Dialog „Messdaten eingeben“)
+            messprotokoll::protokolliere(
+                &projekt.einstellungen,
+                Eintrag::neu(Ereignis::Verworfen)
+                    .mit_messung(m)
+                    .mit_prisma(&projekt.einstellungen)
+                    .mit_aufstellung(&projekt.station)
+                    .punkt(&punkt_nr, "", &code)
+                    .text("Messung im Stationierungsmodus ohne Punktbezug"),
+            );
+            self.status = "Stationierungsmodus: bitte den identischen Punkt im Plan antippen und dort messen (nur im Messprotokoll als verworfen vermerkt).".to_string();
+            ton::fehler();
         }
 
         if let Some(w) = warnung {
@@ -271,18 +273,11 @@ impl DxfViewer {
         }
     }
 
-    fn verarbeite_neupunkt(
-        &mut self,
-        projekt: &mut Projekt,
-        m: &TachymeterMessung,
-        punkt_nr: String,
-        code: String,
-        standpunkt: String,
-        instr_hoehe: f64,
-        (hz, v, strecke, zielhoehe): (f64, f64, f64, f64),
-    ) {
+    fn verarbeite_neupunkt(&mut self, projekt: &mut Projekt, m: &TachymeterMessung, punkt_nr: String, code: String, (hz, v, strecke, zielhoehe): (f64, f64, f64, f64), getrennt: bool) {
+        let standpunkt = projekt.station.standpunkt_nr.clone();
+        let instr_hoehe = projekt.station.instrumenten_hoehe;
         let roh = NeupunktRohdaten {
-            aufstellung_id: messdaten::aufstellung_id(&projekt.einstellungen, &standpunkt, instr_hoehe),
+            aufstellung_id: projekt.station.aufstellung_id.clone(),
             punkt_nr: punkt_nr.clone(),
             code,
             hz_gon: hz,
@@ -294,6 +289,33 @@ impl DxfViewer {
             exz_laengs_m: Self::lese_exzentrizitaet(&self.txt_exz_laengs),
             exz_quer_m: Self::lese_exzentrizitaet(&self.txt_exz_quer),
         };
+        // Messprotokoll zuerst (lückenlos, auch wenn die Messdatei nicht geschrieben werden kann)
+        let vorschlag = self.neupunkt_zaehler.to_string();
+        let mut eintrag = Eintrag::neu(Ereignis::Messung)
+            .mit_messung(m)
+            .mit_prisma(&projekt.einstellungen)
+            .mit_aufstellung(&projekt.station)
+            .punkt(&punkt_nr, messdaten::TYP_NEUPUNKT, &roh.code)
+            .werte(hz, v, strecke, zielhoehe)
+            .exzentrizitaet(roh.exz_laengs_m, roh.exz_quer_m);
+        if getrennt {
+            eintrag = eintrag.quelle(messprotokoll::QUELLE_GETRENNT).text("Strecke gemessen, Hz/V danach vom Gerät übernommen");
+        }
+        if punkt_nr != vorschlag {
+            eintrag = eintrag.text(format!("Punktnummer von Hand (Vorschlag {vorschlag})"));
+        }
+        let vorher = messprotokoll::finde_messung(&projekt.einstellungen, &roh.aufstellung_id, &punkt_nr, messdaten::TYP_NEUPUNKT);
+        if let (Some(lfd), Some(alt)) = (messprotokoll::protokolliere(&projekt.einstellungen, eintrag), vorher) {
+            messprotokoll::protokolliere(
+                &projekt.einstellungen,
+                Eintrag::neu(Ereignis::Ersetzt)
+                    .mit_aufstellung(&projekt.station)
+                    .punkt(&punkt_nr, messdaten::TYP_NEUPUNKT, "")
+                    .bezug(Some(alt))
+                    .quelle(messprotokoll::QUELLE_PROGRAMM)
+                    .text(format!("gleiche Nummer erneut gemessen, ersetzt durch LfdNr {lfd}")),
+            );
+        }
         if let Err(e) = messdaten::schreibe_neupunktmessung(&projekt.einstellungen, &roh, &standpunkt, instr_hoehe) {
             self.status = format!("Messdaten konnten nicht gespeichert werden: {e}");
             ton::fehler();
@@ -304,7 +326,6 @@ impl DxfViewer {
         let mut info = format!("NP {punkt_nr}: Hz={}  V={}  D={} m", f(hz, 4), f(v, 4), f(strecke, 3));
 
         let station = if self.lokales_system {
-            let _ = projekt.set_instrumenten_hoehe(instr_hoehe);
             self.ziel_hz = Some(hz);
             Some(Self::lokale_station())
         } else if projekt.hat_gueltige_station() {
@@ -313,28 +334,36 @@ impl DxfViewer {
             None
         };
 
-        match station {
-            Some(station) => {
-                let params = projekt.rechenparameter.params.clone();
-                if let Some(erg) = neupunkt::berechnen(&roh, &station, &params, None, instr_hoehe) {
-                    if let Err(fehler) = projekt.neupunkte.hinzufuegen_oder_ersetzen(roh.clone(), erg.clone()) {
-                        self.status = format!("Neupunkt konnte nicht gespeichert werden: {fehler}");
-                        return;
-                    }
-                    self.baue_neupunkte_overlay(projekt);
-                    if self.lokales_system && self.ausserhalb_sichtbar(erg.r, erg.h) {
-                        self.lokal_zeigen_ausstehend = true;
-                    }
-                    info = format!("NP {punkt_nr}:  R={}  H={}", f(erg.r, 3), f(erg.h, 3));
-                    if erg.ist_3d {
-                        info.push_str(&format!("  Höhe={}", f(erg.hoehe, 3)));
-                    }
-                    if !ist_massstab_eins(erg.verwendeter_massstab) {
-                        info.push_str(&format!("  (m = {})", f(erg.verwendeter_massstab, 6)));
-                    }
+        let ergebnis = station.and_then(|station| {
+            let params = projekt.rechenparameter.params.clone();
+            neupunkt::berechnen(&roh, &station, &params, None, instr_hoehe)
+        });
+        match ergebnis {
+            Some(erg) => {
+                if let Err(fehler) = projekt.neupunkte.hinzufuegen_oder_ersetzen(roh.clone(), erg.clone()) {
+                    self.status = format!("Neupunkt konnte nicht gespeichert werden: {fehler}");
+                    return;
+                }
+                self.baue_neupunkte_overlay(projekt);
+                if self.lokales_system && self.ausserhalb_sichtbar(erg.r, erg.h) {
+                    self.lokal_zeigen_ausstehend = true;
+                }
+                info = format!("NP {punkt_nr} ({standpunkt}):  R={}  H={}", f(erg.r, 3), f(erg.h, 3));
+                if erg.ist_3d {
+                    info.push_str(&format!("  Höhe={}", f(erg.hoehe, 3)));
+                }
+                if !ist_massstab_eins(erg.verwendeter_massstab) {
+                    info.push_str(&format!("  (m = {})", f(erg.verwendeter_massstab, 6)));
                 }
             }
-            None => info = format!("NP {punkt_nr} gespeichert (keine Stationierung – nur Rohdaten)"),
+            None => {
+                // Rohdaten bleiben der Aufstellung zugeordnet; die Koordinaten entstehen bei der Übernahme der Stationierung
+                if let Err(fehler) = projekt.neupunkte.rohdaten_hinzufuegen(roh.clone()) {
+                    self.status = format!("Neupunkt konnte nicht gespeichert werden: {fehler}");
+                    return;
+                }
+                info = format!("NP {punkt_nr} gespeichert ({standpunkt}, Stationierung offen – Koordinaten folgen bei der Übernahme)");
+            }
         }
 
         if exzentrizitaet_gross(roh.exz_laengs_m, roh.exz_quer_m) {
@@ -349,73 +378,6 @@ impl DxfViewer {
             projekt.einstellungen.neupunkt_zaehler = self.neupunkt_zaehler;
             let _ = projekt.einstellungen.speichern();
             self.txt_punkt_nr = self.neupunkt_zaehler.to_string();
-        }
-    }
-
-    fn verarbeite_stationierung(
-        &mut self,
-        projekt: &mut Projekt,
-        m: &TachymeterMessung,
-        punkt_nr: String,
-        standpunkt: String,
-        instr_hoehe: f64,
-        (hz, v, strecke, zielhoehe): (f64, f64, f64, f64),
-    ) {
-        let anschluss_nr = if punkt_nr.is_empty() { format!("{ANSCHLUSS_PRAEFIX}{}", projekt.station.messungen.len() + 1) } else { punkt_nr };
-        let (r, h, hoehe) = projekt.finde_anschlusspunkt(&anschluss_nr).unwrap_or((0.0, 0.0, 0.0));
-        let punkt = StationierungsPunkt { punkt_nr: anschluss_nr.clone(), r, h, hoehe, hz, v, strecke, zielhoehe };
-
-        if projekt.station.standpunkt_nr.is_empty() || projekt.station.standpunkt_nr != standpunkt {
-            if let Err(fehler) = projekt.neuer_standpunkt(&standpunkt, instr_hoehe) {
-                self.status = format!("Standpunkt konnte nicht angelegt werden: {fehler}");
-                return;
-            }
-            projekt.einstellungen.letzte_standpunkt_nr = standpunkt.clone();
-            let _ = projekt.einstellungen.speichern();
-        }
-        let _ = projekt.set_instrumenten_hoehe(instr_hoehe);
-
-        if let Err(e) = messdaten::schreibe_stationierungsmessung(&projekt.einstellungen, &punkt, &standpunkt, instr_hoehe, m.zeitstempel) {
-            self.status = format!("Messdaten konnten nicht gespeichert werden: {e}");
-            ton::fehler();
-            return;
-        }
-        ton::bestaetigung();
-
-        let ergebnis = match projekt.hinzufuegen_und_berechnen(punkt) {
-            Ok(e) => e,
-            Err(fehler) => {
-                self.status = format!("Stationierung nicht möglich: {fehler}");
-                return;
-            }
-        };
-        self.baue_overlay(projekt);
-
-        match ergebnis {
-            Some(erg) => {
-                if !projekt.hat_gueltige_station() {
-                    self.status = "Stationierung ungültig – Anschlusspunkte und Messungen prüfen.".to_string();
-                    return;
-                }
-                self.baue_residual_overlay(projekt, &erg);
-                // Die Neupunkte hat das Projekt bereits mit der neuen Stationierung neu berechnet
-                let params = projekt.rechenparameter.params.clone();
-                self.baue_neupunkte_overlay(projekt);
-                messdaten::schreibe_standpunktinfo(&projekt.einstellungen, &standpunkt, instr_hoehe, &erg, params.sigma_faktor_wirksam(), params.sigma_wert(erg.s0_mm));
-                self.status = format!("Stationierung {standpunkt}: {}  r={}  n={}", params.sigma_text(erg.s0_mm, 2), erg.redundanz, projekt.station.messungen.len());
-                if !erg.warnung_hoehe.is_empty() {
-                    self.status.push_str(&format!(" | {}", erg.warnung_hoehe));
-                }
-                // Die gespeicherte Beobachtungsauswahl wurde angewendet: abgeschaltete Beobachtungen sichtbar machen
-                let abgeschaltet = projekt.station.aktivierung().anzahl_abgeschaltet();
-                if abgeschaltet > 0 {
-                    self.status.push_str(&format!(" | {abgeschaltet} Beobachtung(en) abgeschaltet"));
-                }
-            }
-            None => {
-                let fehlend = MIN_ANSCHLUSSPUNKTE.saturating_sub(projekt.station.messungen.len());
-                self.status = format!("Anschlusspunkt {anschluss_nr} gespeichert – noch {fehlend} Punkt(e) benötigt.");
-            }
         }
     }
 

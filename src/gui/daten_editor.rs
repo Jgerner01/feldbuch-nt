@@ -201,6 +201,15 @@ impl DatenPanel {
             Ok(()) => {
                 self.geaendert = false;
                 self.meldung = format!("Gespeichert: {}", d.pfad.display());
+                {
+                    use crate::daten::messprotokoll::{self as mp, Eintrag, Ereignis};
+                    mp::protokolliere_aktiv(
+                        Eintrag::neu(Ereignis::Bemerkung)
+                            .quelle(mp::QUELLE_HAND)
+                            .aenderung("Datei", "", &d.pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+                            .text(format!("Datei im Datenmanager bearbeitet und gespeichert ({} Zeilen, Typ {})", d.zeilen.len(), d.datentyp)),
+                    );
+                }
             }
             Err(fehler) => {
                 fehler_log::log("Datenmanager.speichern", &fehler.to_string());

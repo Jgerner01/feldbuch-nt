@@ -40,7 +40,6 @@ pub enum FeldArt {
     Zielhoehe,
     ExzLaengs,
     ExzQuer,
-    Standpunkt,
 }
 
 /// Senkrechte Trennlinie der Toolbar.
@@ -50,8 +49,7 @@ pub fn trenner(ui: &mut egui::Ui) {
 }
 
 /// Signallampe: Farbe nach Stationierungsqualität, schwarz ohne Stationierung.
-pub fn zeichne_lampe(ui: &egui::Ui, rect: Rect, farbe: Option<Color32>) {
-    let maler = ui.painter();
+pub fn zeichne_lampe(maler: &egui::Painter, rect: Rect, farbe: Option<Color32>) {
     let c = rect.center();
     let r = rect.width().min(rect.height()) / 2.0 - 2.0;
     match farbe {
@@ -148,35 +146,6 @@ fn koordinaten_text(x: f64, y: f64) -> String {
 }
 
 impl DxfViewer {
-    // ── Eingabefelder mit Nebenwirkung ────────────────────────────────────────
-
-    pub(super) fn standpunkt_verlassen(&mut self, projekt: &mut Projekt) {
-        let sp = self.txt_standpunkt.trim().to_string();
-        if sp.is_empty() {
-            return;
-        }
-        projekt.einstellungen.letzte_standpunkt_nr = sp.clone();
-        let _ = projekt.einstellungen.speichern();
-        projekt.station_laden(&sp);
-        if self.lokales_system {
-            self.baue_overlay(projekt);
-        }
-    }
-
-    pub(super) fn instr_hoehe_geaendert(&mut self, projekt: &mut Projekt) {
-        let ih = match parse_zahl(&self.txt_instr_hoehe).filter(|v| *v >= 0.0) {
-            Some(v) => {
-                projekt.einstellungen.instrumenten_hoehe = v;
-                let _ = projekt.einstellungen.speichern();
-                v
-            }
-            None => projekt.einstellungen.instrumenten_hoehe,
-        };
-        if let Err(fehler) = projekt.set_instrumenten_hoehe(ih) {
-            self.status = format!("Instrumentenhöhe konnte nicht gespeichert werden: {fehler}");
-        }
-    }
-
     // ── Statusleiste ──────────────────────────────────────────────────────────
 
     pub(super) fn zeichne_statusleiste(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
@@ -205,6 +174,8 @@ impl DxfViewer {
                     self.auto_skaliere_ellipsen();
                 }
             }
+            ui.checkbox(&mut self.zielstrahlen_sichtbar, text("Zielstrahlen"))
+                .on_hover_text("Linien vom Standpunkt zu den Anschlusspunkten, farbig nach Querabweichung");
             for layer in &mut self.import_layer {
                 ui.checkbox(&mut layer.sichtbar, text(&layer.name)).on_hover_text(layer.name.clone());
             }
@@ -546,6 +517,9 @@ impl DxfViewer {
                 return;
             }
             maler.text(Pos2::new(rect.center().x - 90.0, rect.center().y - 10.0), Align2::LEFT_TOP, "DXF-Datei öffnen …", FontId::proportional(18.0), Color32::GRAY);
+            if !self.ist_auswahl() {
+                self.zeichne_standpunkt_info(&maler, rect, projekt);
+            }
             return;
         }
 
@@ -590,8 +564,14 @@ impl DxfViewer {
                 }
             }
         }
+        if !self.ist_auswahl() && !bewegung {
+            self.zeichne_zielstrahlen(&maler, &a, projekt);
+        }
         for (e, farbe, auswahl) in self.weitere_entities() {
             zeichne(e, farbe, 1.0, auswahl.is_some() && self.auswahl == auswahl);
+        }
+        if !bewegung {
+            self.zeichne_transformationspunkte(&maler, &a, projekt);
         }
         if self.residuen_sichtbar && !self.ellipsen.is_empty() {
             self.zeichne_ellipsen_massstab(&maler, rect);
@@ -635,6 +615,9 @@ impl DxfViewer {
                 maler.rect_stroke(r, 0.0, Stroke::new(1.5, Color32::from_rgba_unmultiplied(180, 0, 0, 210)), egui::StrokeKind::Middle);
             }
         }
+
+        // Standpunkt und Stationierungsqualität oben links (über allem anderen)
+        self.zeichne_standpunkt_info(&maler, rect, projekt);
     }
 
     /// Liegt die Entity im sichtbaren Bereich und ist groß genug, um gezeichnet zu werden?
@@ -928,6 +911,13 @@ impl DxfViewer {
         }
         // Der Dialog ist im Original modal: Klicks bei offenem Dialog öffnen keinen neuen
         if self.dialog.is_none() {
+            if !projekt.hat_aktive_aufstellung() {
+                self.dialog = Some(Dialog::Hinweis {
+                    titel: "Kein Standpunkt".into(),
+                    text: "Bitte zuerst über „Neuer Stp“ (oben links) einen Standpunkt anlegen oder fortsetzen.".into(),
+                });
+                return;
+            }
             self.oeffne_messdaten_dialog(projekt, x, y, nr.as_deref().unwrap_or(""), hoehe);
         }
     }
@@ -972,6 +962,7 @@ impl DxfViewer {
 
     fn loesche(&mut self, projekt: &mut Projekt, anzahl: usize, ziele: LoeschZiele) {
         let (mut fb, mut np, mut imp) = (0, 0, 0);
+        self.protokolliere_loeschen(projekt, &ziele);
         if !ziele.feldbuch.is_empty() {
             let nrs: std::collections::HashSet<&str> = ziele.feldbuch.iter().map(String::as_str).collect();
             fb = projekt.feldbuchpunkte.remove_where(|p| nrs.contains(p.punkt_nr.as_str())).unwrap_or(0);
@@ -993,6 +984,25 @@ impl DxfViewer {
         self.loesch_modus = false;
         self.status = format!("{anzahl} Punkt(e) gelöscht (FB:{fb} NP:{np} Imp:{imp}).");
         protokoll::log("LÖSCH", &format!("{anzahl} Punkte gelöscht"));
+    }
+
+    /// Schreibt je gelöschtem Punkt eine Zeile GELOESCHT ins Messprotokoll; bei Neupunkten mit Bezug auf deren Messung.
+    fn protokolliere_loeschen(&self, projekt: &Projekt, ziele: &LoeschZiele) {
+        use crate::daten::messprotokoll::{self as mp, Eintrag, Ereignis};
+        let e = &projekt.einstellungen;
+        let eintraege = if mp::pfad(e).exists() { mp::lese(&mp::pfad(e)).unwrap_or_default() } else { Vec::new() };
+        for (nr, sp) in &ziele.neupunkte {
+            let id = projekt.neupunkte.koordinaten().iter().find(|k| &k.punkt_nr == nr && &k.standpunkt_nr == sp).map(|k| k.aufstellung_id.clone()).unwrap_or_default();
+            let mut z = Eintrag::neu(Ereignis::Geloescht).punkt(nr, crate::daten::messdaten::TYP_NEUPUNKT, "").quelle(mp::QUELLE_HAND).bezug(mp::letzte_messung(&eintraege, &id, nr, crate::daten::messdaten::TYP_NEUPUNKT)).text("Neupunkt im DXF-Viewer gelöscht");
+            z.aufstellung_id = id;
+            z.standpunkt_nr.clone_from(sp);
+            mp::protokolliere(e, z);
+        }
+        for (liste, art) in [(&ziele.feldbuch, "Feldbuchpunkt"), (&ziele.importpunkte, "Importpunkt")] {
+            for nr in liste {
+                mp::protokolliere(e, Eintrag::neu(Ereignis::Geloescht).punkt(nr, "", "").quelle(mp::QUELLE_HAND).text(format!("{art} im DXF-Viewer gelöscht")));
+            }
+        }
     }
 
     // ── Festpunkte ────────────────────────────────────────────────────────────
@@ -1017,6 +1027,10 @@ impl DxfViewer {
         };
         let dialog = match dialog {
             Dialog::Hinweis { titel, text } if titel.to_lowercase().contains("fehler") => Dialog::Fehler { titel, text },
+            d @ (Dialog::Standpunkt(_) | Dialog::IhKorrektur { .. } | Dialog::Aufstellungspruefung { .. } | Dialog::Kontrolle(_)) => {
+                self.dialog = self.zeichne_standpunkt_dialog(&ctx, projekt, geraet, d);
+                return;
+            }
             anderer => anderer,
         };
         let fenster = |titel: &str| egui::Window::new(titel.to_string()).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO);
@@ -1130,6 +1144,7 @@ impl DxfViewer {
             Dialog::Prisma { auswahl, konstante } => self.zeichne_prisma_dialog(&ctx, projekt, auswahl, konstante),
             Dialog::DxfExport { massstab, symbol, text } => self.zeichne_export_dialog(&ctx, projekt, massstab, symbol, text),
             Dialog::Messdaten(d) => self.zeichne_messdaten_dialog(&ctx, projekt, geraet, d),
+            Dialog::Standpunkt(_) | Dialog::IhKorrektur { .. } | Dialog::Aufstellungspruefung { .. } | Dialog::Kontrolle(_) => {}
             Dialog::Loeschen { text, anzahl, ziele } => {
                 let mut antwort = None;
                 fenster("Punkte löschen").show(&ctx, |ui| {

@@ -24,7 +24,7 @@ pub const SPALTEN_KOR: [&str; 5] = ["PunktNr", "X", "Y", "Z", "Code"];
 pub const SPALTEN_DAT: [&str; 13] =
     ["PunktNr", "HZ_gon", "V_gon", "Strecke_m", "Zielhoehe_m", "Code", "Zeitstempel", "ExzLaengs_m", "ExzQuer_m", "StandpunktNr", "Typ", "AufstellungId", "InstrumentenHoehe_m"];
 /// Vorgabe für den Standpunkt, wenn keiner angegeben ist.
-const STANDARD_STANDPUNKT: &str = "STP";
+const STANDARD_STANDPUNKT: &str = "STP1";
 const STANDARD_INSTR_HOEHE: &str = "0.000";
 /// Nullwert für Exzentrizitäten beim DAT-Import.
 const EXZ_NULL: &str = "0.000";

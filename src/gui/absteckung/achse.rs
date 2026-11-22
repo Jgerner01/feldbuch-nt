@@ -5,14 +5,14 @@
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 use super::gemeinsam::{
-    Einweiser, PLAN_HOEHE, PlanDaten, ProtokollZiel, hintergrundpunkte, lade_anschlusspunkte, lese_zahl, zeichne_lageplan, zeige_standpunkt,
+    Einweiser, PLAN_HOEHE, PlanDaten, ProtokollZiel, hintergrundpunkte, lade_anschlusspunkte, lese_zahl, zeichne_lageplan, standpunkt_fuer_absteckung, zeige_standpunkt,
     zeilenfarbe,
 };
 use crate::daten::projekt::Projekt;
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::gui::tabelle::Raster;
 use crate::protokolle::absteckung::{AbsteckProtokoll, AchsEingabe, achsabsteckung};
-use crate::rechnen::absteckung::{AbsteckPunkt, STATUS_ABGESTECKT, StandpunktInfo, berechne_achspunkte, lade_standpunkt};
+use crate::rechnen::absteckung::{AbsteckPunkt, STATUS_ABGESTECKT, StandpunktInfo, berechne_achspunkte};
 
 /// Spaltenbreiten der Achstabelle: Punktnummer, R, H.
 const BREITEN_ACHSE: [f32; 3] = [90.0, 110.0, 110.0];
@@ -38,6 +38,8 @@ struct Eckpunkt {
 /// Formular der Achsabsteckung.
 pub struct AchseAnsicht {
     station: Option<StandpunktInfo>,
+    /// Standpunkt aus dem Rückwärtsschnitt statt aus der aktiven Aufstellung.
+    rueckwaerts: bool,
     achse_punkte: [Eckpunkt; 2],
     intervall: String,
     offsets: String,
@@ -66,7 +68,8 @@ fn lese_versaetze(text: &str) -> Vec<f64> {
 impl AchseAnsicht {
     pub fn neu(projekt: &Projekt) -> Self {
         Self {
-            station: lade_standpunkt(&projekt.projektdaten),
+            station: standpunkt_fuer_absteckung(projekt, false),
+            rueckwaerts: false,
             achse_punkte: Default::default(),
             intervall: INTERVALL_STANDARD.to_string(),
             offsets: OFFSETS_STANDARD.to_string(),
@@ -114,7 +117,7 @@ impl AchseAnsicht {
     }
 
     fn berechne(&mut self, projekt: &Projekt) {
-        self.station = lade_standpunkt(&projekt.projektdaten);
+        self.station = standpunkt_fuer_absteckung(projekt, self.rueckwaerts);
         self.ziel.aktualisiere(projekt);
         let Some((a, e)) = self.achse() else {
             self.meldung = "Anfangs- und Endpunkt der Achse eingeben.".to_string();
@@ -161,7 +164,9 @@ impl AchseAnsicht {
 
     pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &Projekt) {
         ui.heading("Achsabsteckung");
-        zeige_standpunkt(ui, self.station.as_ref());
+        if zeige_standpunkt(ui, projekt, self.station.as_ref(), &mut self.rueckwaerts) {
+            self.station = standpunkt_fuer_absteckung(projekt, self.rueckwaerts);
+        }
         ui.add_space(4.0);
         ui.columns(2, |spalten| {
             self.zeichne_eingabe(&mut spalten[0], projekt);
@@ -297,6 +302,7 @@ mod tests {
     fn ansicht() -> AchseAnsicht {
         AchseAnsicht {
             station: Some(StandpunktInfo { punkt_nr: "S".into(), r: 50.0, h: -10.0, orientierung_gon: 0.0 }),
+            rueckwaerts: false,
             achse_punkte: [
                 Eckpunkt { nr: "A".into(), r: "0".into(), h: "0".into() },
                 Eckpunkt { nr: "E".into(), r: "0".into(), h: "30".into() },

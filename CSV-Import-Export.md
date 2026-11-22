@@ -31,7 +31,7 @@ Die Pfade sind relativ zum Projektverzeichnis. „Import/Export“ umfasst auch 
 | `src/daten/kor_csv.rs` | `erzeuge`, `lese_punkte`, `schreibe` | KOR-CSV erzeugen, lesen und zusammenführen; neue Punkte ersetzen gleiche Nummern ohne Beachtung der Groß-/Kleinschreibung |
 | `src/daten/messdaten.rs` | `messdatei_pfad`, `schreibe_neupunktmessung`, `schreibe_stationierungsmessung`, `schreibe_standpunktinfo` | Projektweite `<Projekt>-dat.csv`; AP-/NP-Messungen und Stationierungs-Kommentarzeilen |
 | `src/daten/messdaten.rs` | `migriere_spalten`, `schreibe_exzentrizitaeten` | Alte sieben Spalten auf elf erweitern; Exzentrizitäten positionsbezogen zurückschreiben |
-| `src/daten/messdaten.rs` | `tagesprotokoll_pfad`, `schreibe_tagesprotokoll` | Automatischer Export nach `Data-protocol-YYYY-MM-DD.csv`, einschließlich Geräte- und Qualitätsdaten |
+| `src/daten/messprotokoll.rs` | `schreibe`, `protokolliere` | Lückenloses Messprotokoll `<Projekt>-Messprotokoll.csv` (ersetzt `Data-protocol-YYYY-MM-DD.csv`, siehe Protokoll.md) |
 | `src/daten/polar_messdaten.rs` | `lese`, `parse` | DAT-CSV mit sieben oder elf Spalten für Polarpunktberechnung; Standpunkt- und Typrekonstruktion für Altdateien |
 | `src/daten/stationierung_csv.rs` | `parse` | Import von Stationierungsdatensätzen; Komma oder Semikolon, Spaltennamen/Aliase, optionale Standpunktnummer und Instrumentenhöhe |
 | `src/daten/punktlisten.rs` | `lese_csv`, `lese_kor`, `lese_kor_roh` | Koordinatenimport; CSV mit Komma oder Semikolon, Kopfzeilensuche und Namensaliasen. Beim KOR-Import wird eine Begleitdatei `*-kor.csv` bevorzugt, wenn sie mindestens ebenso viele Punkte enthält |

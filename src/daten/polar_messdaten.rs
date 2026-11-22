@@ -7,7 +7,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use crate::daten::messdaten::{TYP_ANSCHLUSSPUNKT, TYP_NEUPUNKT};
+use crate::daten::messdaten::{TYP_ANSCHLUSSPUNKT, TYP_KONTROLLPUNKT, TYP_NEUPUNKT};
 use crate::grundlagen::format::parse_zahl;
 
 /// Spaltenindizes der Messdatei.
@@ -54,6 +54,8 @@ pub struct PolarMessdaten {
     pub kopf_standpunkt_nr: String,
     pub kopf_instr_hoehe: f64,
     pub messungen: Vec<PolarMessung>,
+    /// Auffälligkeiten beim Lesen, die das Einlesen nicht verhindern.
+    pub hinweise: Vec<String>,
 }
 
 impl PolarMessdaten {
@@ -78,7 +80,7 @@ pub fn lese(pfad: &Path, ist_koordinatenpunkt: impl Fn(&str) -> bool) -> io::Res
 
 pub fn parse(zeilen: &[String], ist_koordinatenpunkt: impl Fn(&str) -> bool) -> io::Result<PolarMessdaten> {
     let d = crate::daten::csv_datei::CsvDatei::parse(&zeilen.join("\n"))?;
-    let mut daten = PolarMessdaten { kopf_standpunkt_nr: d.standpunkt_nr.clone(), kopf_instr_hoehe: parse_zahl(&d.instr_hoehe).unwrap_or(0.0), messungen: Vec::new() };
+    let mut daten = PolarMessdaten { kopf_standpunkt_nr: d.standpunkt_nr.clone(), kopf_instr_hoehe: parse_zahl(&d.instr_hoehe).unwrap_or(0.0), messungen: Vec::new(), hinweise: Vec::new() };
     let mut kommentare = Vec::new();
     for (i, zeile) in zeilen.iter().enumerate() {
         if zeile.trim().to_uppercase().starts_with(KOMMENTAR_STATIONIERUNG) {
@@ -94,6 +96,10 @@ pub fn parse(zeilen: &[String], ist_koordinatenpunkt: impl Fn(&str) -> bool) -> 
             return Err(crate::daten::csv_basis::fehler(format!("Datensatz {}: PunktNr fehlt.", i + 1)));
         }
         let typ = d.zelle(z, "Typ").to_uppercase();
+        // Kontrollmessungen (Orientierungskontrolle) gehören weder zur Stationierung noch zu den Polarpunkten
+        if typ == TYP_KONTROLLPUNKT {
+            continue;
+        }
         let geschaetzt = typ.is_empty();
         if !typ.is_empty() && typ != TYP_ANSCHLUSSPUNKT && typ != TYP_NEUPUNKT {
             return Err(crate::daten::csv_basis::fehler(format!("Datensatz {}: unbekannter Messtyp {typ}.", i + 1)));
@@ -127,16 +133,25 @@ pub fn parse(zeilen: &[String], ist_koordinatenpunkt: impl Fn(&str) -> bool) -> 
         });
     }
     weise_standpunkte_zu(&mut daten, &kommentare);
-    let mut aufstellungen = std::collections::HashMap::new();
+    // Eine Aufstellung hat genau eine Instrumentenhöhe (sonst Fehler). Unterschiedliche Standpunktnummern
+    // entstehen beim Umbenennen des Standpunkts; sie werden nur gemeldet und bilden eigene Gruppen.
+    let mut aufstellungen: std::collections::HashMap<String, (Vec<String>, Option<f64>)> = std::collections::HashMap::new();
     for m in &daten.messungen {
         if m.aufstellung_id.is_empty() {
             continue;
         }
-        if let Some((nr, ih)) = aufstellungen.insert(m.aufstellung_id.clone(), (m.standpunkt_nr.clone(), m.instrumenten_hoehe)) {
-            if nr != m.standpunkt_nr || ih != m.instrumenten_hoehe {
-                return Err(crate::daten::csv_basis::fehler(format!("Aufstellung {} enthält widersprüchliche Standpunktnummern/Instrumentenhöhen.", m.aufstellung_id)));
-            }
+        let eintrag = aufstellungen.entry(m.aufstellung_id.clone()).or_insert_with(|| (Vec::new(), m.instrumenten_hoehe));
+        if eintrag.1 != m.instrumenten_hoehe {
+            return Err(crate::daten::csv_basis::fehler(format!("Aufstellung {} enthält widersprüchliche Instrumentenhöhen.", m.aufstellung_id)));
         }
+        if !eintrag.0.contains(&m.standpunkt_nr) {
+            eintrag.0.push(m.standpunkt_nr.clone());
+        }
+    }
+    let mut mehrdeutig: Vec<_> = aufstellungen.into_iter().filter(|(_, (nrn, _))| nrn.len() > 1).collect();
+    mehrdeutig.sort_by(|a, b| a.0.cmp(&b.0));
+    for (id, (nrn, _)) in mehrdeutig {
+        daten.hinweise.push(format!("Aufstellung {id} enthält mehrere Standpunktnummern ({}). Zuordnung prüfen.", nrn.join(", ")));
     }
     Ok(daten)
 }
@@ -213,6 +228,30 @@ N2; 4; 100; 10; 0; ; t\n";
         assert_eq!(sp[2], ("A2", "NEU", true));
         assert_eq!(sp[3], ("N2", "NEU", true));
         assert!(d.messungen[1].ist_anschlusspunkt() && !d.messungen[0].ist_anschlusspunkt());
+    }
+
+    #[test]
+    fn umbenannter_standpunkt_in_einer_aufstellung_ist_nur_ein_hinweis() {
+        let text = "# DATEN\nPunktNr;HZ_gon;V_gon;Strecke_m;Zielhoehe_m;Code;Zeitstempel;ExzLaengs_m;ExzQuer_m;StandpunktNr;Typ;AufstellungId;InstrumentenHoehe_m\n\
+11;1;100;0;0;;t;0;0;STP1;NP;ID;0.000\n\
+12;2;100;10;0;;t;0;0;STP2;NP;ID;0.000\n";
+        let d = parse(&zeilen(text), |_| false).unwrap();
+        assert_eq!(d.messungen.len(), 2);
+        assert_eq!(d.standpunkte().len(), 2);
+        assert_eq!(d.hinweise.len(), 1);
+        assert!(d.hinweise[0].contains("STP1, STP2"));
+    }
+
+    #[test]
+    fn kontrollmessungen_werden_uebersprungen() {
+        let text = "# DATEN
+PunktNr;HZ_gon;V_gon;Strecke_m;Zielhoehe_m;Code;Zeitstempel;ExzLaengs_m;ExzQuer_m;StandpunktNr;Typ
+\nA1;1;100;10;0;;t;0;0;S1;KP
+\n7;2;100;10;0;;t;0;0;S1;NP
+";
+        let d = parse(&zeilen(text), |_| false).unwrap();
+        assert_eq!(d.messungen.len(), 1);
+        assert_eq!(d.messungen[0].punkt_nr, "7");
     }
 
     #[test]

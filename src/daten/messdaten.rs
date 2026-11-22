@@ -1,118 +1,31 @@
 // Zweck:    Messdaten festhalten wie die Originalversion:
-//           • Tagesprotokoll Data-protocol-{Datum}.csv (lückenlos, nur anhängen, jede Messung sofort)
+//           (das lückenlose Messprotokoll schreibt daten::messprotokoll; es ersetzt das frühere Data-protocol-*.csv)
 //           • Messdatei {Projekt}-dat.csv mit METADATA-Kopf (Anschluss- und Neupunktmessungen, Standpunktinfo)
 // Hardware: Tachymeter (Leica GeoCOM / GSI Online)
 // Autor:    Johann Gerner
 
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::{Local, NaiveDateTime};
 
 use crate::daten::einstellungen::Einstellungen;
 use crate::daten::modelle::{NeupunktRohdaten, StationierungsErgebnis, StationierungsPunkt};
-use crate::grundlagen::datei_speicher;
 use crate::grundlagen::format::f;
+use crate::daten::messprotokoll::{self, Eintrag, Ereignis};
 use crate::grundlagen::{fehler_log, protokoll};
-use crate::tachymeter::messung::{MessungsEdmModus, TachymeterMessung};
 use crate::tachymeter::modell::TachymeterModell;
-
-/// Kompensator-Messbereich TPS1200: ±10' ≈ ±185 mgon.
-const KOMP_MAX_MGON: f64 = 200.0;
-/// mgon pro Radiant.
-const MGON_PRO_RAD: f64 = 200_000.0 / std::f64::consts::PI;
 
 /// Kennzeichen „Anschlusspunkt" in der Spalte Typ.
 pub const TYP_ANSCHLUSSPUNKT: &str = "AP";
 /// Kennzeichen „Neupunkt" in der Spalte Typ.
 pub const TYP_NEUPUNKT: &str = "NP";
-
-const SPALTENZEILE_PROTOKOLL: &str = "Timestamp; StationNr; InstrHeight_m; PointNr; Code; Method; \
-EDM_Mode; PrismConst_mm; Atm_PPM; Pressure_mbar; Temp_C; \
-CrossInclination_mgon; LengthInclination_mgon; Compensator_OK; \
-Hz_gon; V_gon; SlopeDist_m; TargetHeight_m; Source; \
-GNSS_Latitude; GNSS_Longitude; GNSS_Height_m; \
-GNSS_HorizAccuracy_m; GNSS_VertAccuracy_m; \
-GNSS_FixType; GNSS_Satellites; GNSS_HDOP; GNSS_PDOP";
+/// Kennzeichen „Kontrollmessung" (Orientierungskontrolle) in der Spalte Typ.
+pub const TYP_KONTROLLPUNKT: &str = "KP";
 
 #[cfg(test)]
 const SPALTENZEILE_ALT: &str = "PunktNr; HZ_gon; V_gon; Strecke_m; Zielhoehe_m; Code; Zeitstempel";
-/// Anzahl der Spalten des Dateiformats (Platzhalter leerer GNSS-Spalten im Tagesprotokoll).
-const GNSS_SPALTEN: usize = 9;
-
-fn zeit_text(z: NaiveDateTime, format: &str) -> String {
-    z.format(format).to_string()
-}
-
-fn nullbar(wert: Option<f64>, stellen: usize) -> String {
-    wert.map_or_else(String::new, |v| f(v, stellen))
-}
-
-fn edm_text(m: MessungsEdmModus) -> &'static str {
-    match m {
-        MessungsEdmModus::Prisma => "Prisma",
-        MessungsEdmModus::Folie => "Folie",
-        MessungsEdmModus::Reflektorlos => "Reflektorlos",
-        MessungsEdmModus::Unbekannt => "",
-    }
-}
-
-fn neigung_mgon(rad: Option<f64>) -> String {
-    rad.map_or_else(String::new, |r| f(r * MGON_PRO_RAD, 1))
-}
-
-fn kompensator_ok(kreuz: Option<f64>, laengs: Option<f64>) -> String {
-    match (kreuz, laengs) {
-        (Some(k), Some(l)) => {
-            let ok = (k * MGON_PRO_RAD).abs() <= KOMP_MAX_MGON && (l * MGON_PRO_RAD).abs() <= KOMP_MAX_MGON;
-            if ok { "Yes" } else { "No" }.to_string()
-        }
-        _ => String::new(),
-    }
-}
-
-/// Pfad des Tagesprotokolls für einen Zeitpunkt.
-pub fn tagesprotokoll_pfad(e: &Einstellungen, zeit: NaiveDateTime) -> PathBuf {
-    e.get_pfad(&format!("Data-protocol-{}.csv", zeit_text(zeit, "%Y-%m-%d")))
-}
-
-/// Schreibt einen Messeintrag ins Tagesprotokoll (GNSS-Spalten bleiben leer).
-pub fn schreibe_tagesprotokoll(e: &Einstellungen, messmethode: &str, standpunkt_nr: &str, instr_hoehe: f64, punkt_nr: &str, code: &str, m: &TachymeterMessung) -> io::Result<()> {
-    let pfad = tagesprotokoll_pfad(e, m.zeitstempel);
-    if !pfad.exists() {
-        let kopf = format!(
-            "# Data Protocol: {}\r\n# Date: {}\r\n# This file is created daily and never overwritten.\r\n\
-             # All measurements are recorded without gaps.\r\n{SPALTENZEILE_PROTOKOLL}\r\n",
-            e.projekt_name,
-            zeit_text(m.zeitstempel, "%Y-%m-%d")
-        );
-        datei_speicher::schreibe_text(&pfad, &kopf)?;
-    }
-    let mut felder: Vec<String> = vec![
-        zeit_text(m.zeitstempel, "%Y-%m-%d %H:%M:%S"),
-        standpunkt_nr.to_string(),
-        f(instr_hoehe, 3),
-        punkt_nr.to_string(),
-        code.to_string(),
-        messmethode.to_string(),
-        edm_text(m.edm_modus).to_string(),
-        nullbar(m.prismenkonstante_mm, 1),
-        nullbar(m.atm_ppm, 2),
-        nullbar(m.atm_druck_mbar, 1),
-        nullbar(m.atm_temp_trock_c, 1),
-        neigung_mgon(m.kreuz_neigung_rad),
-        neigung_mgon(m.laengs_neigung_rad),
-        kompensator_ok(m.kreuz_neigung_rad, m.laengs_neigung_rad),
-        nullbar(m.hz_gon, 4),
-        nullbar(m.v_gon, 4),
-        nullbar(m.schraegstrecke_m, 3),
-        nullbar(m.zielhoehe_m, 3),
-        m.quelle.clone(),
-    ];
-    felder.extend(std::iter::repeat_n(String::new(), GNSS_SPALTEN));
-    anhaengen(&pfad, &crate::daten::csv_basis::zeile(&felder, ';'))
-}
 
 /// Pfad der Messdatei des Projekts.
 pub fn messdatei_pfad(e: &Einstellungen) -> PathBuf {
@@ -235,6 +148,7 @@ pub fn schreibe_neupunktmessung(e: &Einstellungen, r: &NeupunktRohdaten, standpu
     ergebnis.inspect_err(|e| fehler_log::log("Messdaten.schreibe_neupunktmessung", &e.to_string()))
 }
 
+#[cfg(test)]
 pub fn schreibe_stationierungsmessung(e: &Einstellungen, p: &StationierungsPunkt, standpunkt_nr: &str, instr_hoehe: f64, zeit: NaiveDateTime) -> io::Result<()> {
     let ergebnis = schreibe_messung(
         e,
@@ -282,6 +196,75 @@ pub fn schreibe_standpunktinfo(e: &Einstellungen, standpunkt_nr: &str, instr_hoe
     protokoll::log("STANDPKT", &kommentar);
 }
 
+/// Text der Kommentarzeile bei einem Standpunktwechsel.
+pub fn standpunktwechsel_text(anlass: &str, s: &crate::daten::projekt::StationsdatenDatei) -> String {
+    let mut text = format!("# {anlass}: SP={}  IH={} m  Id={}", s.standpunkt_nr, f(s.instrumenten_hoehe, 3), s.aufstellung_id);
+    if !s.code.is_empty() {
+        text.push_str(&format!("  Code={}", s.code));
+    }
+    if let Some(b) = &s.bekannt {
+        text.push_str(&format!("  bekannter Punkt {} (R={} H={})", b.punkt_nr, f(b.r, 3), f(b.h, 3)));
+    }
+    text
+}
+
+/// Vermerkt einen Standpunktwechsel (STP_NEU oder STP_FORT) im Messprotokoll, als Kommentarzeile in der Messdatei
+/// und im Textprotokoll. Fehler werden nur gemeldet (der Wechsel selbst ist bereits gespeichert).
+pub fn schreibe_standpunktwechsel(e: &Einstellungen, s: &crate::daten::projekt::StationsdatenDatei, ereignis: Ereignis) {
+    let anlass = if ereignis == Ereignis::StpNeu { "NEUER STANDPUNKT" } else { "STANDPUNKT FORTGESETZT" };
+    let text = standpunktwechsel_text(anlass, s);
+    let mut eintrag = Eintrag::neu(ereignis).mit_aufstellung(s).quelle(messprotokoll::QUELLE_HAND);
+    eintrag.code.clone_from(&s.code);
+    if let Some(b) = &s.bekannt {
+        eintrag = eintrag.text(format!("bekannter Punkt {}", b.punkt_nr)).koordinaten(b.r, b.h, b.hoehe);
+    }
+    if let Some(g) = &s.geraet {
+        eintrag.edm.clone_from(&g.edm_modus);
+        eintrag.prismentyp.clone_from(&g.prisma);
+        eintrag.prism_konst = Some(g.prismenkonstante_mm);
+        eintrag.ppm = g.atm_ppm;
+        eintrag.neig_l = g.laengsneigung_mgon;
+        eintrag.neig_q = g.querneigung_mgon;
+        eintrag = eintrag.text(format!("Geraet {}{}", g.modell, if g.verbunden { "" } else { " (nicht verbunden)" }));
+    }
+    messprotokoll::protokolliere(e, eintrag);
+    let ergebnis = lade_messdatei(e).and_then(|mut d| {
+        d.kommentare.push((d.zeilen.len(), text.clone()));
+        d.speichern()
+    });
+    if let Err(fehler) = ergebnis {
+        fehler_log::log("Messdaten.schreibe_standpunktwechsel", &fehler.to_string());
+    }
+    protokoll::log("STANDPKT", text.trim_start_matches("# "));
+    if let Some(g) = &s.geraet {
+        protokoll::log("STANDPKT", &format!("Gerätezustand: {}", g.text()));
+    }
+}
+
+/// Schreibt eine Kontrollmessung (Orientierungskontrolle) als Zeile vom Typ `KP` in die Messdatei.
+pub fn schreibe_kontrollmessung(e: &Einstellungen, p: &StationierungsPunkt, standpunkt_nr: &str, instr_hoehe: f64, aufstellung_id: &str, zeit: NaiveDateTime) -> io::Result<()> {
+    let ergebnis = schreibe_messung(
+        e,
+        vec![
+            p.punkt_nr.clone(),
+            f(p.hz, 4),
+            f(p.v, 4),
+            f(p.strecke, 3),
+            f(p.zielhoehe, 3),
+            String::new(),
+            messzeit(zeit),
+            "0.000".into(),
+            "0.000".into(),
+            standpunkt_nr.into(),
+            TYP_KONTROLLPUNKT.into(),
+        ],
+        standpunkt_nr,
+        instr_hoehe,
+        aufstellung_id,
+    );
+    ergebnis.inspect_err(|e| fehler_log::log("Messdaten.schreibe_kontrollmessung", &e.to_string()))
+}
+
 fn sichere(pfad: &Path) -> io::Result<()> {
     let stamm = pfad.file_stem().unwrap_or_default().to_string_lossy();
     fs::copy(pfad, pfad.with_file_name(format!("{stamm}_backup_{}.csv", Local::now().format("%Y%m%d-%H%M%S%f"))))?;
@@ -325,11 +308,6 @@ pub fn schreibe_exzentrizitaeten(pfad: &Path, aenderungen: &[(usize, f64, f64)])
     d.speichern()
 }
 
-fn anhaengen(pfad: &Path, zeile: &str) -> io::Result<()> {
-    let mut datei = OpenOptions::new().create(true).append(true).open(pfad)?;
-    datei.write_all(format!("{zeile}\r\n").as_bytes())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,48 +321,6 @@ mod tests {
         e.set_projekt("Demo", &dir).unwrap();
         e.tachymeter_modell = TachymeterModell::LeicaTs06;
         (e, dir)
-    }
-
-    fn messung() -> TachymeterMessung {
-        let mut m = TachymeterMessung::neu("GeoCOM", "");
-        m.hz_gon = Some(264.861);
-        m.v_gon = Some(97.0559);
-        m.schraegstrecke_m = Some(1.4424);
-        m.zielhoehe_m = Some(1.5);
-        m.edm_modus = MessungsEdmModus::Reflektorlos;
-        m.prismenkonstante_mm = Some(-17.5);
-        m.kreuz_neigung_rad = Some(0.00005);
-        m.laengs_neigung_rad = Some(-0.00003);
-        m
-    }
-
-    #[test]
-    fn tagesprotokoll_hat_kopf_und_vollstaendige_zeile() {
-        let (e, dir) = einst("tag");
-        let m = messung();
-        schreibe_tagesprotokoll(&e, "Neupunkt", "STP1", 1.556, "7", "Baum", &m).unwrap();
-        schreibe_tagesprotokoll(&e, "Neupunkt", "STP1", 1.556, "8", "", &m).unwrap();
-        let text = fs::read_to_string(tagesprotokoll_pfad(&e, m.zeitstempel)).unwrap();
-        let zeilen: Vec<&str> = text.lines().collect();
-        assert_eq!(zeilen[0], "# Data Protocol: Demo");
-        assert_eq!(zeilen[4], SPALTENZEILE_PROTOKOLL);
-        assert_eq!(zeilen.len(), 7, "Kopf (5) + 2 Messungen");
-        let felder = crate::daten::csv_basis::felder(zeilen[5], ';').unwrap();
-        assert_eq!(felder.len(), SPALTENZEILE_PROTOKOLL.split("; ").count());
-        assert_eq!(&felder[1..7], &["STP1", "1.556", "7", "Baum", "Neupunkt", "Reflektorlos"]);
-        assert_eq!(felder[7], "-17.5");
-        assert_eq!(felder[13], "Yes");
-        assert_eq!(&felder[14..19], &["264.8610", "97.0559", "1.442", "1.500", "GeoCOM"]);
-        assert!(felder[19..].iter().all(|x| x.is_empty()), "GNSS-Spalten leer");
-        let _ = fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn kompensator_ausserhalb_des_bereichs() {
-        assert_eq!(kompensator_ok(Some(0.01), Some(0.0)), "No");
-        assert_eq!(kompensator_ok(Some(0.0001), Some(0.0)), "Yes");
-        assert_eq!(kompensator_ok(None, Some(0.0)), "");
-        assert_eq!(neigung_mgon(Some(std::f64::consts::PI / 200_000.0)), "1.0");
     }
 
     #[test]
@@ -423,6 +359,19 @@ mod tests {
         assert!(!d.zelle(&d.zeilen[0], "AufstellungId").is_empty());
         assert!(text.contains("# STATIONIERUNG: SP=STP1"));
 
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn standpunktwechsel_steht_in_messdatei_und_messprotokoll() {
+        let (e, dir) = einst("wechsel");
+        let s = crate::daten::projekt::StationsdatenDatei { standpunkt_nr: "STP3".into(), aufstellung_id: "STP3-20261122T101500".into(), instrumenten_hoehe: 1.6, ..Default::default() };
+        schreibe_standpunktwechsel(&e, &s, Ereignis::StpNeu);
+        let dat = fs::read_to_string(messdatei_pfad(&e)).unwrap();
+        assert!(dat.contains("# NEUER STANDPUNKT: SP=STP3  IH=1.600 m  Id=STP3-20261122T101500"));
+        let mp = messprotokoll::lese(&messprotokoll::pfad(&e)).unwrap();
+        assert_eq!(mp[0].art(), Some(Ereignis::StpNeu));
+        assert_eq!((mp[0].standpunkt_nr.as_str(), mp[0].ih), ("STP3", Some(1.6)));
         let _ = fs::remove_dir_all(dir);
     }
 

@@ -5,7 +5,7 @@
 use eframe::egui::{self, Color32, RichText, Vec2};
 
 use super::gemeinsam::{
-    Einweiser, MAX_ZEILEN, PLAN_HOEHE, PlanDaten, ProtokollZiel, hintergrundpunkte, lade_anschlusspunkte, zeichne_lageplan, zeige_standpunkt,
+    Einweiser, MAX_ZEILEN, PLAN_HOEHE, PlanDaten, ProtokollZiel, hintergrundpunkte, lade_anschlusspunkte, zeichne_lageplan, standpunkt_fuer_absteckung, zeige_standpunkt,
     zeilenfarbe,
 };
 use crate::daten::projekt::Projekt;
@@ -13,7 +13,7 @@ use crate::grundlagen::format::{f, parse_zahl};
 use crate::protokolle::absteckung::{AbsteckProtokoll, punktabsteckung};
 use crate::gui::tabelle::Raster;
 use crate::rechnen::absteckung::{
-    AbsteckPunkt, STATUS_ABGESTECKT, StandpunktInfo, berechne_polare_absteckung, lade_standpunkt,
+    AbsteckPunkt, STATUS_ABGESTECKT, StandpunktInfo, berechne_polare_absteckung,
 };
 
 /// Spaltenbreiten: Nr, R, H, Hz, s, Status, Ziel, Löschen.
@@ -33,6 +33,8 @@ struct Zeile {
 /// Formular der Punktabsteckung.
 pub struct PunktAnsicht {
     station: Option<StandpunktInfo>,
+    /// Standpunkt aus dem Rückwärtsschnitt statt aus der aktiven Aufstellung.
+    rueckwaerts: bool,
     zeilen: Vec<Zeile>,
     punkte: Vec<AbsteckPunkt>,
     /// Zu jeder Tabellenzeile der Index des berechneten Punkts.
@@ -55,7 +57,8 @@ impl Drop for PunktAnsicht {
 impl PunktAnsicht {
     pub fn neu(projekt: &Projekt) -> Self {
         Self {
-            station: lade_standpunkt(&projekt.projektdaten),
+            station: standpunkt_fuer_absteckung(projekt, false),
+            rueckwaerts: false,
             zeilen: vec![Zeile::default(); MAX_ZEILEN],
             punkte: Vec::new(),
             zeile_zu_punkt: vec![None; MAX_ZEILEN],
@@ -168,7 +171,9 @@ impl PunktAnsicht {
 
     pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &Projekt) {
         ui.heading("Punktabsteckung");
-        zeige_standpunkt(ui, self.station.as_ref());
+        if zeige_standpunkt(ui, projekt, self.station.as_ref(), &mut self.rueckwaerts) {
+            self.station = standpunkt_fuer_absteckung(projekt, self.rueckwaerts);
+        }
         ui.add_space(4.0);
         ui.columns(2, |spalten| {
             self.zeichne_tabelle(&mut spalten[0], projekt);
@@ -229,7 +234,7 @@ impl PunktAnsicht {
                 self.lade_punkte(projekt);
             }
             if ui.button(RichText::new("Absteckdaten").strong()).clicked() {
-                self.station = lade_standpunkt(&projekt.projektdaten);
+                self.station = standpunkt_fuer_absteckung(projekt, self.rueckwaerts);
                 self.hintergrund = hintergrundpunkte(projekt);
                 self.ziel.aktualisiere(projekt);
                 self.berechne_alle();
@@ -276,6 +281,7 @@ mod tests {
     fn ansicht() -> PunktAnsicht {
         let mut a = PunktAnsicht {
             station: Some(StandpunktInfo { punkt_nr: "S".into(), r: 0.0, h: 0.0, orientierung_gon: 0.0 }),
+            rueckwaerts: false,
             zeilen: vec![Zeile::default(); MAX_ZEILEN],
             punkte: Vec::new(),
             zeile_zu_punkt: vec![None; MAX_ZEILEN],

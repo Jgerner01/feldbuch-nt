@@ -302,6 +302,57 @@ impl NeupunkteManager {
         self.speichern().inspect_err(|_| self.daten = vorher)
     }
 
+    /// Speichert nur die Rohdaten eines Neupunkts (noch keine gültige Stationierung). Eine ältere Koordinate
+    /// mit gleichem Schlüssel entfällt; die Koordinaten entstehen bei der Übernahme der Stationierung (`berechne_neu`).
+    pub fn rohdaten_hinzufuegen(&mut self, roh: NeupunktRohdaten) -> io::Result<()> {
+        datei_speicher::pruefe_schreibzugriff(&self.pfad)?;
+        let vorher = self.daten.clone();
+        self.daten.koordinaten.retain(|e| !(e.punkt_nr == roh.punkt_nr && e.standpunkt_nr == roh.standpunkt_nr && e.aufstellung_id == roh.aufstellung_id));
+        match self.daten.rohdaten.iter().position(|r| r.punkt_nr == roh.punkt_nr && r.standpunkt_nr == roh.standpunkt_nr && r.aufstellung_id == roh.aufstellung_id) {
+            Some(i) => self.daten.rohdaten[i] = roh,
+            None => self.daten.rohdaten.push(roh),
+        }
+        self.speichern().inspect_err(|_| self.daten = vorher)
+    }
+
+    /// Anzahl der Rohdaten einer Aufstellung ohne berechnete Koordinate.
+    pub fn offene(&self, standpunkt_nr: &str, aufstellung_id: &str) -> usize {
+        self.daten
+            .rohdaten
+            .iter()
+            .filter(|r| r.standpunkt_nr == standpunkt_nr && r.aufstellung_id == aufstellung_id)
+            .filter(|r| !self.daten.koordinaten.iter().any(|e| e.punkt_nr == r.punkt_nr && e.standpunkt_nr == r.standpunkt_nr && e.aufstellung_id == r.aufstellung_id))
+            .count()
+    }
+
+    /// Stellt alle Einträge eines Standpunkts auf eine andere Nummer um. Treffen dabei zwei Einträge mit gleichem
+    /// Schlüssel (Punkt, Standpunkt, Aufstellung) zusammen, bleibt der jüngere. Liefert die Zahl umgestellter Einträge.
+    pub fn benenne_standpunkt_um(&mut self, alt: &str, neu: &str) -> io::Result<usize> {
+        datei_speicher::pruefe_schreibzugriff(&self.pfad)?;
+        let vorher = self.daten.clone();
+        let mut anzahl = 0;
+        for r in self.daten.rohdaten.iter_mut().filter(|r| r.standpunkt_nr == alt) {
+            r.standpunkt_nr = neu.to_string();
+            anzahl += 1;
+        }
+        for e in self.daten.koordinaten.iter_mut().filter(|e| e.standpunkt_nr == alt) {
+            e.standpunkt_nr = neu.to_string();
+            anzahl += 1;
+        }
+        self.daten.rohdaten.sort_by(|a, b| b.zeitstempel.cmp(&a.zeitstempel));
+        let mut gesehen = std::collections::HashSet::new();
+        self.daten.rohdaten.retain(|r| gesehen.insert((r.punkt_nr.clone(), r.standpunkt_nr.clone(), r.aufstellung_id.clone())));
+        self.daten.rohdaten.sort_by(|a, b| a.zeitstempel.cmp(&b.zeitstempel));
+        self.daten.koordinaten.sort_by(|a, b| b.zeitstempel.cmp(&a.zeitstempel));
+        let mut gesehen = std::collections::HashSet::new();
+        self.daten.koordinaten.retain(|e| gesehen.insert((e.punkt_nr.clone(), e.standpunkt_nr.clone(), e.aufstellung_id.clone())));
+        self.daten.koordinaten.sort_by(|a, b| a.zeitstempel.cmp(&b.zeitstempel));
+        if anzahl > 0 {
+            self.speichern().inspect_err(|_| self.daten = vorher)?;
+        }
+        Ok(anzahl)
+    }
+
     /// (Anzahl Neupunkte, davon Polarpunkte) eines Standpunkts.
     pub fn zaehle(&self, standpunkt_nr: &str) -> (usize, usize) {
         let alle = self.daten.rohdaten.iter().filter(|r| r.standpunkt_nr == standpunkt_nr).count();

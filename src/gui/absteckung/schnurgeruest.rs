@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Color32, RichText, Vec2};
 
-use super::gemeinsam::{MAX_ZEILEN, PLAN_HOEHE, PlanDaten, ProtokollZiel, hintergrundpunkte, lade_anschlusspunkte, zeichne_lageplan, zeige_standpunkt};
+use super::gemeinsam::{MAX_ZEILEN, PLAN_HOEHE, PlanDaten, ProtokollZiel, hintergrundpunkte, lade_anschlusspunkte, zeichne_lageplan, standpunkt_fuer_absteckung, zeige_standpunkt};
 use crate::daten::projekt::Projekt;
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::gui::geraet::Geraet;
@@ -12,7 +12,7 @@ use crate::gui::tabelle::Raster;
 use crate::protokolle::absteckung::{AbsteckProtokoll, schnurgeruest};
 use crate::protokolle::signiert;
 use crate::rechnen::absteckung::{
-    AbsteckPunkt, StandpunktInfo, abstand_aussen, berechne_schnurgeruest, berechne_versatzlinie, lade_standpunkt,
+    AbsteckPunkt, StandpunktInfo, abstand_aussen, berechne_schnurgeruest, berechne_versatzlinie,
 };
 use crate::tachymeter::messablauf::MessErgebnis;
 
@@ -51,6 +51,8 @@ struct Messung {
 /// Formular des Schnurgerüsts.
 pub struct SchnurgeruestAnsicht {
     station: Option<StandpunktInfo>,
+    /// Standpunkt aus dem Rückwärtsschnitt statt aus der aktiven Aufstellung.
+    rueckwaerts: bool,
     zeilen: Vec<Zeile>,
     polygon: Vec<Ecke>,
     abstand: String,
@@ -94,7 +96,8 @@ fn im_uhrzeigersinn(mut polygon: Vec<Ecke>) -> Vec<Ecke> {
 impl SchnurgeruestAnsicht {
     pub fn neu(projekt: &Projekt) -> Self {
         Self {
-            station: lade_standpunkt(&projekt.projektdaten),
+            station: standpunkt_fuer_absteckung(projekt, false),
+            rueckwaerts: false,
             zeilen: vec![Zeile::default(); MAX_ZEILEN],
             polygon: Vec::new(),
             abstand: "0".to_string(),
@@ -299,7 +302,9 @@ impl SchnurgeruestAnsicht {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
         ui.heading("Schnurgerüst");
-        zeige_standpunkt(ui, self.station.as_ref());
+        if zeige_standpunkt(ui, projekt, self.station.as_ref(), &mut self.rueckwaerts) {
+            self.station = standpunkt_fuer_absteckung(projekt, self.rueckwaerts);
+        }
         ui.add_space(4.0);
         ui.columns(2, |spalten| {
             self.zeichne_eingabe(&mut spalten[0], projekt, geraet);
@@ -458,6 +463,7 @@ mod tests {
     fn ansicht() -> SchnurgeruestAnsicht {
         SchnurgeruestAnsicht {
             station: Some(StandpunktInfo { punkt_nr: "S".into(), r: 5.0, h: -20.0, orientierung_gon: 0.0 }),
+            rueckwaerts: false,
             zeilen: vec![Zeile::default(); MAX_ZEILEN],
             polygon: Vec::new(),
             abstand: "2".into(),

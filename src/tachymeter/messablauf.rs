@@ -199,6 +199,13 @@ impl Messablauf {
             return;
         };
         let fehler = m.typ == MessungsTyp::Fehler;
+        // Rohantworten der Zusatzabfragen an die Messung anhängen (Messprotokoll, Spalte „Roh“)
+        if self.schritt.ist_zusatz() {
+            if let Some(s) = self.sammlung.as_mut() {
+                let z = zeile.trim();
+                s.rohdaten = if s.rohdaten.is_empty() { z.to_string() } else { format!("{}{}{z}", s.rohdaten, crate::daten::messprotokoll::ROH_TRENNER) };
+            }
+        }
         match self.schritt {
             Schritt::Messen => {
                 if fehler {
@@ -304,6 +311,9 @@ mod tests {
         assert!(g.atm_ppm.is_some());
         assert!(g.kreuz_neigung_rad.is_some() && g.laengs_neigung_rad.is_some());
         assert!(m.naechster_befehl().is_none());
+        // Rohdaten: Ergebnis und alle vier Zusatzantworten
+        assert_eq!(g.rohdaten.split(crate::daten::messprotokoll::ROH_TRENNER).count(), 5);
+        assert!(g.rohdaten.starts_with(A_SIMPLE_MEA) && g.rohdaten.ends_with(A_PRISMA));
     }
 
     #[test]

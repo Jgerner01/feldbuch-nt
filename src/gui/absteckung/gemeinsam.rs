@@ -58,8 +58,33 @@ pub fn zeilenfarbe(erledigt: bool, aktuell: bool) -> Option<Color32> {
     }
 }
 
-/// Kopfzeile mit dem Standpunkt.
-pub fn zeige_standpunkt(ui: &mut egui::Ui, st: Option<&StandpunktInfo>) {
+/// Standpunkt für die Absteckung: die gültig stationierte aktive Aufstellung (Vorgabe) oder,
+/// ausdrücklich gewählt, der letzte Rückwärtsschnitt.
+pub fn standpunkt_fuer_absteckung(projekt: &Projekt, rueckwaerts: bool) -> Option<StandpunktInfo> {
+    if rueckwaerts {
+        return crate::rechnen::absteckung::lade_standpunkt_aus(&projekt.projektdaten, crate::rechnen::absteckung::KATEGORIE_RUECKWAERTS);
+    }
+    let e = projekt.station.ergebnis.as_ref().filter(|_| projekt.hat_gueltige_station())?;
+    Some(StandpunktInfo { punkt_nr: projekt.station.standpunkt_nr.clone(), r: e.r, h: e.h, orientierung_gon: e.orientierung_gon })
+}
+
+/// Kopfzeile mit dem Standpunkt und – falls ein Rückwärtsschnitt vorliegt – der Wahl der Quelle.
+/// Liefert `true`, wenn die Quelle umgeschaltet wurde (dann ist der Standpunkt neu zu laden).
+pub fn zeige_standpunkt(ui: &mut egui::Ui, projekt: &Projekt, st: Option<&StandpunktInfo>, rueckwaerts: &mut bool) -> bool {
+    let rw_vorhanden = crate::rechnen::absteckung::lade_standpunkt_aus(&projekt.projektdaten, crate::rechnen::absteckung::KATEGORIE_RUECKWAERTS).is_some();
+    let mut geaendert = false;
+    if rw_vorhanden || *rueckwaerts {
+        ui.horizontal(|ui| {
+            ui.label("Standpunkt aus:");
+            geaendert |= ui.radio_value(rueckwaerts, false, "aktiver Aufstellung").changed();
+            geaendert |= ui.radio_value(rueckwaerts, true, "Rückwärtsschnitt").changed();
+        });
+    }
+    zeige_standpunkt_zeile(ui, st);
+    geaendert
+}
+
+fn zeige_standpunkt_zeile(ui: &mut egui::Ui, st: Option<&StandpunktInfo>) {
     match st {
         Some(s) => {
             ui.label(egui::RichText::new(format!(
