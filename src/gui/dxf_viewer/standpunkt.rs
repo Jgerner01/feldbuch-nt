@@ -219,10 +219,11 @@ impl DxfViewer {
                 let mut antwort = None;
                 fenster("Instrumentenhöhe korrigieren").show(ctx, |ui| {
                     ui.label(format!(
-                        "Instrumentenhöhe für {} von {} m auf {} m korrigieren?\n\nDie Aufstellung bleibt dieselbe. Vorhandene Neupunkte dieser Aufstellung werden neu berechnet.",
+                        "Instrumentenhöhe für {} von {} m auf {} m korrigieren?\n\nDie Aufstellung bleibt dieselbe. {}\n\nWurde das Instrument neu aufgebaut, bitte stattdessen „Neuer Stp“ wählen.",
                         projekt.station.standpunkt_nr,
                         f(alt, 3),
-                        f(neu, 3)
+                        f(neu, 3),
+                        projekt.ih_korrektur_wirkung(neu)
                     ));
                     if let Some(h) = projekt.ih_hinweis(neu) {
                         ui.colored_label(INFO_WARNUNG, format!("⚠ {h}"));

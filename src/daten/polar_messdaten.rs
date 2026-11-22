@@ -21,8 +21,10 @@ pub struct PolarMessung {
     pub exz_unbekannt: bool,
     pub aufstellung_id: String,
     pub instrumenten_hoehe: Option<f64>,
-    /// 0-basierter Zeilenindex in der Datei (für das Rückschreiben).
+    /// 0-basierter physischer Zeilenindex in der Datei (Anzeige, Zuordnung zu Kommentaren).
     pub zeilen_index: usize,
+    /// Index unter allen Datenzeilen der Datei (auch AP/KP); stabile Zuordnung für das Rückschreiben.
+    pub datensatz: usize,
     pub punkt_nr: String,
     pub hz_gon: f64,
     pub v_gon: f64,
@@ -115,6 +117,7 @@ pub fn parse(zeilen: &[String], ist_koordinatenpunkt: impl Fn(&str) -> bool) -> 
         }
         daten.messungen.push(PolarMessung {
             zeilen_index: d.zeilennummern[i] - 1,
+            datensatz: i,
             exz_unbekannt: d.zelle(z, "ExzLaengs_m").is_empty() || d.zelle(z, "ExzQuer_m").is_empty(),
             punkt_nr: nr.into(),
             hz_gon: d.zahl(i, "HZ_gon")?,

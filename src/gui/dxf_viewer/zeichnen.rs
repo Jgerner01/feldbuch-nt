@@ -3,6 +3,7 @@
 // Autor:    Johann Gerner
 
 use super::*;
+use crate::daten::punktlisten::NeupunktSchluessel;
 
 /// Zeichnet eine Entity; Polylinien werden während der Bewegung ausgedünnt (Punkte unter `DUENN_PX` Abstand entfallen).
 fn zeichne_entity(e: &DxfEntity, maler: &egui::Painter, a: &Ansicht, farbe: Color32, breite: f32, bewegung: bool) {
@@ -927,16 +928,8 @@ impl DxfViewer {
     fn rechteck_gewaehlt(&mut self, projekt: &Projekt, r: Rahmen) {
         let im_rahmen = |x: f64, y: f64| x >= r.min_x && x <= r.max_x && y >= r.min_y && y <= r.max_y;
         let feldbuch: Vec<String> = projekt.feldbuchpunkte.punkte().iter().filter(|p| im_rahmen(p.r, p.h)).map(|p| p.punkt_nr.clone()).collect();
-        let neu: Vec<(String, String)> = projekt
-            .neupunkte
-            .rohdaten()
-            .iter()
-            .filter(|p| {
-                let (kr, kh) = projekt.neupunkte.finde_koordinate(&p.punkt_nr, &p.standpunkt_nr).map_or((0.0, 0.0), |e| (e.r, e.h));
-                im_rahmen(kr, kh)
-            })
-            .map(|p| (p.punkt_nr.clone(), p.standpunkt_nr.clone()))
-            .collect();
+        // Vollständiger Schlüssel mit AufstellungId; Rohdaten ohne Koordinate sind nicht wählbar (audit.md D1)
+        let neu: Vec<NeupunktSchluessel> = projekt.neupunkte.schluessel_wo(im_rahmen);
         let importiert: Vec<String> = projekt.importpunkte.punkte().iter().filter(|p| im_rahmen(p.r, p.h)).map(|p| p.punkt_nr.clone()).collect();
         let gesamt = feldbuch.len() + neu.len() + importiert.len();
         if gesamt == 0 {
@@ -954,51 +947,84 @@ impl DxfViewer {
         let text = format!(
             "{gesamt} Punkt(e) löschen?\n\n{}{}{}",
             liste("Feldbuchpunkte", feldbuch.iter().collect()),
-            liste("Neupunkte", neu.iter().map(|(n, _)| n).collect()),
+            liste("Neupunkte", neu.iter().map(|s| &s.punkt_nr).collect()),
             liste("Importpunkte", importiert.iter().collect()),
         );
         self.dialog = Some(Dialog::Loeschen { text, anzahl: gesamt, ziele: LoeschZiele { feldbuch, neupunkte: neu, importpunkte: importiert } });
     }
 
     fn loesche(&mut self, projekt: &mut Projekt, anzahl: usize, ziele: LoeschZiele) {
-        let (mut fb, mut np, mut imp) = (0, 0, 0);
-        self.protokolliere_loeschen(projekt, &ziele);
+        let _ = anzahl;
+        let mut teile: Vec<String> = Vec::new();
+        let mut fehler: Vec<String> = Vec::new();
+        // Erst löschen, dann nur tatsächlich Gelöschtes protokollieren (audit.md D1/Q1)
+        let mut geloescht_fb: &[String] = &[];
+        let mut geloescht_np: &[NeupunktSchluessel] = &[];
+        let mut geloescht_imp: &[String] = &[];
         if !ziele.feldbuch.is_empty() {
             let nrs: std::collections::HashSet<&str> = ziele.feldbuch.iter().map(String::as_str).collect();
-            fb = projekt.feldbuchpunkte.remove_where(|p| nrs.contains(p.punkt_nr.as_str())).unwrap_or(0);
+            match projekt.feldbuchpunkte.remove_where(|p| nrs.contains(p.punkt_nr.as_str())) {
+                Ok(n) => {
+                    teile.push(format!("FB:{n}"));
+                    geloescht_fb = &ziele.feldbuch;
+                }
+                Err(e) => fehler.push(format!("Feldbuchpunkte: {e}")),
+            }
             self.baue_overlay(projekt);
         }
         if !ziele.neupunkte.is_empty() {
-            let schluessel: std::collections::HashSet<(&str, &str)> = ziele.neupunkte.iter().map(|(n, s)| (n.as_str(), s.as_str())).collect();
-            np = projekt.neupunkte.remove_where(|p| schluessel.contains(&(p.punkt_nr.as_str(), p.standpunkt_nr.as_str()))).unwrap_or(0);
+            match projekt.neupunkte.entferne(&ziele.neupunkte) {
+                Ok(n) => {
+                    teile.push(format!("NP:{n}"));
+                    geloescht_np = &ziele.neupunkte;
+                }
+                Err(e) => fehler.push(format!("Neupunkte: {e}")),
+            }
             self.baue_neupunkte_overlay(projekt);
         }
         if !ziele.importpunkte.is_empty() {
             let nrs: std::collections::HashSet<&str> = ziele.importpunkte.iter().map(String::as_str).collect();
-            imp = projekt.importpunkte.remove_where(|p| nrs.contains(p.punkt_nr.as_str())).unwrap_or(0);
+            match projekt.importpunkte.remove_where(|p| nrs.contains(p.punkt_nr.as_str())) {
+                Ok(n) => {
+                    teile.push(format!("Imp:{n}"));
+                    geloescht_imp = &ziele.importpunkte;
+                }
+                Err(e) => fehler.push(format!("Importpunkte: {e}")),
+            }
             if let Some(layer) = self.import_layer.iter_mut().find(|l| l.name.eq_ignore_ascii_case(IMPORT_LAYER_NAME)) {
                 layer.entities.clear();
             }
             self.baue_import_overlay(projekt);
         }
+        self.protokolliere_loeschen(projekt, geloescht_fb, geloescht_np, geloescht_imp);
         self.loesch_modus = false;
-        self.status = format!("{anzahl} Punkt(e) gelöscht (FB:{fb} NP:{np} Imp:{imp}).");
-        protokoll::log("LÖSCH", &format!("{anzahl} Punkte gelöscht"));
+        let gesamt = geloescht_fb.len() + geloescht_np.len() + geloescht_imp.len();
+        self.status = format!("{gesamt} Punkt(e) gelöscht ({}).", teile.join(" "));
+        protokoll::log("LÖSCH", &format!("{gesamt} Punkte gelöscht ({})", teile.join(" ")));
+        if !fehler.is_empty() {
+            let text = format!("Nicht alles konnte gelöscht werden; diese Bestände sind unverändert:\n{}", fehler.join("\n"));
+            protokoll::log("LÖSCH", &text);
+            self.status.push_str("  ⚠ Löschfehler");
+            self.dialog = Some(Dialog::Hinweis { titel: "Löschen unvollständig".into(), text });
+        }
     }
 
-    /// Schreibt je gelöschtem Punkt eine Zeile GELOESCHT ins Messprotokoll; bei Neupunkten mit Bezug auf deren Messung.
-    fn protokolliere_loeschen(&self, projekt: &Projekt, ziele: &LoeschZiele) {
+    /// Schreibt je tatsächlich gelöschtem Punkt eine Zeile GELOESCHT ins Messprotokoll; Neupunkte mit Bezug auf ihre Messung.
+    fn protokolliere_loeschen(&self, projekt: &Projekt, feldbuch: &[String], neupunkte: &[NeupunktSchluessel], importpunkte: &[String]) {
         use crate::daten::messprotokoll::{self as mp, Eintrag, Ereignis};
         let e = &projekt.einstellungen;
         let eintraege = if mp::pfad(e).exists() { mp::lese(&mp::pfad(e)).unwrap_or_default() } else { Vec::new() };
-        for (nr, sp) in &ziele.neupunkte {
-            let id = projekt.neupunkte.koordinaten().iter().find(|k| &k.punkt_nr == nr && &k.standpunkt_nr == sp).map(|k| k.aufstellung_id.clone()).unwrap_or_default();
-            let mut z = Eintrag::neu(Ereignis::Geloescht).punkt(nr, crate::daten::messdaten::TYP_NEUPUNKT, "").quelle(mp::QUELLE_HAND).bezug(mp::letzte_messung(&eintraege, &id, nr, crate::daten::messdaten::TYP_NEUPUNKT)).text("Neupunkt im DXF-Viewer gelöscht");
-            z.aufstellung_id = id;
-            z.standpunkt_nr.clone_from(sp);
+        for s in neupunkte {
+            let mut z = Eintrag::neu(Ereignis::Geloescht)
+                .punkt(&s.punkt_nr, crate::daten::messdaten::TYP_NEUPUNKT, "")
+                .quelle(mp::QUELLE_HAND)
+                .bezug(mp::letzte_messung(&eintraege, &s.aufstellung_id, &s.punkt_nr, crate::daten::messdaten::TYP_NEUPUNKT))
+                .text("Neupunkt im DXF-Viewer gelöscht");
+            z.aufstellung_id.clone_from(&s.aufstellung_id);
+            z.standpunkt_nr.clone_from(&s.standpunkt_nr);
             mp::protokolliere(e, z);
         }
-        for (liste, art) in [(&ziele.feldbuch, "Feldbuchpunkt"), (&ziele.importpunkte, "Importpunkt")] {
+        for (liste, art) in [(feldbuch, "Feldbuchpunkt"), (importpunkte, "Importpunkt")] {
             for nr in liste {
                 mp::protokolliere(e, Eintrag::neu(Ereignis::Geloescht).punkt(nr, "", "").quelle(mp::QUELLE_HAND).text(format!("{art} im DXF-Viewer gelöscht")));
             }

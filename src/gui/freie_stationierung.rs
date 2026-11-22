@@ -753,10 +753,11 @@ impl FreieStationierungAnsicht {
         let mut antwort = None;
         egui::Window::new("Instrumentenhöhe korrigieren").collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO).show(ctx, |ui| {
             ui.label(format!(
-                "Instrumentenhöhe für {} von {} m auf {} m korrigieren?\n\nDie Aufstellung bleibt dieselbe. Vorhandene Neupunkte dieser Aufstellung werden neu berechnet.",
+                "Instrumentenhöhe für {} von {} m auf {} m korrigieren?\n\nDie Aufstellung bleibt dieselbe. {}\n\nWurde das Instrument neu aufgebaut, bitte stattdessen „Neuer Stp“ wählen.",
                 projekt.station.standpunkt_nr,
                 de(alt, 3),
-                de(neu, 3)
+                de(neu, 3),
+                projekt.ih_korrektur_wirkung(neu)
             ));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -772,7 +773,7 @@ impl FreieStationierungAnsicht {
             Some(true) => {
                 self.ih_frage = None;
                 if let Err(e) = projekt.set_instrumenten_hoehe(neu) {
-                    self.instr_hoehe = alt;
+                    self.instr_hoehe = projekt.station.instrumenten_hoehe;
                     self.melde("Fehler", format!("Instrumentenhöhe konnte nicht gespeichert werden:\n{e}"));
                 } else {
                     self.gesehene_version = projekt.station_version;

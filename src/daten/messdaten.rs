@@ -290,20 +290,33 @@ pub fn migriere_spalten(pfad: &Path) -> bool {
     d.speichern().is_ok()
 }
 
-/// Indizes beziehen sich auf die physischen Startzeilen der geladenen Datensätze.
-pub fn schreibe_exzentrizitaeten(pfad: &Path, aenderungen: &[(usize, f64, f64)]) -> io::Result<()> {
+/// Eine zurückzuschreibende Exzentrizität. `datensatz` ist der Index unter allen Datenzeilen der Messdatei
+/// (einschließlich AP/KP); Punktnummer und Zeitstempel prüfen, dass die Zeile noch dieselbe Messung ist.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExzAenderung {
+    pub datensatz: usize,
+    pub punkt_nr: String,
+    pub zeitstempel: String,
+    pub laengs: f64,
+    pub quer: f64,
+}
+
+/// Schreibt Exzentrizitäten zurück (audit.md P3): erst alle Ziele prüfen, dann einmal speichern. Passt eine Zeile
+/// nicht mehr zur geladenen Messung (Datei extern geändert), wird nichts geschrieben.
+pub fn schreibe_exzentrizitaeten(pfad: &Path, aenderungen: &[ExzAenderung]) -> io::Result<()> {
     let mut d = crate::daten::csv_datei::CsvDatei::laden(pfad)?;
-    for (index, laengs, quer) in aenderungen {
-        if !laengs.is_finite() || !quer.is_finite() {
+    for a in aenderungen {
+        if !a.laengs.is_finite() || !a.quer.is_finite() {
             return Err(crate::daten::csv_basis::fehler("Exzentrizität ist keine endliche Zahl."));
         }
-        let i = d
-            .zeilennummern
-            .iter()
-            .position(|nr| *nr == index + 1)
-            .ok_or_else(|| crate::daten::csv_basis::fehler(format!("Messzeile {} wurde verändert. Datei neu laden.", index + 1)))?;
-        d.set_zelle(i, "ExzLaengs_m", f(*laengs, 3));
-        d.set_zelle(i, "ExzQuer_m", f(*quer, 3));
+        let passt = d.zeilen.get(a.datensatz).is_some_and(|z| d.zelle(z, "PunktNr") == a.punkt_nr && d.zelle(z, "Zeitstempel") == a.zeitstempel);
+        if !passt {
+            return Err(crate::daten::csv_basis::fehler(format!("Die Messung {} wurde in der Datei verändert oder verschoben. Bitte die Datei neu laden.", a.punkt_nr)));
+        }
+    }
+    for a in aenderungen {
+        d.set_zelle(a.datensatz, "ExzLaengs_m", f(a.laengs, 3));
+        d.set_zelle(a.datensatz, "ExzQuer_m", f(a.quer, 3));
     }
     d.speichern()
 }
@@ -390,6 +403,35 @@ mod tests {
         assert!(d.spalten_index("AufstellungId").is_some());
         let sicherungen = fs::read_dir(&dir).unwrap().filter_map(Result::ok).filter(|d| d.file_name().to_string_lossy().contains("_backup_")).count();
         assert_eq!(sicherungen, 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn exzentrizitaet_trifft_nur_den_gewaehlten_neupunkt() {
+        // Audit P3: NP1, KP, NP2 – zweimal die Exzentrizität von NP2 ändern; KP und NP1 bleiben unverändert
+        let (e, dir) = einst("p3");
+        let roh = |nr: &str, s: i64| NeupunktRohdaten { punkt_nr: nr.into(), strecke_m: 10.0, v_gon: 100.0, aufstellung_id: "A".into(), zeitstempel: jetzt() + chrono::Duration::seconds(s), ..Default::default() };
+        schreibe_neupunktmessung(&e, &roh("NP1", 0), "S1", 1.5).unwrap();
+        let kp = StationierungsPunkt { punkt_nr: "K".into(), hz: 1.0, v: 100.0, strecke: 20.0, ..Default::default() };
+        schreibe_kontrollmessung(&e, &kp, "S1", 1.5, "A", jetzt() + chrono::Duration::seconds(1)).unwrap();
+        schreibe_neupunktmessung(&e, &roh("NP2", 2), "S1", 1.5).unwrap();
+        let pfad = messdatei_pfad(&e);
+        let polar = crate::daten::polar_messdaten::lese(&pfad, |_| false).unwrap();
+        let np2 = polar.messungen.iter().find(|m| m.punkt_nr == "NP2").unwrap().clone();
+        for wert in [1.0, 2.0] {
+            let a = ExzAenderung { datensatz: np2.datensatz, punkt_nr: np2.punkt_nr.clone(), zeitstempel: np2.zeitstempel.clone(), laengs: wert, quer: 0.0 };
+            schreibe_exzentrizitaeten(&pfad, &[a]).unwrap();
+        }
+        let d = crate::daten::csv_datei::CsvDatei::laden(&pfad).unwrap();
+        let exz = |nr: &str| d.zeilen.iter().find(|z| d.zelle(z, "PunktNr") == nr).map(|z| d.zelle(z, "ExzLaengs_m").to_string()).unwrap();
+        assert_eq!(exz("NP2"), "2.000");
+        assert_eq!(exz("K"), "0.000");
+        assert_eq!(exz("NP1"), "0.000");
+        // Extern verschobene Zeilen: Konflikt statt falscher Zeile, nichts wird geschrieben
+        let falsch = ExzAenderung { datensatz: 0, punkt_nr: "NP2".into(), zeitstempel: np2.zeitstempel.clone(), laengs: 9.0, quer: 0.0 };
+        assert!(schreibe_exzentrizitaeten(&pfad, &[falsch]).is_err());
+        let d2 = crate::daten::csv_datei::CsvDatei::laden(&pfad).unwrap();
+        assert_eq!(d2.zelle(&d2.zeilen[0], "ExzLaengs_m"), "0.000");
         let _ = fs::remove_dir_all(dir);
     }
 

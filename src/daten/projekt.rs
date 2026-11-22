@@ -458,19 +458,82 @@ impl Projekt {
         if (alt - wert).abs() <= IH_TOLERANZ_M {
             return Ok(());
         }
+        // Höhenkette (audit.md S3): Eine aus Anschlusszielen abgeleitete Stationshöhe (Bodenpunkt) enthält −IH;
+        // sie ändert sich deshalb um −ΔIH, die Neupunkthöhen bleiben gleich. Eine fest vorgegebene Höhe eines
+        // bekannten Standpunkts bleibt fest; dann ändern sich die Neupunkthöhen fachlich korrekt um +ΔIH.
+        let hoehe_vorher = self.station.ergebnis.as_ref().map(|e| e.hoehe);
+        if self.stationshoehe_aus_zielen() {
+            if let Some(e) = self.station.ergebnis.as_mut() {
+                e.hoehe -= wert - alt;
+            }
+        }
         self.station.instrumenten_hoehe = wert;
         self.station_speichern()?;
         self.projektdaten.set_value(KATEGORIE_AKTIV, "Instrumentenhoehe [m]", &f(wert, 3))?;
-        protokoll::log("STANDPKT", &format!("Instrumentenhöhe {} korrigiert: {} → {} m", self.station.standpunkt_nr, f(alt, 3), f(wert, 3)));
+        let mut wirkung = String::new();
+        if let (Some(vorher), Some(e)) = (hoehe_vorher, self.station.ergebnis.clone()) {
+            if (vorher - e.hoehe).abs() > 1e-9 {
+                wirkung = format!("Stationshöhe {} → {} m", f(vorher, 3), f(e.hoehe, 3));
+                self.aktualisiere_stationshoehe(e.hoehe)?;
+            }
+        }
+        protokoll::log("STANDPKT", &format!("Instrumentenhöhe {} korrigiert: {} → {} m {wirkung}", self.station.standpunkt_nr, f(alt, 3), f(wert, 3)));
+        let neu_berechnet = self.neupunkte_neu_berechnen();
         {
             use crate::daten::messprotokoll::{self as mp, Eintrag, Ereignis};
-            mp::protokolliere(
-                &self.einstellungen,
-                Eintrag::neu(Ereignis::Ih).mit_aufstellung(&self.station).aenderung("IH_m", &f(alt, 3), &f(wert, 3)).quelle(mp::QUELLE_HAND).text("Neupunkte der Aufstellung neu berechnet"),
-            );
+            let mut text = if wirkung.is_empty() { String::new() } else { format!("{wirkung}; ") };
+            text.push_str(match &neu_berechnet {
+                Ok(true) => "Neupunkte der Aufstellung neu berechnet",
+                Ok(false) => "keine gültige Stationierung, Neupunkte nicht neu berechnet",
+                Err(_) => "Neuberechnung der Neupunkte fehlgeschlagen",
+            });
+            mp::protokolliere(&self.einstellungen, Eintrag::neu(Ereignis::Ih).mit_aufstellung(&self.station).aenderung("IH_m", &f(alt, 3), &f(wert, 3)).quelle(mp::QUELLE_HAND).text(text));
         }
-        self.neupunkte_nach_stationierung();
         self.station_version += 1;
+        neu_berechnet.map(|_| ()).map_err(|e| crate::daten::csv_basis::fehler(format!("Instrumentenhöhe gespeichert, aber Neupunkte nicht neu berechnet: {e}")))
+    }
+
+    /// Wurde die Stationshöhe aus den Anschlusszielen abgeleitet (und hängt damit von der Instrumentenhöhe ab)?
+    fn stationshoehe_aus_zielen(&self) -> bool {
+        let Some(e) = &self.station.ergebnis else {
+            return false;
+        };
+        if !e.berechnung_3d || e.hoehe == 0.0 || e.ist_lokales_system {
+            return false;
+        }
+        // Bekannter Standpunkt mit fester Höhe: Höhe nicht aus Zielen
+        !self.station.bekannt.as_ref().is_some_and(|b| b.hoehe.is_finite() && b.hoehe != 0.0)
+    }
+
+    /// Text für die Rückfrage: was eine IH-Korrektur auf `neu` bewirkt.
+    pub fn ih_korrektur_wirkung(&self, neu: f64) -> String {
+        let delta = neu - self.station.instrumenten_hoehe;
+        let (anzahl, _) = self.neupunkte.zaehle(&self.station.standpunkt_nr);
+        let neupunkte = if anzahl > 0 { format!("{anzahl} Neupunkt(e) dieser Aufstellung werden neu berechnet") } else { "Es gibt noch keine Neupunkte".to_string() };
+        match self.station.ergebnis.as_ref().filter(|_| self.hat_gueltige_station()) {
+            Some(e) if self.stationshoehe_aus_zielen() => format!(
+                "Die Stationshöhe wurde aus den Anschlusszielen bestimmt und ändert sich von {} auf {} m. {neupunkte}; ihre Höhen bleiben gleich.",
+                f(e.hoehe, 3),
+                f(e.hoehe - delta, 3)
+            ),
+            Some(e) if e.berechnung_3d && e.hoehe != 0.0 => {
+                format!("Die Stationshöhe ist fest vorgegeben ({} m). {neupunkte}; ihre Höhen ändern sich um {} m.", f(e.hoehe, 3), crate::grundlagen::format::plus_minus(delta, 3))
+            }
+            Some(_) => format!("Die Stationierung ist zweidimensional. {neupunkte}."),
+            None => "Noch keine gültige Stationierung – es ändert sich nur die gespeicherte Instrumentenhöhe.".to_string(),
+        }
+    }
+
+    /// Schreibt eine geänderte Stationshöhe in Feldbuchpunkt und Projektdaten des Standpunkts.
+    fn aktualisiere_stationshoehe(&mut self, hoehe: f64) -> io::Result<()> {
+        let nr = self.station.standpunkt_nr.clone();
+        if let Some(mut p) = self.feldbuchpunkte.punkte().iter().find(|p| p.typ == TYP_STANDPUNKT && p.punkt_nr == nr).cloned() {
+            p.hoehe = hoehe;
+            self.feldbuchpunkte.add_or_update(p)?;
+        }
+        if self.projektdaten.get_value(KATEGORIE_STATIONIERUNG, "Standpunkt") == Some(nr.as_str()) {
+            self.projektdaten.set_value(KATEGORIE_STATIONIERUNG, "Hoehe [m]", &f(hoehe, 3))?;
+        }
         Ok(())
     }
 
@@ -939,18 +1002,24 @@ impl Projekt {
 
     /// Berechnet die Neupunkte des aktiven Standpunkts mit der neuen Stationierung neu und speichert sie.
     fn neupunkte_nach_stationierung(&mut self) {
+        if let Err(e) = self.neupunkte_neu_berechnen() {
+            fehler_log::log("Projekt.neupunkte_nach_stationierung", &format!("Neuberechnung der Neupunkte: {e}"));
+        }
+    }
+
+    /// Berechnet die Neupunkte der aktiven Aufstellung neu. `Ok(false)` ohne gültige Stationierung.
+    fn neupunkte_neu_berechnen(&mut self) -> Result<bool, String> {
         if !self.hat_gueltige_station() {
-            return;
+            return Ok(false);
         }
         let Some(neu) = self.station.ergebnis.clone() else {
-            return;
+            return Ok(false);
         };
         let standpunkt_nr = self.station.standpunkt_nr.clone();
         let params = self.rechenparameter.params.clone();
-        if let Err(e) = self.neupunkte.berechne_neu(&neu, &standpunkt_nr, &params, self.station.instrumenten_hoehe, &self.station.aufstellung_id) {
-            fehler_log::log("Projekt.neupunkte_nach_stationierung", &format!("Neuberechnung der Neupunkte: {e}"));
-        }
+        let ergebnis = self.neupunkte.berechne_neu(&neu, &standpunkt_nr, &params, self.station.instrumenten_hoehe, &self.station.aufstellung_id);
         self.station_version += 1;
+        ergebnis.map(|_| true).map_err(|e| e.to_string())
     }
 
     /// Vergleicht ein noch nicht übernommenes Stationierungsergebnis mit der bisherigen Stationierung des Standpunkts.
@@ -1440,6 +1509,68 @@ mod tests {
         p.set_instrumenten_hoehe(1.65).unwrap();
         assert_eq!(p.station.aufstellung_id, id);
         assert_eq!(p.lese_station_datei("STP1").unwrap().instrumenten_hoehe, 1.65);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Station bei (0,0) mit drei horizontalen Zielen der Höhe 100 m; Neupunkt 7 horizontal in 50 m.
+    fn ih_kette(name: &str, bekannt: Option<BekannterStandpunkt>) -> (Projekt, PathBuf) {
+        let (mut p, dir) = projekt_in(name);
+        p.rechenparameter.params.berechnung_3d = true;
+        p.standpunkt_beginnen(NeuerStandpunkt { nr: "S1".into(), ih: 1.5, bekannt, ..Default::default() }).unwrap();
+        let ap = |nr: &str, r: f64, h: f64, hz: f64| StationierungsPunkt { punkt_nr: nr.into(), r, h, hoehe: 100.0, hz, v: 100.0, strecke: 100.0, zielhoehe: 0.0 };
+        let punkte = vec![ap("A", 0.0, 100.0, 0.0), ap("B", 100.0, 0.0, 100.0), ap("C", 0.0, -100.0, 200.0)];
+        let akt = Aktivierung { richtung: vec![true; 3], strecke: vec![true; 3], hoehe: vec![true; 3] };
+        let erg = p.berechne_station(&punkte, 1.5, &akt).unwrap();
+        assert!((erg.hoehe - 98.5).abs() < 1e-9, "Stationshöhe {}", erg.hoehe);
+        p.uebernehme_manuelle_stationierung("S1", 1.5, punkte, akt, erg).unwrap();
+        let roh = crate::daten::modelle::NeupunktRohdaten {
+            aufstellung_id: p.station.aufstellung_id.clone(),
+            punkt_nr: "7".into(),
+            standpunkt_nr: "S1".into(),
+            hz_gon: 50.0,
+            v_gon: 100.0,
+            strecke_m: 50.0,
+            zeitstempel: crate::daten::modelle::jetzt(),
+            ..Default::default()
+        };
+        p.neupunkte.rohdaten_hinzufuegen(roh).unwrap();
+        p.neupunkte_nach_stationierung();
+        (p, dir)
+    }
+
+    fn np_hoehe(p: &Projekt) -> f64 {
+        p.neupunkte.koordinaten().iter().find(|k| k.punkt_nr == "7").unwrap().hoehe
+    }
+
+    #[test]
+    fn ih_korrektur_erhaelt_neupunkthoehen_bei_freier_station() {
+        // Audit S3: Stationshöhe aus Zielen → sie ändert sich um −ΔIH, die Neupunkthöhe bleibt
+        let (mut p, dir) = ih_kette("ih_frei", None);
+        assert!((np_hoehe(&p) - 100.0).abs() < 1e-6);
+        p.set_instrumenten_hoehe(1.65).unwrap();
+        assert!((p.station.ergebnis.as_ref().unwrap().hoehe - 98.35).abs() < 1e-9);
+        assert!((np_hoehe(&p) - 100.0).abs() < 1e-6, "NP-Höhe {}", np_hoehe(&p));
+        assert!((p.lese_station_datei("S1").unwrap().ergebnis.unwrap().hoehe - 98.35).abs() < 1e-9);
+        let fb = p.feldbuchpunkte.punkte().iter().find(|q| q.typ == TYP_STANDPUNKT && q.punkt_nr == "S1").unwrap().hoehe;
+        assert!((fb - 98.35).abs() < 1e-9);
+        // Rück- und Mehrfachkorrektur ohne kumulierte Verschiebung
+        p.set_instrumenten_hoehe(1.7).unwrap();
+        p.set_instrumenten_hoehe(1.5).unwrap();
+        assert!((p.station.ergebnis.as_ref().unwrap().hoehe - 98.5).abs() < 1e-9);
+        assert!((np_hoehe(&p) - 100.0).abs() < 1e-6);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ih_korrektur_bei_fester_standpunkthoehe() {
+        // Bekannter Standpunkt mit fester Höhe: Stationshöhe bleibt, Neupunkte ändern sich um +ΔIH
+        let bekannt = BekannterStandpunkt { punkt_nr: "P0".into(), r: 0.0, h: 0.0, hoehe: 98.5 };
+        let (mut p, dir) = ih_kette("ih_fest", Some(bekannt));
+        assert!((np_hoehe(&p) - 100.0).abs() < 1e-6);
+        assert!(p.ih_korrektur_wirkung(1.65).contains("fest vorgegeben"));
+        p.set_instrumenten_hoehe(1.65).unwrap();
+        assert!((p.station.ergebnis.as_ref().unwrap().hoehe - 98.5).abs() < 1e-9);
+        assert!((np_hoehe(&p) - 100.15).abs() < 1e-6, "NP-Höhe {}", np_hoehe(&p));
         let _ = fs::remove_dir_all(dir);
     }
 

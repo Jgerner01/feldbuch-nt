@@ -424,9 +424,39 @@ impl NeupunkteManager {
         Ok(entfernt)
     }
 
+    /// Vollständige Schlüssel (Punkt, Standpunkt, AufstellungId) aller Neupunkte, deren tatsächliche Koordinate die
+    /// Bedingung erfüllt. Rohdaten ohne Koordinate werden nie gewählt (keine Ersatzkoordinate 0/0, audit.md D1).
+    pub fn schluessel_wo(&self, bedingung: impl Fn(f64, f64) -> bool) -> Vec<NeupunktSchluessel> {
+        let mut aus: Vec<NeupunktSchluessel> = Vec::new();
+        for r in &self.daten.rohdaten {
+            let Some(k) = self.finde_koordinate_aufstellung(&r.punkt_nr, &r.standpunkt_nr, &r.aufstellung_id) else {
+                continue;
+            };
+            let s = NeupunktSchluessel { punkt_nr: r.punkt_nr.clone(), standpunkt_nr: r.standpunkt_nr.clone(), aufstellung_id: r.aufstellung_id.clone() };
+            if bedingung(k.r, k.h) && !aus.contains(&s) {
+                aus.push(s);
+            }
+        }
+        aus
+    }
+
+    /// Löscht genau die angegebenen Neupunkte (Rohdaten und Koordinaten); Fehler beim Speichern stellen den
+    /// vorherigen Bestand wieder her. Liefert die Zahl der gelöschten Messungen.
+    pub fn entferne(&mut self, ziele: &[NeupunktSchluessel]) -> io::Result<usize> {
+        self.remove_where(|r| ziele.iter().any(|z| z.punkt_nr == r.punkt_nr && z.standpunkt_nr == r.standpunkt_nr && z.aufstellung_id == r.aufstellung_id))
+    }
+
     pub fn speichern(&self) -> io::Result<()> {
         json_speicher::speichere(&self.pfad, &self.daten, "NeupunkteManager.speichern")
     }
+}
+
+/// Eindeutiger Schlüssel eines Neupunkts: Punkt, Standpunkt und Aufstellung.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NeupunktSchluessel {
+    pub punkt_nr: String,
+    pub standpunkt_nr: String,
+    pub aufstellung_id: String,
 }
 
 #[cfg(test)]
@@ -537,6 +567,30 @@ mod tests {
 
         let neu = NeupunkteManager::initialisiere(&dir.join("P-Neupunkte.json"));
         assert_eq!(neu.rohdaten().len(), 1);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn loeschen_trifft_nur_die_gewaehlte_aufstellung() {
+        // Audit D1: Punkt 5 auf S1 in Aufstellung A (bei 10/10) und B (bei 500/500); nur A liegt im Rechteck
+        let dir = test_ordner("d1");
+        let pfad = dir.join("P-Neupunkte.json");
+        let mut m = NeupunkteManager::initialisiere(&pfad);
+        for (id, r, h) in [("A", 10.0, 10.0), ("B", 500.0, 500.0)] {
+            let roh = NeupunktRohdaten { punkt_nr: "5".into(), standpunkt_nr: "S1".into(), aufstellung_id: id.into(), zeitstempel: jetzt(), ..Default::default() };
+            let erg = NeupunktErgebnis { punkt_nr: "5".into(), standpunkt_nr: "S1".into(), aufstellung_id: id.into(), r, h, zeitstempel: jetzt(), ..Default::default() };
+            m.hinzufuegen_oder_ersetzen(roh, erg).unwrap();
+        }
+        // Rohdaten ohne Koordinate (offene Stationierung) liegen nie „bei 0/0“
+        m.rohdaten_hinzufuegen(NeupunktRohdaten { punkt_nr: "9".into(), standpunkt_nr: "S1".into(), aufstellung_id: "C".into(), zeitstempel: jetzt(), ..Default::default() }).unwrap();
+        let im_rechteck = |x: f64, y: f64| (-1.0..=20.0).contains(&x) && (-1.0..=20.0).contains(&y);
+        let ziele = m.schluessel_wo(im_rechteck);
+        assert_eq!(ziele, vec![NeupunktSchluessel { punkt_nr: "5".into(), standpunkt_nr: "S1".into(), aufstellung_id: "A".into() }]);
+        assert_eq!(m.entferne(&ziele).unwrap(), 1);
+        let rest = NeupunkteManager::initialisiere(&pfad);
+        assert_eq!(rest.rohdaten().len(), 2);
+        assert!(rest.finde_koordinate_aufstellung("5", "S1", "B").is_some());
+        assert!(rest.rohdaten().iter().any(|r| r.punkt_nr == "9"));
         let _ = fs::remove_dir_all(dir);
     }
 }

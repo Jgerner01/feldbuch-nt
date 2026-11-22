@@ -894,28 +894,27 @@ impl PolarpunkteAnsicht {
     }
 
     fn schreibe_geaenderte_exzentrizitaeten(&mut self, projekt: &Projekt) {
-        let Some(daten) = &self.daten else {
-            return;
-        };
-        let _ = daten;
-        let aenderungen: Vec<(usize, f64, f64)> = self
-            .np
-            .iter()
-            .zip(&self.exz_original)
-            .filter(|(m, (l, q))| (l - m.exz_laengs_m).abs() > 1e-9 || (q - m.exz_quer_m).abs() > 1e-9)
-            .map(|(m, _)| (m.zeilen_index, m.exz_laengs_m, m.exz_quer_m))
-            .collect();
-        if aenderungen.is_empty() {
+        if self.daten.is_none() {
             return;
         }
-        // Für das Messprotokoll: Punkt, Aufstellung, alte und neue Werte
-        let protokoll_aenderungen: Vec<(String, String, String, (f64, f64), (f64, f64))> = self
+        let geaendert: Vec<(&crate::daten::polar_messdaten::PolarMessung, (f64, f64))> = self
             .np
             .iter()
             .zip(&self.exz_original)
             .filter(|(m, (l, q))| (l - m.exz_laengs_m).abs() > 1e-9 || (q - m.exz_quer_m).abs() > 1e-9)
-            .map(|(m, (l, q))| (m.punkt_nr.clone(), m.aufstellung_id.clone(), m.standpunkt_nr.clone(), (*l, *q), (m.exz_laengs_m, m.exz_quer_m)))
+            .map(|(m, alt)| (m, *alt))
             .collect();
+        if geaendert.is_empty() {
+            return;
+        }
+        // Zuordnung über den Datensatz der Datei, geprüft über Punktnummer und Zeitstempel (audit.md P3)
+        let aenderungen: Vec<messdaten::ExzAenderung> = geaendert
+            .iter()
+            .map(|(m, _)| messdaten::ExzAenderung { datensatz: m.datensatz, punkt_nr: m.punkt_nr.clone(), zeitstempel: m.zeitstempel.clone(), laengs: m.exz_laengs_m, quer: m.exz_quer_m })
+            .collect();
+        // Für das Messprotokoll: Punkt, Aufstellung, Standpunkt, alte und neue Werte
+        let protokoll_aenderungen: Vec<(String, String, String, (f64, f64), (f64, f64))> =
+            geaendert.iter().map(|(m, alt)| (m.punkt_nr.clone(), m.aufstellung_id.clone(), m.standpunkt_nr.clone(), *alt, (m.exz_laengs_m, m.exz_quer_m))).collect();
         let pfad = self.datei_pfad(projekt);
         match messdaten::schreibe_exzentrizitaeten(&pfad, &aenderungen) {
             Ok(()) => {
@@ -937,13 +936,11 @@ impl PolarpunkteAnsicht {
                     }
                 }
                 self.exz_original = self.np.iter().map(|m| (m.exz_laengs_m, m.exz_quer_m)).collect();
-                // Die kanonische Ausgabe kann Kopfzeilen/mehrzeilige Felder
-                // verschieben. Indizes vor dem nächsten Speichern aktualisieren.
+                // Die kanonische Ausgabe kann physische Zeilen verschieben: Anzeigeindizes über den Datensatz nachführen.
                 if let (Some(daten), Ok(datei)) = (self.daten.as_mut(), crate::daten::csv_datei::CsvDatei::laden(&pfad)) {
-                    let indizes: std::collections::HashMap<_, _> = daten.messungen.iter().zip(&datei.zeilennummern).map(|(m, nr)| (m.zeilen_index, nr - 1)).collect();
                     for m in daten.messungen.iter_mut().chain(self.np.iter_mut()) {
-                        if let Some(neu) = indizes.get(&m.zeilen_index) {
-                            m.zeilen_index = *neu;
+                        if let Some(nr) = datei.zeilennummern.get(m.datensatz) {
+                            m.zeilen_index = nr - 1;
                         }
                     }
                 }

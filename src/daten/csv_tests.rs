@@ -84,7 +84,9 @@ fn exzentrizitaeten_nach_spaltennamen_und_mehrzeiligem_code() {
         "# DATENTYP\nMessdaten\n# DATEN\nCode;PunktNr;V;HZ;Zielhoehe;Strecke;Extra\n\"Baum\nalt\";001;100;0;1.5;20;behalten\n# STATIONIERUNG: SP=A\nBaum;002;100;10;1.5;25;auch\n";
     std::fs::write(&p, text).unwrap();
     let original = CsvDatei::laden(&p).unwrap();
-    messdaten::schreibe_exzentrizitaeten(&p, &[(original.zeilennummern[1] - 1, 0.5, -0.1)]).unwrap();
+    let _ = &original;
+    let a = messdaten::ExzAenderung { datensatz: 1, punkt_nr: "002".into(), zeitstempel: String::new(), laengs: 0.5, quer: -0.1 };
+    messdaten::schreibe_exzentrizitaeten(&p, &[a]).unwrap();
     let neu = CsvDatei::laden(&p).unwrap();
     assert_eq!(neu.zeilen.len(), 2);
     assert_eq!(neu.zelle(&neu.zeilen[0], "Code"), "Baum\nalt");

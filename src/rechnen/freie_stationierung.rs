@@ -132,8 +132,24 @@ pub fn berechnen(punkte: &[StationierungsPunkt], instrumentenhoehe: f64, optione
     let v_rad: Vec<f64> = punkte.iter().map(|p| p.v * GON2RAD).collect();
     let dh: Vec<f64> = punkte.iter().zip(&v_rad).map(|(p, v)| p.strecke * v.sin()).collect();
 
-    // Schritt 1: Helmert-Näherungslösung
-    let (r0, h0, mut o0, massstab) = helmert_transformation(punkte, &hz_rad, &dh, optionen.freier_massstab)?;
+    // Schritt 1: Helmert-Näherungslösung. Maßstab und Näherung nur aus Zielen mit aktiver Richtung UND Strecke
+    // (eine abgeschaltete Beobachtung darf kein Ergebnis bestimmen, siehe audit.md S1).
+    let voll: Vec<usize> = (0..n).filter(|&i| akt_hz[i] && akt_str[i]).collect();
+    let (r0, h0, mut o0, massstab) = if voll.len() >= 2 {
+        let teil: Vec<StationierungsPunkt> = voll.iter().map(|&i| punkte[i].clone()).collect();
+        let teil_hz: Vec<f64> = voll.iter().map(|&i| hz_rad[i]).collect();
+        let teil_dh: Vec<f64> = voll.iter().map(|&i| dh[i]).collect();
+        helmert_transformation(&teil, &teil_hz, &teil_dh, optionen.freier_massstab)?
+    } else if optionen.freier_massstab {
+        return Err(format!(
+            "Maßstab nicht bestimmbar: mindestens 2 Ziele mit aktiver Richtung und Strecke erforderlich (vorhanden: {}).",
+            voll.len()
+        ));
+    } else {
+        // Fester Maßstab 1: die Näherung dient nur als Startwert der Ausgleichung, die ausschließlich aktive
+        // Beobachtungen verwendet; der Maßstab hängt nicht von den Daten ab.
+        helmert_transformation(punkte, &hz_rad, &dh, false)?
+    };
 
     // Schritt 2: Ausgleichung oder Direktlösung. Die Direktlösung (2 Punkte, freier Maßstab) verwendet alle 4 Beobachtungen
     // (siehe Prüfung oben); in allen anderen Fällen beachtet die Ausgleichung die Aktivierung je Beobachtung.
@@ -690,5 +706,67 @@ mod tests {
     fn kollineare_punkte_werden_erkannt() {
         let punkte = vec![messung("A", 1000.0, 2100.0, 100.0), messung("B", 1000.0, 2100.0, 100.0)];
         assert!(berechnen(&punkte, 0.0, &Optionen::default()).is_err());
+    }
+
+    /// Vergleicht alle Ergebnisparameter zweier Stationierungen.
+    fn gleich(a: &StationierungsErgebnis, b: &StationierungsErgebnis) {
+        assert!((a.r - b.r).abs() < 1e-9 && (a.h - b.h).abs() < 1e-9, "Lage {} {} / {} {}", a.r, a.h, b.r, b.h);
+        assert!((a.orientierung_gon - b.orientierung_gon).abs() < 1e-9);
+        assert!((a.massstab - b.massstab).abs() < 1e-12, "Maßstab {} / {}", a.massstab, b.massstab);
+        assert!((a.s0_mm - b.s0_mm).abs() < 1e-9);
+        assert!((a.hoehe - b.hoehe).abs() < 1e-9);
+    }
+
+    #[test]
+    fn deaktiviertes_ziel_beeinflusst_kein_ergebnis() {
+        // Audit S1: ein vollständig deaktiviertes Ziel wird verändert – kein Ergebnisparameter darf sich ändern
+        let mut punkte = testpunkte();
+        punkte.push(messung("E", 1150.0, 2020.0, 100.2));
+        let aus = Optionen {
+            aktiv_richtung: Some(vec![true, true, true, true, false]),
+            aktiv_strecke: Some(vec![true, true, true, true, false]),
+            aktiv_hoehe: Some(vec![true, true, true, true, false]),
+            ..Optionen::default()
+        };
+        let basis = berechnen(&punkte, 1.5, &aus).unwrap();
+        assert!((basis.massstab - 1.0).abs() < 1e-9);
+        for aendern in [
+            (|p: &mut StationierungsPunkt| p.r += 0.1) as fn(&mut StationierungsPunkt),
+            |p| p.h -= 0.1,
+            |p| p.hz += 0.05,
+            |p| p.strecke += 0.1,
+            |p| p.v += 0.05,
+            |p| p.hoehe += 0.3,
+            |p| p.zielhoehe += 0.2,
+        ] {
+            let mut geaendert = punkte.clone();
+            aendern(&mut geaendert[4]);
+            gleich(&berechnen(&geaendert, 1.5, &aus).unwrap(), &basis);
+        }
+    }
+
+    #[test]
+    fn abgeschaltete_strecke_beeinflusst_den_massstab_nicht() {
+        // Richtung von E aktiv, Strecke aus: eine falsche Strecke ändert weder Maßstab noch Lage
+        let mut punkte = testpunkte();
+        punkte.push(messung("E", 1150.0, 2020.0, 100.2));
+        let opt = Optionen {
+            aktiv_strecke: Some(vec![true, true, true, true, false]),
+            aktiv_hoehe: Some(vec![true, true, true, true, false]),
+            ..Optionen::default()
+        };
+        let basis = berechnen(&punkte, 1.5, &opt).unwrap();
+        punkte[4].strecke += 0.25;
+        gleich(&berechnen(&punkte, 1.5, &opt).unwrap(), &basis);
+    }
+
+    #[test]
+    fn freier_massstab_braucht_zwei_vollstaendige_ziele() {
+        let punkte = testpunkte()[..3].to_vec();
+        let opt = Optionen { aktiv_strecke: Some(vec![true, false, false]), ..Optionen::default() };
+        let fehler = berechnen(&punkte, 0.0, &opt).unwrap_err();
+        assert!(fehler.contains("Maßstab nicht bestimmbar"), "{fehler}");
+        let fest = Optionen { freier_massstab: false, ..opt };
+        assert!(berechnen(&punkte, 0.0, &fest).is_ok());
     }
 }

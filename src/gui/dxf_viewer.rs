@@ -186,7 +186,7 @@ enum Dialog {
 /// Zu löschende Punkte.
 struct LoeschZiele {
     feldbuch: Vec<String>,
-    neupunkte: Vec<(String, String)>,
+    neupunkte: Vec<crate::daten::punktlisten::NeupunktSchluessel>,
     importpunkte: Vec<String>,
 }
 
