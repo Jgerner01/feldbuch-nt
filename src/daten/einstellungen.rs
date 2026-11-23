@@ -54,6 +54,8 @@ pub struct Einstellungen {
     pub neupunkte_visible: bool,
     pub residual_visible: bool,
     pub letzter_modus_neupunkt: bool,
+    /// Laserpointer soll eingeschaltet sein (wird vor der ersten Messung einer Verbindung eingestellt).
+    pub laser_an: bool,
 
     pub tachymeter_modell: TachymeterModell,
     pub tachymeter_port: String,
@@ -102,6 +104,7 @@ impl Einstellungen {
             neupunkte_visible: true,
             residual_visible: false,
             letzter_modus_neupunkt: true,
+            laser_an: false,
             tachymeter_modell: TachymeterModell::Manuell,
             tachymeter_port: String::new(),
             tachymeter_baud_rate: STANDARD_BAUDRATE,
@@ -254,6 +257,7 @@ impl Einstellungen {
         self.neupunkte_visible = wahrheit("NeupunkteVisible", true);
         self.residual_visible = wahrheit("ResidualVisible", false);
         self.letzter_modus_neupunkt = wahrheit("LetzterModusNeupunkt", true);
+        self.laser_an = wahrheit("LaserAn", false);
 
         // Modell mit Migration alter Namen
         let modell_text = match text("TachymeterModell").unwrap_or("") {
@@ -316,6 +320,7 @@ impl Einstellungen {
             ("NeupunkteVisible", wahr(self.neupunkte_visible)),
             ("ResidualVisible", wahr(self.residual_visible)),
             ("LetzterModusNeupunkt", wahr(self.letzter_modus_neupunkt)),
+            ("LaserAn", wahr(self.laser_an)),
             ("TachymeterModell", self.tachymeter_modell.name().to_string()),
             ("TachymeterPort", self.tachymeter_port.clone()),
             ("TachymeterBaudRate", self.tachymeter_baud_rate.to_string()),

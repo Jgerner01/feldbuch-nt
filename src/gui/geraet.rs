@@ -11,6 +11,7 @@ use crate::daten::einstellungen::Einstellungen;
 use crate::grundlagen::{kommunikationslog, protokoll};
 use crate::tachymeter::anfahren::{AnfahrErgebnis, Anfahren};
 use crate::tachymeter::befehle::{Befehlsgeber, DatenParser, Protokoll};
+use crate::tachymeter::einrichtung::{self, Schritt, Vorgabe, Wirkung};
 use crate::tachymeter::geocom;
 use crate::tachymeter::gsi;
 use crate::tachymeter::hilfen::{LiveWinkelSperre, MessungsCache, signal_erfolg, signal_fehler};
@@ -20,9 +21,27 @@ use crate::tachymeter::modell::{Sprache, TachymeterModell};
 use crate::tachymeter::schalter::Schalter;
 use crate::tachymeter::testmessung::{TestErgebnis, Testmessung};
 
+/// Laufende Einrichtung des Geräts vor der ersten Messung einer Verbindung.
+struct Einrichtung {
+    schritte: VecDeque<Schritt>,
+    laufend: Option<Schritt>,
+    hinweise: Vec<String>,
+}
+
+/// Vorgabe nach einem bestätigten Schaltvorgang (Wechsel auf reflektorlos behält ein gewähltes RL-Programm).
+fn vorgabe_nach(mut v: Vorgabe, z: SchalterZiel) -> Vorgabe {
+    match z {
+        SchalterZiel::Reflektorlos(false) => v.modus = MessModus::Prisma,
+        SchalterZiel::Reflektorlos(true) if v.modus == MessModus::Prisma => v.modus = MessModus::ReflektorlosKurz,
+        SchalterZiel::Reflektorlos(true) => {}
+        SchalterZiel::Laser(an) => v.laser_an = an,
+    }
+    v
+}
+
 /// Was ein laufender Schaltvorgang bei Erfolg ändert.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SchalterZiel {
+pub enum SchalterZiel {
     Reflektorlos(bool),
     Laser(bool),
 }
@@ -95,6 +114,14 @@ pub struct Geraet {
     pub anfahren: Option<Anfahren>,
     /// Ergebnis des letzten Anfahrens, bis die Oberfläche es abholt.
     anfahren_ergebnis: Option<AnfahrErgebnis>,
+    /// Gewünschter Gerätezustand (Zieltyp, Prismenkonstante, Laserpointer) aus den Einstellungen.
+    vorgabe: Vorgabe,
+    /// Verbindung und Vorgabe, mit denen das Gerät zuletzt eingerichtet wurde.
+    eingerichtet_fuer: Option<(u32, Vorgabe)>,
+    /// Laufende Einrichtung vor der ersten Messung einer Verbindung.
+    einrichtung: Option<Einrichtung>,
+    /// Bestätigter Schaltzustand (EDM, Laser) zum Übernehmen in die Einstellungen.
+    bestaetigt: Option<SchalterZiel>,
     /// Zuletzt aus einer Antwortzeile gelesene Messung (für das Testfenster).
     pub letzte_messung: Option<crate::tachymeter::messung::TachymeterMessung>,
     /// Zähler, der bei jeder neu gelesenen Messung steigt.
@@ -142,6 +169,10 @@ impl Geraet {
             neigung_naechste: Instant::now(),
             anfahren: None,
             anfahren_ergebnis: None,
+            vorgabe: Vorgabe::aus_einstellungen(e),
+            eingerichtet_fuer: None,
+            einrichtung: None,
+            bestaetigt: None,
             letzte_messung: None,
             messung_nr: 0,
             empfaenger,
@@ -226,6 +257,7 @@ impl Geraet {
             || self.messung.is_some()
             || self.messung_ausstehend.is_some()
             || self.anfahren.is_some()
+            || self.einrichtung.is_some()
     }
 
     /// Startet eine Punktmessung (im Viewer). Beginnt nach einer offenen Hz-Abfrage, damit keine Antworten vermischt werden.
@@ -237,6 +269,7 @@ impl Geraet {
             return Err("Es läuft noch ein anderer Vorgang.".to_string());
         }
         self.messung_ergebnis = None;
+        self.plane_einrichtung();
         self.messung_ausstehend = Some(zielhoehe);
         Ok(())
     }
@@ -276,7 +309,9 @@ impl Geraet {
 
     /// Text zum laufenden Messvorgang für die Statuszeile.
     pub fn messung_status(&self) -> Option<&'static str> {
-        if self.messung_ausstehend.is_some() {
+        if self.einrichtung.is_some() {
+            Some("Gerät wird eingestellt (Prisma, Laserpointer) …")
+        } else if self.messung_ausstehend.is_some() {
             Some("Messung startet …")
         } else {
             self.messung.as_ref().map(Messablauf::status_text)
@@ -463,6 +498,8 @@ impl Geraet {
                 }
                 Ereignis::Getrennt => {
                     self.schreibe("Verbindung getrennt.".to_string());
+                    self.einrichtung = None;
+                    self.eingerichtet_fuer = None;
                     self.laser_an = false;
                     self.live_wartet = false;
                     self.live_hz = None;
@@ -501,6 +538,7 @@ impl Geraet {
         }
         self.treibe_testmessung(jetzt);
         self.treibe_schalter(jetzt);
+        self.treibe_einrichtung(jetzt);
         self.treibe_messung(jetzt);
         self.treibe_anfahren(jetzt);
         self.treibe_live(jetzt);
@@ -581,6 +619,10 @@ impl Geraet {
 
     /// Startet eine ausstehende Messung, treibt die laufende voran und übergibt das Ergebnis.
     fn treibe_messung(&mut self, jetzt: Instant) {
+        // Erst das Gerät einrichten (Zieltyp, Prismenkonstante, Laserpointer), dann messen
+        if self.einrichtung.is_some() {
+            return;
+        }
         if let Some(zielhoehe) = self.messung_ausstehend {
             // Erst nach der Antwort auf eine offene Hz-Abfrage, damit keine Antworten vermischt werden
             if self.live_wartet && jetzt.saturating_duration_since(self.live_gesendet) < LIVE_ANTWORT_TIMEOUT {
@@ -686,6 +728,13 @@ impl Geraet {
                     Some(SchalterZiel::Laser(an)) => self.laser_an = an,
                     None => {}
                 }
+                if let Some(z) = self.schalter_ziel {
+                    self.bestaetigt = Some(z);
+                    // Ein bestätigter Schaltvorgang hält die Einrichtung aktuell (keine erneute Einrichtung nötig)
+                    if let Some((_, v)) = self.eingerichtet_fuer.as_mut() {
+                        *v = vorgabe_nach(*v, z);
+                    }
+                }
             }
             self.schalter_ergebnis = Some(e.clone());
             self.schalter_ziel = None;
@@ -718,6 +767,101 @@ impl Geraet {
         }
     }
 
+    /// Übernimmt den gewünschten Gerätezustand aus den Einstellungen (jedes Bild). Eine Änderung führt vor der
+    /// nächsten Messung zu einer erneuten Einrichtung.
+    pub fn setze_vorgabe(&mut self, v: Vorgabe) {
+        self.vorgabe = v;
+    }
+
+    /// Bestätigter Schaltzustand (EDM, Laser) zum Speichern in den Einstellungen.
+    pub fn nimm_bestaetigung(&mut self) -> Option<SchalterZiel> {
+        self.bestaetigt.take()
+    }
+
+    /// Ist das Gerät auf dieser Verbindung mit der aktuellen Vorgabe eingerichtet?
+    pub fn ist_eingerichtet(&self) -> bool {
+        self.eingerichtet_fuer == Some((self.verbindung.verbindungs_nr(), self.vorgabe))
+    }
+
+    /// Plant vor einer Messung die Einrichtung, wenn das Gerät auf dieser Verbindung noch nicht (oder mit anderer
+    /// Vorgabe) eingerichtet wurde – nach Neustart, Neuverbindung oder geänderter Einstellung.
+    fn plane_einrichtung(&mut self) {
+        if self.ist_eingerichtet() {
+            return;
+        }
+        let (schritte, hinweise) = einrichtung::schritte(self.protokoll(), &self.vorgabe);
+        if schritte.is_empty() {
+            self.eingerichtet_fuer = Some((self.verbindung.verbindungs_nr(), self.vorgabe));
+            return;
+        }
+        self.schreibe(format!("— Gerät vor der ersten Messung einstellen: {} —", self.vorgabe.text()));
+        self.einrichtung = Some(Einrichtung { schritte: schritte.into(), laufend: None, hinweise });
+    }
+
+    /// Führt die Einrichtung Schritt für Schritt aus (je Schritt ein Schaltvorgang mit Quittung). Scheitert ein
+    /// kritischer Schritt (Zieltyp, Prismenkonstante), wird die ausstehende Messung mit Fehler beendet.
+    fn treibe_einrichtung(&mut self, jetzt: Instant) {
+        let Some(mut e) = self.einrichtung.take() else {
+            return;
+        };
+        if self.schalter.is_some() {
+            self.einrichtung = Some(e);
+            return;
+        }
+        if let Some(schritt) = e.laufend.take() {
+            match self.schalter_ergebnis.take() {
+                Some(r) if r.ok => {}
+                Some(r) if schritt.kritisch => {
+                    let text = format!("Gerät konnte vor der Messung nicht eingestellt werden ({}): {}", schritt.beschreibung, r.text);
+                    self.schreibe(format!("— {text} —"));
+                    protokoll::log("TACHY", &text);
+                    crate::daten::messprotokoll::protokolliere_aktiv(
+                        crate::daten::messprotokoll::Eintrag::neu(crate::daten::messprotokoll::Ereignis::Geraet).quelle(crate::daten::messprotokoll::QUELLE_PROGRAMM).text(text.clone()),
+                    );
+                    if self.messung_ausstehend.take().is_some() {
+                        self.messung_ergebnis = Some(MessErgebnis::Fehler(text));
+                    }
+                    return;
+                }
+                Some(r) => e.hinweise.push(r.text.clone()),
+                None => {}
+            }
+        }
+        // Eine offene Hz-Abfrage zuerst beantworten lassen, damit keine Antworten vermischt werden
+        if self.live_wartet && jetzt.saturating_duration_since(self.live_gesendet) < LIVE_ANTWORT_TIMEOUT {
+            self.einrichtung = Some(e);
+            return;
+        }
+        self.live_wartet = false;
+        LiveWinkelSperre::anfrage_beendet();
+        match e.schritte.pop_front() {
+            Some(s) => {
+                self.schalter_ergebnis = None;
+                self.schreibe(format!("— Einrichtung: {} —", s.beschreibung));
+                self.schalter = Some(Schalter::neu(&s.beschreibung, self.protokoll(), s.befehle.clone(), &format!("{} eingestellt.", s.beschreibung), jetzt));
+                self.schalter_ziel = match s.wirkung {
+                    Wirkung::Reflektorlos(rl) => Some(SchalterZiel::Reflektorlos(rl)),
+                    Wirkung::Laser(an) => Some(SchalterZiel::Laser(an)),
+                    Wirkung::Keine => None,
+                };
+                e.laufend = Some(s);
+                self.einrichtung = Some(e);
+            }
+            None => {
+                self.eingerichtet_fuer = Some((self.verbindung.verbindungs_nr(), self.vorgabe));
+                let mut text = format!("Gerät vor der ersten Messung eingestellt: {}", self.vorgabe.text());
+                if !e.hinweise.is_empty() {
+                    text.push_str(&format!(" – Hinweis: {}", e.hinweise.join("; ")));
+                }
+                self.schreibe(format!("— {text} —"));
+                protokoll::log("TACHY", &text);
+                crate::daten::messprotokoll::protokolliere_aktiv(
+                    crate::daten::messprotokoll::Eintrag::neu(crate::daten::messprotokoll::Ereignis::Geraet).quelle(crate::daten::messprotokoll::QUELLE_PROGRAMM).text(text),
+                );
+            }
+        }
+    }
+
     /// Schreibt eine Zeile ins Empfangsprotokoll der Oberfläche und in die Protokolldatei.
     fn schreibe(&mut self, zeile: String) {
         self.logge(&zeile);
@@ -745,6 +889,29 @@ mod tests {
     fn neues_geraet() -> Geraet {
         let e = Einstellungen::mit_pfad(std::env::temp_dir().join("fb-geraet-test.xml"));
         Geraet::aus_einstellungen(&e)
+    }
+
+    #[test]
+    fn einrichtung_folgt_vorgabe_und_verbindung() {
+        let mut g = neues_geraet();
+        // Ohne Verbindung ist nichts eingerichtet; die Vorgabe kommt aus den Einstellungen
+        assert!(!g.ist_eingerichtet());
+        let v = Vorgabe { modus: MessModus::Prisma, prismenkonstante_mm: -17.5, laser_an: true };
+        g.setze_vorgabe(v);
+        g.eingerichtet_fuer = Some((g.verbindung.verbindungs_nr(), v));
+        assert!(g.ist_eingerichtet());
+        // Geänderte Einstellung (z. B. anderes Prisma) → vor der nächsten Messung erneut einrichten
+        g.setze_vorgabe(Vorgabe { prismenkonstante_mm: 0.0, ..v });
+        assert!(!g.ist_eingerichtet());
+        // Bestätigte Schaltvorgänge führen die Vorgabe nach
+        let rl = vorgabe_nach(v, SchalterZiel::Reflektorlos(true));
+        assert_eq!(rl.modus, MessModus::ReflektorlosKurz);
+        assert_eq!(vorgabe_nach(Vorgabe { modus: MessModus::ReflektorlosLang, ..v }, SchalterZiel::Reflektorlos(true)).modus, MessModus::ReflektorlosLang);
+        assert_eq!(vorgabe_nach(rl, SchalterZiel::Reflektorlos(false)).modus, MessModus::Prisma);
+        assert!(!vorgabe_nach(v, SchalterZiel::Laser(false)).laser_an);
+        // Ohne Verbindung startet keine Messung und damit auch keine Einrichtung
+        assert!(g.starte_messung(1.5).is_err());
+        assert!(g.einrichtung.is_none());
     }
 
     #[test]

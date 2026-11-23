@@ -78,6 +78,11 @@ impl RechenparameterAnsicht {
             zahl(ui, "Zentrierfehler Standpunkt [mm]", &mut p.zentrierfehler_standpunkt_mm);
         });
 
+        bereich(ui, "Absteckung (DXF-Viewer)", egui::Color32::from_rgb(170, 70, 40), |ui| {
+            zahl(ui, "Toleranz Lage (längs/quer) [mm]", &mut p.absteck_toleranz_lage_mm);
+            zahl(ui, "Toleranz Höhe [mm]", &mut p.absteck_toleranz_hoehe_mm);
+        });
+
         bereich(ui, "DXF-Viewer – Vektor-PDF", egui::Color32::from_rgb(40, 120, 135), |ui| {
             ui.label("Papierformat");
             ui.horizontal(|ui| {

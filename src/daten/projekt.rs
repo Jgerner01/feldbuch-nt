@@ -305,6 +305,26 @@ impl Projekt {
         projekt
     }
 
+    /// Projekt in einem vorhandenen Ordner für Tests (ohne Benutzereinstellungen).
+    #[cfg(test)]
+    pub fn fuer_test(dir: &std::path::Path, name: &str) -> Self {
+        let mut e = Einstellungen::mit_pfad(dir.join("Einstellungen.xml"));
+        e.set_projekt(name, dir).unwrap();
+        let mut p = Self {
+            einstellungen: e,
+            rechenparameter: RechenparameterManager::initialisiere(&dir.join("Freie-Stationierung.xml")),
+            projektdaten: ProjektdatenManager::leer(),
+            feldbuchpunkte: FeldbuchpunkteManager::default(),
+            neupunkte: NeupunkteManager::default(),
+            importpunkte: ImportPunkteManager::default(),
+            station: StationsdatenDatei::default(),
+            station_pfad: PathBuf::new(),
+            station_version: 0,
+        };
+        p.manager_initialisieren();
+        p
+    }
+
     /// Initialisiert alle projektbezogenen Manager im aktuellen Projektverzeichnis.
     pub fn manager_initialisieren(&mut self) {
         let e = &self.einstellungen;
@@ -470,6 +490,15 @@ impl Projekt {
         self.station.instrumenten_hoehe = wert;
         self.station_speichern()?;
         self.projektdaten.set_value(KATEGORIE_AKTIV, "Instrumentenhoehe [m]", &f(wert, 3))?;
+        // Messdatei und Anschlusspunktdatei derselben Aufstellung nachführen (sonst widersprüchliche IH je Aufstellung)
+        let id = self.station.aufstellung_id.clone();
+        crate::daten::messdaten::setze_instrumentenhoehe_der_aufstellung(&self.einstellungen, &id, &self.station.standpunkt_nr, alt, wert)?;
+        if let Ok(mut d) = crate::daten::csv_datei::CsvDatei::laden(&self.anschlusspunkte_pfad()) {
+            if d.meta("AufstellungId") == Some(id.as_str()) {
+                d.instr_hoehe = f(wert, 3);
+                d.speichern()?;
+            }
+        }
         let mut wirkung = String::new();
         if let (Some(vorher), Some(e)) = (hoehe_vorher, self.station.ergebnis.clone()) {
             if (vorher - e.hoehe).abs() > 1e-9 {
@@ -1558,6 +1587,35 @@ mod tests {
         p.set_instrumenten_hoehe(1.5).unwrap();
         assert!((p.station.ergebnis.as_ref().unwrap().hoehe - 98.5).abs() < 1e-9);
         assert!((np_hoehe(&p) - 100.0).abs() < 1e-6);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn ih_korrektur_fuehrt_messdatei_und_anschlusspunktdatei_nach() {
+        let (mut p, dir) = projekt_in("ih_dat");
+        p.standpunkt_beginnen(neu("STP1", 0.0)).unwrap();
+        let roh = crate::daten::modelle::NeupunktRohdaten {
+            aufstellung_id: p.station.aufstellung_id.clone(),
+            punkt_nr: "1".into(),
+            standpunkt_nr: "STP1".into(),
+            strecke_m: 5.0,
+            v_gon: 100.0,
+            zeitstempel: crate::daten::modelle::jetzt(),
+            ..Default::default()
+        };
+        crate::daten::messdaten::schreibe_neupunktmessung(&p.einstellungen, &roh, "STP1", 0.0).unwrap();
+        p.set_instrumenten_hoehe(1.5).unwrap();
+        let pfad = crate::daten::messdaten::messdatei_pfad(&p.einstellungen);
+        let d = crate::daten::csv_datei::CsvDatei::laden(&pfad).unwrap();
+        assert_eq!(d.zelle(&d.zeilen[0], "InstrumentenHoehe_m"), "1.500");
+        assert!(d.kommentare.iter().any(|(_, k)| k.contains("IH KORRIGIERT")));
+        let stp = crate::daten::csv_datei::CsvDatei::laden(&p.anschlusspunkte_pfad()).unwrap();
+        assert_eq!(stp.instr_hoehe, "1.500");
+        // Neue Messungen nach der Korrektur: die Datei bleibt widerspruchsfrei
+        crate::daten::messdaten::schreibe_neupunktmessung(&p.einstellungen, &crate::daten::modelle::NeupunktRohdaten { punkt_nr: "2".into(), ..roh }, "STP1", 1.5).unwrap();
+        let polar = crate::daten::polar_messdaten::lese(&pfad, |_| false).unwrap();
+        assert!(polar.messungen.iter().all(|m| m.instrumenten_hoehe == Some(1.5)));
+        assert!(polar.hinweise.iter().all(|h| !h.contains("korrigiert")), "{:?}", polar.hinweise);
         let _ = fs::remove_dir_all(dir);
     }
 

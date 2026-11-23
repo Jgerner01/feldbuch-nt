@@ -270,10 +270,6 @@ impl DxfViewer {
                     self.digitalisierung_umschalten(projekt);
                 }
                 ui.add_space(6.0);
-                if knopf(ui, Inhalt::Text("⊕A", 11.0), farben((50, 110, 60), (255, 255, 255), (30, 80, 40)), "Absteckung") {
-                    self.dialog = Some(Dialog::Hinweis { titel: "Absteckung".into(), text: "Die Absteckung ist in Feldbuch-NT noch nicht umgesetzt.".into() });
-                }
-                ui.add_space(6.0);
                 if knopf(ui, Inhalt::Text("⊙", 16.0), farben((40, 70, 110), (180, 210, 255), (25, 50, 85)), "Aufnahmetest: Koordinaten messen & Punkt anfahren (motorisiert)")
                 {
                     self.wunsch = Some(Wunsch::Aufnahmetest);
@@ -574,6 +570,7 @@ impl DxfViewer {
         if !bewegung {
             self.zeichne_transformationspunkte(&maler, &a, projekt);
         }
+        self.zeichne_absteckziele(&maler, &a);
         if self.residuen_sichtbar && !self.ellipsen.is_empty() {
             self.zeichne_ellipsen_massstab(&maler, rect);
         }
@@ -897,7 +894,8 @@ impl DxfViewer {
             Art::Gemessen(e) => Some(e.punkt_nr.clone()),
             Art::Insert { x, y, .. } | Art::Point { x, y } => index.and_then(|i| i.get_punkt_nr(*x, *y)).map(str::to_string),
             Art::Circle { cx, cy, .. } => index.and_then(|i| i.get_punkt_nr(*cx, *cy)).map(str::to_string),
-            Art::Line { x1, y1, .. } => index.and_then(|i| i.get_punkt_nr(*x1, *y1)).map(str::to_string),
+            // Linie: Nummer genau des gefangenen Endpunkts (audit.md D2); ein Punkt im Linieninneren hat keine Nummer
+            Art::Line { .. } => index.and_then(|i| i.get_punkt_nr(x, y)).map(str::to_string),
             _ => None,
         };
         let hoehe = match &entity.art {
@@ -909,6 +907,13 @@ impl DxfViewer {
         let nr = nr.filter(|n| !n.is_empty());
         if let Some(nr) = &nr {
             self.txt_punkt_nr.clone_from(nr);
+        }
+        // Abstecken-Modus: der gewählte Punkt wird Absteckziel
+        if self.absteckung.is_some() {
+            if self.dialog.is_none() {
+                self.setze_absteckziel(projekt, x, y, nr, hoehe);
+            }
+            return;
         }
         // Der Dialog ist im Original modal: Klicks bei offenem Dialog öffnen keinen neuen
         if self.dialog.is_none() {

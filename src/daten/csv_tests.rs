@@ -156,10 +156,14 @@ fn beispiele_sind_lesbar() {
 }
 
 #[test]
-fn eine_aufstellung_darf_keine_widerspruechlichen_instrumentenhoehen_haben() {
+fn korrigierte_instrumentenhoehe_gilt_fuer_die_ganze_aufstellung() {
+    // IH-Korrektur während der Aufstellung (gleiche Id): frühere Zeilen 0.000, spätere 1.500 → alle 1.500, Hinweis
     let mut d = CsvDatei::neu(TYP_MESSDATEN);
-    for ih in ["1.500", "1.700"] {
-        d.zeilen.push(["001", "0", "100", "10", "1.5", "", "", "0", "0", "SP1", "NP", "gleiche-ID", ih].map(str::to_string).to_vec());
+    for (nr, ih) in [("001", "0.000"), ("002", "0.000"), ("003", "1.500")] {
+        d.zeilen.push([nr, "0", "100", "10", "1.5", "", "", "0", "0", "SP1", "NP", "gleiche-ID", ih].map(str::to_string).to_vec());
     }
-    assert!(polar_messdaten::parse(&d.text().unwrap().lines().map(str::to_string).collect::<Vec<_>>(), |_| false).is_err());
+    let p = polar_messdaten::parse(&d.text().unwrap().lines().map(str::to_string).collect::<Vec<_>>(), |_| false).unwrap();
+    assert_eq!(p.messungen.len(), 3);
+    assert!(p.messungen.iter().all(|m| m.instrumenten_hoehe == Some(1.5)));
+    assert!(p.hinweise.iter().any(|h| h.contains("0.000 → 1.500")), "{:?}", p.hinweise);
 }

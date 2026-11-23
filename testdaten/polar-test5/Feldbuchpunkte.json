@@ -1,0 +1,92 @@
+{
+  "Punkte": [
+    {
+      "PunktNr": "1",
+      "Typ": "Neupunkt",
+      "R": -1.3831526678227544,
+      "H": 0.47936782439133324,
+      "Hoehe": 0.15452891778925212,
+      "Orientierung_gon": 0.0,
+      "IstBerechnung3D": true,
+      "Datum": "2026-11-23",
+      "Quelle": "Lokal"
+    },
+    {
+      "PunktNr": "2",
+      "Typ": "Neupunkt",
+      "R": -1.3822130260647227,
+      "H": 0.479042166901937,
+      "Hoehe": 0.15442393890488443,
+      "Orientierung_gon": 0.0,
+      "IstBerechnung3D": true,
+      "Datum": "2026-11-23",
+      "Quelle": "Lokal"
+    },
+    {
+      "PunktNr": "3",
+      "Typ": "Neupunkt",
+      "R": -1.3822167884104724,
+      "H": 0.47903131101144136,
+      "Hoehe": 0.15442393890488443,
+      "Orientierung_gon": 0.0,
+      "IstBerechnung3D": true,
+      "Datum": "2026-11-23",
+      "Quelle": "Lokal"
+    },
+    {
+      "PunktNr": "4",
+      "Typ": "Neupunkt",
+      "R": -1.3822130260647227,
+      "H": 0.479042166901937,
+      "Hoehe": 0.15442393890488443,
+      "Orientierung_gon": 0.0,
+      "IstBerechnung3D": true,
+      "Datum": "2026-11-23",
+      "Quelle": "Lokal"
+    },
+    {
+      "PunktNr": "5",
+      "Typ": "Neupunkt",
+      "R": 0.30212412824396717,
+      "H": 2.3929190131187856,
+      "Hoehe": 1.508868651602067,
+      "Orientierung_gon": 0.0,
+      "IstBerechnung3D": true,
+      "Datum": "2026-11-23",
+      "Quelle": "Lokal"
+    },
+    {
+      "PunktNr": "6",
+      "Typ": "Neupunkt",
+      "R": 2.944628829111772,
+      "H": 1.4693539806957823,
+      "Hoehe": 1.3552272644015448,
+      "Orientierung_gon": 0.0,
+      "IstBerechnung3D": true,
+      "Datum": "2026-11-23",
+      "Quelle": "Lokal"
+    },
+    {
+      "PunktNr": "7",
+      "Typ": "Neupunkt",
+      "R": -1.7314527656925718,
+      "H": -1.0228956624648853,
+      "Hoehe": 0.38205337832044967,
+      "Orientierung_gon": 0.0,
+      "IstBerechnung3D": true,
+      "Datum": "2026-11-23",
+      "Quelle": "Lokal"
+    },
+    {
+      "PunktNr": "STP1",
+      "Typ": "Standpunkt",
+      "R": 0.00009571335880304673,
+      "H": 0.0002492300406863849,
+      "Hoehe": -1.5001604059137872,
+      "Orientierung_gon": 399.9986052510798,
+      "IstBerechnung3D": true,
+      "Datum": "2026-11-23",
+      "Quelle": "Freie Stationierung"
+    }
+  ]
+}

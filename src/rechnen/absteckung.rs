@@ -151,6 +151,43 @@ pub fn berechne_einweisung(hz_soll: f64, s_soll: f64, hz_ist: f64, s_ist: f64) -
     (dhz, (s_soll - s_ist) * 1000.0)
 }
 
+/// Abweichung einer Absteckmessung vom Sollpunkt, aus Sicht des Instruments (Blick vom Standpunkt zum Ziel).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AbsteckAbweichung {
+    /// Ist − Soll in Richtung Standpunkt → Ziel [m]: > 0 Reflektor zu weit (ZURÜCK), < 0 zu nah (VOR).
+    pub laengs_m: f64,
+    /// Ist − Soll quer zur Richtung [m]: > 0 rechts der Linie (nach LINKS), < 0 links (nach RECHTS).
+    pub quer_m: f64,
+    /// Ist − Soll der Höhe [m]: > 0 zu hoch (Abtrag), < 0 zu tief (Auftrag); `None` ohne Sollhöhe.
+    pub hoehe_m: Option<f64>,
+}
+
+impl AbsteckAbweichung {
+    /// Lage innerhalb der Toleranz [mm] (längs und quer je für sich).
+    pub fn lage_in_toleranz(&self, toleranz_mm: f64) -> bool {
+        self.laengs_m.abs() * 1000.0 <= toleranz_mm && self.quer_m.abs() * 1000.0 <= toleranz_mm
+    }
+
+    /// Höhe innerhalb der Toleranz [mm] (ohne Sollhöhe immer erfüllt).
+    pub fn hoehe_in_toleranz(&self, toleranz_mm: f64) -> bool {
+        self.hoehe_m.is_none_or(|h| h.abs() * 1000.0 <= toleranz_mm)
+    }
+}
+
+/// Abweichung des Ist- vom Sollpunkt bezogen auf die Linie Standpunkt → Soll (R, H in m; Höhen optional).
+pub fn absteck_abweichung(standpunkt: (f64, f64), soll: (f64, f64), ist: (f64, f64), hoehen: Option<(f64, f64)>) -> AbsteckAbweichung {
+    let t = (soll.0 - standpunkt.0).atan2(soll.1 - standpunkt.1);
+    let (vor_r, vor_h) = (t.sin(), t.cos());
+    let (rechts_r, rechts_h) = (t.cos(), -t.sin());
+    let (dr, dh) = (ist.0 - soll.0, ist.1 - soll.1);
+    AbsteckAbweichung { laengs_m: dr * vor_r + dh * vor_h, quer_m: dr * rechts_r + dh * rechts_h, hoehe_m: hoehen.map(|(soll, ist)| ist - soll) }
+}
+
+/// Querablage am Ziel [m] bei einer Fernrohrabweichung ΔHz [gon] (> 0: Fernrohr zeigt rechts am Ziel vorbei).
+pub fn querablage_am_ziel(s_m: f64, d_hz_gon: f64) -> f64 {
+    s_m * (d_hz_gon / RAD_ZU_GON).sin()
+}
+
 /// Station als Text („0+012.5"): mindestens drei Vorkommastellen, eine Nachkommastelle.
 fn station_text(s: f64) -> String {
     format!("0+{:0>5}", f(s, 1))
@@ -658,5 +695,29 @@ mod tests {
         assert_eq!(st, StandpunktInfo { punkt_nr: "S7".into(), r: 100.5, h: 200.25, orientierung_gon: 12.3456 });
         assert!(lade_standpunkt_aus(&pd, "Freie Stationierung").is_none());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn absteckabweichung_aus_sicht_des_instruments() {
+        // Ziel genau im Norden: Ist 0,2 m zu weit und 0,1 m rechts (Osten), 0,03 m zu hoch
+        let a = absteck_abweichung((0.0, 0.0), (0.0, 10.0), (0.1, 10.2), Some((50.0, 50.03)));
+        assert!((a.laengs_m - 0.2).abs() < 1e-12 && (a.quer_m - 0.1).abs() < 1e-12);
+        assert!((a.hoehe_m.unwrap() - 0.03).abs() < 1e-12);
+        // Ziel im Osten: Blick nach Osten, rechts ist Süden
+        let b = absteck_abweichung((100.0, 100.0), (110.0, 100.0), (110.3, 99.95), None);
+        assert!((b.laengs_m - 0.3).abs() < 1e-12 && (b.quer_m - 0.05).abs() < 1e-12);
+        assert!(b.hoehe_m.is_none() && b.hoehe_in_toleranz(1.0));
+        // Ziel im Südwesten, Ist 5 mm zu nah: längs negativ (VOR)
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let c = absteck_abweichung((0.0, 0.0), (-10.0 * s, -10.0 * s), (-9.995 * s, -9.995 * s), None);
+        assert!((c.laengs_m + 0.005).abs() < 1e-9 && c.quer_m.abs() < 1e-9);
+        assert!(c.lage_in_toleranz(10.0) && !c.lage_in_toleranz(4.0));
+    }
+
+    #[test]
+    fn querablage_der_fernrohrrichtung() {
+        // 1 mgon auf 100 m ≈ 1,57 mm
+        assert!((querablage_am_ziel(100.0, 0.001) * 1000.0 - 1.5708).abs() < 1e-3);
+        assert!(querablage_am_ziel(100.0, -0.001) < 0.0);
     }
 }

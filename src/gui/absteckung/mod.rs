@@ -3,7 +3,7 @@
 // Autor:    Johann Gerner
 
 mod achse;
-mod gemeinsam;
+pub(crate) mod gemeinsam;
 mod profil;
 mod punkt;
 mod raster;

@@ -23,6 +23,8 @@ pub const TYP_ANSCHLUSSPUNKT: &str = "AP";
 pub const TYP_NEUPUNKT: &str = "NP";
 /// Kennzeichen „Kontrollmessung" (Orientierungskontrolle) in der Spalte Typ.
 pub const TYP_KONTROLLPUNKT: &str = "KP";
+/// Kennzeichen „Absteckmessung" (Punktabsteckung im DXF-Viewer) in der Spalte Typ.
+pub const TYP_ABSTECKUNG: &str = "AB";
 
 #[cfg(test)]
 const SPALTENZEILE_ALT: &str = "PunktNr; HZ_gon; V_gon; Strecke_m; Zielhoehe_m; Code; Zeitstempel";
@@ -241,6 +243,31 @@ pub fn schreibe_standpunktwechsel(e: &Einstellungen, s: &crate::daten::projekt::
     }
 }
 
+/// Führt eine korrigierte Instrumentenhöhe in der Messdatei nach: alle Zeilen der Aufstellung erhalten die neue
+/// Höhe, eine Kommentarzeile vermerkt die Korrektur (die ursprünglichen Werte stehen im Messprotokoll).
+/// Liefert die Zahl der geänderten Zeilen; ohne Messdatei geschieht nichts.
+pub fn setze_instrumentenhoehe_der_aufstellung(e: &Einstellungen, aufstellung_id: &str, standpunkt_nr: &str, alt: f64, neu: f64) -> io::Result<usize> {
+    let pfad = messdatei_pfad(e);
+    if aufstellung_id.is_empty() || !pfad.exists() {
+        return Ok(0);
+    }
+    let mut d = lade_messdatei(e)?;
+    let mut geaendert = 0;
+    for i in 0..d.zeilen.len() {
+        if d.zelle(&d.zeilen[i], "AufstellungId") == aufstellung_id && d.zelle(&d.zeilen[i], "InstrumentenHoehe_m") != f(neu, 3) {
+            d.set_zelle(i, "InstrumentenHoehe_m", f(neu, 3));
+            geaendert += 1;
+        }
+    }
+    let alle_dieser_aufstellung = !d.zeilen.is_empty() && d.zeilen.iter().all(|z| d.zelle(z, "AufstellungId") == aufstellung_id);
+    if alle_dieser_aufstellung {
+        d.instr_hoehe = f(neu, 3);
+    }
+    d.kommentare.push((d.zeilen.len(), format!("# IH KORRIGIERT: SP={standpunkt_nr}  IH={} -> {} m  Id={aufstellung_id}  ({geaendert} Zeile(n))", f(alt, 3), f(neu, 3))));
+    d.speichern()?;
+    Ok(geaendert)
+}
+
 /// Schreibt eine Kontrollmessung (Orientierungskontrolle) als Zeile vom Typ `KP` in die Messdatei.
 pub fn schreibe_kontrollmessung(e: &Einstellungen, p: &StationierungsPunkt, standpunkt_nr: &str, instr_hoehe: f64, aufstellung_id: &str, zeit: NaiveDateTime) -> io::Result<()> {
     let ergebnis = schreibe_messung(
@@ -263,6 +290,30 @@ pub fn schreibe_kontrollmessung(e: &Einstellungen, p: &StationierungsPunkt, stan
         aufstellung_id,
     );
     ergebnis.inspect_err(|e| fehler_log::log("Messdaten.schreibe_kontrollmessung", &e.to_string()))
+}
+
+/// Schreibt eine Absteckmessung als Zeile vom Typ `AB` in die Messdatei (die Polarpunktberechnung überspringt sie).
+pub fn schreibe_absteckmessung(e: &Einstellungen, p: &StationierungsPunkt, code: &str, standpunkt_nr: &str, instr_hoehe: f64, aufstellung_id: &str, zeit: NaiveDateTime) -> io::Result<()> {
+    let ergebnis = schreibe_messung(
+        e,
+        vec![
+            p.punkt_nr.clone(),
+            f(p.hz, 4),
+            f(p.v, 4),
+            f(p.strecke, 3),
+            f(p.zielhoehe, 3),
+            code.into(),
+            messzeit(zeit),
+            "0.000".into(),
+            "0.000".into(),
+            standpunkt_nr.into(),
+            TYP_ABSTECKUNG.into(),
+        ],
+        standpunkt_nr,
+        instr_hoehe,
+        aufstellung_id,
+    );
+    ergebnis.inspect_err(|e| fehler_log::log("Messdaten.schreibe_absteckmessung", &e.to_string()))
 }
 
 fn sichere(pfad: &Path) -> io::Result<()> {

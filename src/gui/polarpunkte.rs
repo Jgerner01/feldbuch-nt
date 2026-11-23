@@ -48,16 +48,17 @@ const KOPF_HOEHE: f32 = 32.0;
 const TABELLEN_RAND: f32 = 40.0;
 /// Kleinste Spaltenbreite.
 const MIN_SPALTENBREITE: f32 = 36.0;
-/// Höhe des Fußbereichs mit Status und Schaltflächen.
-const UNTEN_HOEHE: f32 = 62.0;
+/// Höhe des Fußbereichs: Schaltflächen, darunter die Meldung (bis zwei Zeilen) und der Rand zum Fensterrand.
+const UNTEN_HOEHE: f32 = 112.0;
+/// Abstand zwischen Schaltflächen und Meldung sowie Rand unter der Meldung.
+const UNTEN_ABSTAND: f32 = 6.0;
+const UNTEN_RAND: f32 = 16.0;
 /// Höhe der Schaltflächen.
 const KNOPF_HOEHE: f32 = 36.0;
 /// Höhe der Kopfschaltflächen.
 const KOPF_KNOPF_HOEHE: f32 = 30.0;
 /// Breite der Schaltflächen zum Laden der stp.csv und dat.csv.
 const DATEI_KNOPF_BREITE: f32 = 260.0;
-/// Breite des Statustexts im Fußbereich.
-const STATUS_BREITE: f32 = 420.0;
 /// Höhe des Ergebnisfelds unter der Anschlusspunkttabelle.
 const ERGEBNIS_HOEHE: f32 = 46.0;
 /// Mindesthöhe jedes Teils des geteilten Hauptbereichs.
@@ -75,17 +76,27 @@ pub(super) const FARBE_GRAU: Color32 = Color32::from_rgb(211, 211, 211);
 const FARBE_EXZ_GROSS: Color32 = Color32::from_rgb(255, 230, 100);
 const FARBE_KOPF: Color32 = Color32::from_rgb(60, 100, 160);
 const FARBE_HINWEIS_HINTERGRUND: Color32 = Color32::from_rgb(255, 244, 200);
-const FARBE_HINWEIS_SCHRIFT: Color32 = Color32::from_rgb(90, 60, 0);
 const FARBE_ERGEBNIS_HINTERGRUND: Color32 = Color32::from_rgb(232, 238, 248);
 const FARBE_SPEICHERN: Color32 = Color32::from_rgb(46, 125, 50);
 const FARBE_RAHMEN: Color32 = Color32::from_rgb(160, 160, 160);
-const FARBE_FEHLER: Color32 = Color32::from_rgb(170, 30, 30);
 const FARBE_GRUEN: Color32 = Color32::from_rgb(180, 230, 160);
 const FARBE_GELB: Color32 = Color32::from_rgb(255, 230, 100);
 const FARBE_ROT: Color32 = Color32::from_rgb(255, 110, 100);
 /// Ampel: grün bis Grenze − 1, gelb bis Grenze + 5.
 const AMPEL_GRUEN_ABZUG: f64 = 1.0;
 const AMPEL_GELB_ZUSCHLAG: f64 = 5.0;
+/// Schriftfarben der Meldungen: Fehler rot (fett), Warnung orange, Information schwarz.
+const FARBE_MELDUNG_FEHLER: Color32 = Color32::from_rgb(200, 0, 0);
+const FARBE_MELDUNG_WARNUNG: Color32 = Color32::from_rgb(215, 110, 0);
+const FARBE_MELDUNG_INFO: Color32 = Color32::BLACK;
+
+/// Art einer Meldung im Fußbereich.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stufe {
+    Info,
+    Warnung,
+    Fehler,
+}
 
 /// Offene Rückfrage.
 enum Frage {
@@ -132,6 +143,7 @@ pub struct PolarpunkteAnsicht {
     fehler: String,
     ergebnis_text: String,
     status: String,
+    status_stufe: Stufe,
     frage: Option<Frage>,
     /// Meldungsfenster (Titel, Text) wie eine MessageBox.
     meldung: Option<(String, String)>,
@@ -218,6 +230,7 @@ impl PolarpunkteAnsicht {
             fehler: String::new(),
             ergebnis_text: String::new(),
             status: String::new(),
+            status_stufe: Stufe::Info,
             frage: None,
             meldung: None,
             rechenparameter: None,
@@ -264,6 +277,7 @@ impl PolarpunkteAnsicht {
             }
             Err(fehler) => {
                 fehler_log::log("Polarpunkte.waehle_stp", &fehler);
+                self.setze_status(&format!("Standpunktdaten konnten nicht gelesen werden: {fehler}"), Stufe::Fehler);
                 self.melde("Standpunktdaten laden", format!("Die Datei konnte nicht gelesen werden:\n{}\n\n{fehler}", pfad.display()));
             }
         }
@@ -313,10 +327,16 @@ impl PolarpunkteAnsicht {
         self.daten.as_ref().and_then(|d| d.messungen.iter().find(|m| m.gruppe() == self.sp_gruppe())).map(|m| m.standpunkt_nr.clone()).unwrap_or_default()
     }
 
-    fn zeige_leer(&mut self, meldung: &str) {
+    /// Meldung im Fußbereich mit ihrer Art (bestimmt Farbe und Schrift).
+    fn setze_status(&mut self, text: &str, stufe: Stufe) {
+        self.status = text.to_string();
+        self.status_stufe = stufe;
+    }
+
+    fn zeige_leer(&mut self, meldung: &str, stufe: Stufe) {
         self.fehler.clear();
         self.ergebnis_text.clear();
-        self.status = meldung.to_string();
+        self.setze_status(meldung, stufe);
         self.hinweise.clear();
         self.station = None;
     }
@@ -331,20 +351,20 @@ impl PolarpunkteAnsicht {
         self.np.clear();
         self.ergebnisse.clear();
         if self.eigene_datei.is_none() && !projekt.einstellungen.ist_geladen() {
-            self.zeige_leer("Kein Projekt geladen.");
+            self.zeige_leer("Kein Projekt geladen.", Stufe::Warnung);
             return;
         }
         let pfad = self.datei_pfad(projekt);
         if !pfad.exists() {
             let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            self.zeige_leer(&format!("Keine Messdaten-Datei vorhanden ({name})."));
+            self.zeige_leer(&format!("Keine Messdaten-Datei vorhanden ({name})."), Stufe::Warnung);
             return;
         }
         let mut daten = match polar_messdaten::lese(&pfad, |nr| projekt.finde_anschlusspunkt(nr).is_some()) {
             Ok(d) => d,
             Err(fehler) => {
                 fehler_log::log("Polarpunkte.lade_datei", &fehler.to_string());
-                self.zeige_leer(&format!("Messdaten konnten nicht gelesen werden: {fehler}"));
+                self.zeige_leer(&format!("Messdaten konnten nicht gelesen werden: {fehler}"), Stufe::Fehler);
                 return;
             }
         };
@@ -366,7 +386,7 @@ impl PolarpunkteAnsicht {
                 self.sp_index = i;
                 self.standpunkt_gewaehlt(projekt);
             }
-            None => self.zeige_leer("Die Messdaten-Datei enthält keine Messungen."),
+            None => self.zeige_leer("Die Messdaten-Datei enthält keine Messungen.", Stufe::Warnung),
         }
     }
 
@@ -380,10 +400,16 @@ impl PolarpunkteAnsicht {
         }
         let gruppe = self.sp_gruppe();
         let messung = daten.messungen.iter().find(|m| m.gruppe() == gruppe);
+        // Instrumentenhöhe: gespeicherte Station derselben Aufstellung (enthält Korrekturen) vor der Höhe der
+        // Messdaten; der Kopf einer stp.csv nur, wenn die Messdaten keine Höhe haben (Abweichung wird gemeldet).
+        let gruppe_id = messung.map(|m| m.aufstellung_id.clone()).unwrap_or_default();
+        let station_ih = projekt.lese_station_datei(&sp).filter(|d| !gruppe_id.is_empty() && d.aufstellung_id == gruppe_id).map(|d| d.instrumenten_hoehe);
         let stp_ih = self.stp_kopf().1.filter(|_| self.quelle == AnschlussQuelle::Stp);
-        let ih = if let Some(ih) = stp_ih {
+        let ih = if let Some(ih) = station_ih {
             ih
         } else if let Some(ih) = messung.and_then(|m| m.instrumenten_hoehe) {
+            ih
+        } else if let Some(ih) = stp_ih {
             ih
         } else if &projekt.station.standpunkt_nr == &sp && projekt.station.instrumenten_hoehe > 0.0 {
             projekt.station.instrumenten_hoehe
@@ -450,6 +476,15 @@ impl PolarpunkteAnsicht {
             return;
         };
         self.ap = import.punkte.clone();
+        let ih = parse_zahl(&self.instr_hoehe).unwrap_or(0.0);
+        if let Some(stp_ih) = import.instrumentenhoehe.filter(|h| (h - ih).abs() > 0.0005) {
+            let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            self.lade_hinweise.push(format!(
+                "Instrumentenhöhe im Kopf der stp.csv ({name}: {} m) weicht ab; verwendet wird {} m (Station/Messdaten). Feld „IH“ prüfen.",
+                f(stp_ih, 3),
+                f(ih, 3)
+            ));
+        }
         if let Some(stp_sp) = import.standpunkt.as_deref().filter(|s| !s.eq_ignore_ascii_case(sp)) {
             let name = pfad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let id = import.dokument.meta("AufstellungId").unwrap_or("");
@@ -654,11 +689,11 @@ impl PolarpunkteAnsicht {
         self.fehler = fehler.to_string();
         self.ergebnis_text.clear();
         if !fehler.is_empty() {
-            self.status = "Keine Orientierung berechenbar.".to_string();
+            self.setze_status("Keine Orientierung berechenbar.", Stufe::Fehler);
             return;
         }
         let Some(station) = &self.station else {
-            self.status.clear();
+            self.setze_status("", Stufe::Info);
             return;
         };
         let gewichtung = if par.gewichtung_nahe_ziele { format!("ein (Zielzentrierung {} mm)", f(par.zentrierfehler_ziel_mm, 1)) } else { "aus".to_string() };
@@ -678,7 +713,8 @@ impl PolarpunkteAnsicht {
         }
         let drei_d = par.berechnung_3d && (self.lokal || station.hoehe != 0.0);
         let herkunft = if self.lokal { "lokales System".to_string() } else { format!("{anschluss} Anschlusspunkt(e)") };
-        self.status = format!("{} · m = {} · {herkunft} · {berechnet} Polarpunkt(e) berechnet", if drei_d { "3D" } else { "2D" }, f(self.massstab.wert, 6));
+        let text = format!("{} · m = {} · {herkunft} · {berechnet} Polarpunkt(e) berechnet", if drei_d { "3D" } else { "2D" }, f(self.massstab.wert, 6));
+        self.setze_status(&text, Stufe::Info);
     }
 
     // ── Speichern ─────────────────────────────────────────────────────────────
@@ -775,7 +811,7 @@ impl PolarpunkteAnsicht {
             });
             let roh = self.baue_rohdaten(&self.np[i]);
             if let Err(fehler) = projekt.neupunkte.hinzufuegen_oder_ersetzen(roh, erg) {
-                self.status = format!("Speichern fehlgeschlagen: {fehler}");
+                self.setze_status(&format!("Speichern fehlgeschlagen: {fehler}"), Stufe::Fehler);
                 return;
             }
         }
@@ -806,6 +842,7 @@ impl PolarpunkteAnsicht {
             Ok(None) => String::new(),
             Err(fehler) => format!(" (Protokoll fehlgeschlagen: {fehler})"),
         };
+        self.status_stufe = Stufe::Info;
         self.status = format!("{anzahl} Polarpunkt(e) gespeichert ({neu} neu, {ersetzt} ersetzt) – Neupunkte.json{protokoll_text}.");
     }
 
@@ -986,7 +1023,7 @@ impl PolarpunkteAnsicht {
         match kor_csv::schreibe(pfad, &projekt.einstellungen.projekt_name, sensor, &punkte, erhalten) {
             Ok(gesamt) => {
                 protokoll::log("POLAR", &format!("KOR-CSV: {} Punkt(e) nach {name} ({gesamt} gesamt)", punkte.len()));
-                self.status = format!("{} Punkt(e) in {name} gespeichert ({gesamt} gesamt).", punkte.len());
+                self.setze_status(&format!("{} Punkt(e) in {name} gespeichert ({gesamt} gesamt).", punkte.len()), Stufe::Info);
             }
             Err(fehler) => {
                 fehler_log::log("Polarpunkte.kor_csv", &fehler.to_string());
@@ -1118,7 +1155,7 @@ impl PolarpunkteAnsicht {
         egui::Frame::new().fill(FARBE_HINWEIS_HINTERGRUND).inner_margin(egui::Margin::symmetric(14, 4)).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             for h in &self.hinweise {
-                ui.label(RichText::new(format!("⚠ {h}")).color(FARBE_HINWEIS_SCHRIFT));
+                ui.label(RichText::new(format!("⚠ {h}")).color(FARBE_MELDUNG_WARNUNG));
             }
         });
     }
@@ -1203,10 +1240,10 @@ impl PolarpunkteAnsicht {
 
     /// Ergebnisfeld unter der Anschlusspunkttabelle (Orientierung, Maßstab, s0) oder Fehlertext.
     fn zeichne_ergebnisfeld(&self, ui: &mut egui::Ui) {
-        let (text, farbe) = if self.fehler.is_empty() { (self.ergebnis_text.as_str(), Color32::BLACK) } else { (self.fehler.as_str(), FARBE_FEHLER) };
+        let text = if self.fehler.is_empty() { RichText::new(&self.ergebnis_text).color(Color32::BLACK) } else { RichText::new(&self.fehler).color(FARBE_MELDUNG_FEHLER).strong() };
         egui::Frame::new().fill(FARBE_ERGEBNIS_HINTERGRUND).inner_margin(egui::Margin::symmetric(6, 4)).show(ui, |ui| {
             ui.set_min_size(egui::Vec2::new(ui.available_width(), ERGEBNIS_HOEHE - 8.0));
-            ui.label(RichText::new(text).monospace().color(farbe));
+            ui.label(text.monospace());
         });
     }
 
@@ -1264,16 +1301,13 @@ impl PolarpunkteAnsicht {
         geaendert
     }
 
-    /// Fußbereich: Status links, Schaltflächen rechts; `true` bei „Schließen“.
+    /// Fußbereich: Schaltflächen rechts, darunter die Meldung über die volle Breite (Fehler rot und fett,
+    /// Warnung orange, Information schwarz), darunter Rand zum Fensterrand; `true` bei „Schließen“.
     fn zeichne_unten(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) -> bool {
         let mut schliessen = false;
         let (mut neu, mut speichern, mut protokoll_zeigen, mut kor) = (false, false, false, false);
-        ui.horizontal(|ui| {
-            ui.allocate_ui(egui::Vec2::new(STATUS_BREITE, KNOPF_HOEHE), |ui| {
-                ui.set_max_width(STATUS_BREITE);
-                ui.label(&self.status);
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.allocate_ui_with_layout(egui::Vec2::new(ui.available_width(), KNOPF_HOEHE), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            {
                 let knopf = |text: &str, breite: f32| egui::Button::new(text).min_size(egui::Vec2::new(breite, KNOPF_HOEHE));
                 schliessen = ui.add(knopf("Schließen", 100.0)).clicked();
                 kor = ui.add(knopf("Als KOR-CSV speichern", 180.0)).clicked();
@@ -1281,8 +1315,18 @@ impl PolarpunkteAnsicht {
                 speichern =
                     ui.add(egui::Button::new(RichText::new("Speichern").color(Color32::WHITE)).fill(FARBE_SPEICHERN).min_size(egui::Vec2::new(110.0, KNOPF_HOEHE))).clicked();
                 neu = ui.add(knopf("Neu berechnen", 130.0)).clicked();
-            });
+            }
         });
+        ui.add_space(UNTEN_ABSTAND);
+        if !self.status.is_empty() {
+            let text = match self.status_stufe {
+                Stufe::Fehler => RichText::new(format!("✖ {}", self.status)).color(FARBE_MELDUNG_FEHLER).strong(),
+                Stufe::Warnung => RichText::new(format!("⚠ {}", self.status)).color(FARBE_MELDUNG_WARNUNG),
+                Stufe::Info => RichText::new(&self.status).color(FARBE_MELDUNG_INFO),
+            };
+            ui.add(egui::Label::new(text).wrap());
+        }
+        ui.add_space(UNTEN_RAND);
         if neu {
             self.neuberechnen(projekt);
         }
@@ -1386,7 +1430,7 @@ impl PolarpunkteAnsicht {
             (None, frage) => self.frage = Some(frage),
             (Some(0), Frage::Ueberschreiben(_)) => self.speichere_jetzt(projekt),
             (Some(_), Frage::Hinweise(_)) => self.pruefe_ueberschreiben(projekt),
-            (Some(2), Frage::Ueberschreiben(_)) => self.status = "Speichern abgebrochen – vorhandene Punkte unverändert.".to_string(),
+            (Some(2), Frage::Ueberschreiben(_)) => self.setze_status("Speichern abgebrochen – vorhandene Punkte unverändert.", Stufe::Warnung),
             (Some(a), Frage::Kor(pfad)) if a < 2 => self.schreibe_kor(projekt, &pfad, a == 0),
             _ => {}
         }
@@ -1449,5 +1493,51 @@ mod tests {
     #[test]
     fn lokale_station_ist_verwendbar() {
         assert!(neupunkt::ist_verwendbar(Some(&lokale_station())));
+    }
+
+    /// Kopiert das Testprojekt Test5 (IH während der Aufstellung von 0,000 auf 1,500 m korrigiert) in einen Temp-Ordner.
+    fn test5(name: &str) -> (Projekt, PathBuf) {
+        let quelle = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("testdaten").join("polar-test5");
+        let dir = std::env::temp_dir().join(format!("fb-polar-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for d in std::fs::read_dir(&quelle).unwrap().filter_map(Result::ok) {
+            std::fs::copy(d.path(), dir.join(d.file_name())).unwrap();
+        }
+        (Projekt::fuer_test(&dir, "Test5"), dir)
+    }
+
+    #[test]
+    fn dat_mit_korrigierter_instrumentenhoehe_wird_geladen_und_berechnet() {
+        let (projekt, dir) = test5("dat");
+        let a = PolarpunkteAnsicht::neu(&projekt);
+        assert!(a.daten.is_some(), "Status: {}", a.status);
+        assert_eq!(a.standpunkte.len(), 1);
+        assert_eq!(a.instr_hoehe, "1.500");
+        assert!(a.quelle == AnschlussQuelle::Station);
+        assert_eq!(a.ap.len(), 4);
+        assert_eq!(a.np.len(), 20);
+        assert!(a.station.is_some(), "Fehler: {} {}", a.station_fehler, a.fehler);
+        assert_eq!(a.ergebnisse.iter().flatten().count(), 20);
+        assert!(a.hinweise.iter().any(|h| h.contains("0.000 → 1.500")), "{:?}", a.hinweise);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn stp_datei_liefert_die_anschlussmessungen() {
+        let (projekt, dir) = test5("stp");
+        let mut a = PolarpunkteAnsicht::neu(&projekt);
+        let pfad = dir.join("Test5-Anschlusspunkte-stp.csv");
+        let import = stationierung_csv::parse(&std::fs::read_to_string(&pfad).unwrap()).unwrap();
+        a.stp_datei = Some((pfad, import));
+        a.quelle = AnschlussQuelle::Stp;
+        a.lade_datei(&projekt);
+        assert!(a.quelle == AnschlussQuelle::Stp);
+        assert_eq!(a.ap.len(), 4);
+        assert_eq!(a.instr_hoehe, "1.500", "Kopf der stp.csv (0.000) ist veraltet");
+        assert!(a.station.is_some(), "Fehler: {} {}", a.station_fehler, a.fehler);
+        assert_eq!(a.ergebnisse.iter().flatten().count(), 20);
+        assert!(a.hinweise.iter().any(|h| h.contains("Kopf der stp.csv")), "{:?}", a.hinweise);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

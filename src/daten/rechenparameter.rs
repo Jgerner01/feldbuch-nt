@@ -22,6 +22,8 @@ const SIGMA_MAX: i32 = 3;
 pub const ZENTRIERFEHLER_ZIEL_STANDARD_MM: f64 = 2.0;
 /// Standard-Zentrierfehler am Standpunkt [mm].
 pub const ZENTRIERFEHLER_STANDPUNKT_STANDARD_MM: f64 = 0.0;
+/// Vorgabe der Absteck-Toleranzen (Lage und Höhe) [mm].
+pub const ABSTECK_TOLERANZ_STANDARD_MM: f64 = 10.0;
 
 /// Papierbezogene Vorgaben für den geplanten Vektor-PDF-Export des DXF-Viewers.
 #[derive(Clone, Debug, PartialEq)]
@@ -120,6 +122,9 @@ pub struct Rechenparameter {
     pub gewichtung_nahe_ziele: bool,
     pub zentrierfehler_ziel_mm: f64,
     pub zentrierfehler_standpunkt_mm: f64,
+    /// Toleranzen der Absteckung im DXF-Viewer: Lage (längs und quer) und Höhe [mm].
+    pub absteck_toleranz_lage_mm: f64,
+    pub absteck_toleranz_hoehe_mm: f64,
     pub pdf: PdfParameter,
     pub dxf: DxfParameter,
 }
@@ -140,6 +145,8 @@ impl Default for Rechenparameter {
             gewichtung_nahe_ziele: true,
             zentrierfehler_ziel_mm: ZENTRIERFEHLER_ZIEL_STANDARD_MM,
             zentrierfehler_standpunkt_mm: ZENTRIERFEHLER_STANDPUNKT_STANDARD_MM,
+            absteck_toleranz_lage_mm: ABSTECK_TOLERANZ_STANDARD_MM,
+            absteck_toleranz_hoehe_mm: ABSTECK_TOLERANZ_STANDARD_MM,
             pdf: PdfParameter::default(),
             dxf: DxfParameter::default(),
         }
@@ -248,6 +255,8 @@ impl RechenparameterManager {
             ("GewichtungNaheZiele", wahr(p.gewichtung_nahe_ziele)),
             ("ZentrierfehlerZiel_mm", f(p.zentrierfehler_ziel_mm, 1)),
             ("ZentrierfehlerStandpunkt_mm", f(p.zentrierfehler_standpunkt_mm, 1)),
+            ("AbsteckToleranzLage_mm", f(p.absteck_toleranz_lage_mm, 1)),
+            ("AbsteckToleranzHoehe_mm", f(p.absteck_toleranz_hoehe_mm, 1)),
             ("PdfMassstab", f(pdf.massstab, 0)),
             ("PdfQuerformat", wahr(pdf.querformat)),
             ("PdfRand_mm", f(pdf.rand_mm, 1)),
@@ -289,6 +298,8 @@ fn parse_parameter(doc: &XmlDokument) -> Rechenparameter {
         gewichtung_nahe_ziele: wahrheit("GewichtungNaheZiele", standard.gewichtung_nahe_ziele),
         zentrierfehler_ziel_mm: zahl("ZentrierfehlerZiel_mm", ZENTRIERFEHLER_ZIEL_STANDARD_MM),
         zentrierfehler_standpunkt_mm: zahl("ZentrierfehlerStandpunkt_mm", ZENTRIERFEHLER_STANDPUNKT_STANDARD_MM),
+        absteck_toleranz_lage_mm: zahl("AbsteckToleranzLage_mm", ABSTECK_TOLERANZ_STANDARD_MM),
+        absteck_toleranz_hoehe_mm: zahl("AbsteckToleranzHoehe_mm", ABSTECK_TOLERANZ_STANDARD_MM),
         pdf: PdfParameter {
             massstab: zahl("PdfMassstab", standard.pdf.massstab),
             querformat: wahrheit("PdfQuerformat", standard.pdf.querformat),

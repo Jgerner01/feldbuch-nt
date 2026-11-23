@@ -92,6 +92,7 @@ const S0_BEDINGT_MM: f64 = 5.0;
 /// Schwelle s0 [mm] für „schwach".
 const S0_SCHWACH_MM: f64 = 15.0;
 
+mod absteckung;
 mod auswahl;
 mod export;
 mod pdf_export;
@@ -146,6 +147,32 @@ enum Auswahl {
     Neupunkt(usize),
     Import(usize, usize),
     Marker(usize),
+}
+
+/// Wählt aus (Abstand [px], Treffer, Fangradius [px]) den nächsten Treffer innerhalb seines Fangradius.
+fn naechster_treffer(kandidaten: impl Iterator<Item = (f64, Auswahl, f64)>) -> Option<Auswahl> {
+    kandidaten.filter(|(d, _, r)| d.is_finite() && d < r).min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, a, _)| a)
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+
+    #[test]
+    fn naechster_treffer_gewinnt_unabhaengig_von_der_reihenfolge() {
+        // Audit D2: Marker A 1 px neben B, Klick genau auf B → B
+        let a = (1.0, Auswahl::Marker(0), MARKER_PICK_PX);
+        let b = (0.0, Auswahl::Marker(1), MARKER_PICK_PX);
+        assert_eq!(naechster_treffer([a, b].into_iter()), Some(Auswahl::Marker(1)));
+        assert_eq!(naechster_treffer([b, a].into_iter()), Some(Auswahl::Marker(1)));
+        // Ein näherer Importpunkt wird nicht von einem weiter entfernten Marker verdrängt
+        let marker = (12.0, Auswahl::Marker(0), MARKER_PICK_PX);
+        let import = (3.0, Auswahl::Import(0, 4), PICK_RADIUS_PX);
+        assert_eq!(naechster_treffer([marker, import].into_iter()), Some(Auswahl::Import(0, 4)));
+        // Außerhalb des eigenen Radius kein Treffer, der größere Markerradius gilt nur für Marker
+        assert_eq!(naechster_treffer([(16.0, Auswahl::Zeichnung(0), PICK_RADIUS_PX)].into_iter()), None);
+        assert_eq!(naechster_treffer([(16.0, Auswahl::Marker(2), MARKER_PICK_PX)].into_iter()), Some(Auswahl::Marker(2)));
+    }
 }
 
 /// Import-Layer: je Datei ein Satz Punkte mit Sichtbarkeit.
@@ -273,6 +300,8 @@ pub struct DxfViewer {
     neupunkt_zaehler: i32,
     /// Zielstrahlen vom Standpunkt zu den Anschlusspunkten anzeigen.
     zielstrahlen_sichtbar: bool,
+    /// Abstecken-Modus mit Zielpunkt, Messungen und Absteckfenster (Absteckung.md).
+    absteckung: Option<Box<absteckung::Absteckung>>,
     txt_instr_hoehe: String,
     txt_zielhoehe: String,
     txt_exz_laengs: String,
@@ -354,6 +383,7 @@ impl Default for DxfViewer {
             getrennt_messung: None,
             neupunkt_zaehler: 1,
             zielstrahlen_sichtbar: true,
+            absteckung: None,
             txt_instr_hoehe: "0.000".to_string(),
             txt_zielhoehe: "0.000".to_string(),
             txt_exz_laengs: "0.000".to_string(),
@@ -843,27 +873,24 @@ impl DxfViewer {
         }
     }
 
+    /// Nächster Treffer zum Klickpunkt (audit.md D2): alle Kandidaten werden nach Bildschirmabstand verglichen,
+    /// unabhängig von der Reihenfolge in der Datei. Marker haben einen größeren Fangradius, gewinnen aber nur,
+    /// wenn sie tatsächlich am nächsten liegen.
     fn pick(&self, welt: (f64, f64)) -> Option<Auswahl> {
         let (wx, wy) = welt;
-        let mut bester = PICK_RADIUS_PX / self.scale;
-        let mut treffer: Option<Auswahl> = None;
-        let mut pruefe = |d: f64, a: Auswahl| {
-            if d < bester {
-                bester = d;
-                treffer = Some(a);
-            }
-        };
+        // (Abstand [px], Treffer, Fangradius [px])
+        let mut kandidaten: Vec<(f64, Auswahl, f64)> = Vec::new();
         for (i, e) in self.overlay.iter().enumerate() {
-            pruefe(e.distance_to(wx, wy), Auswahl::Overlay(i));
+            kandidaten.push((e.distance_to(wx, wy), Auswahl::Overlay(i), PICK_RADIUS_PX));
         }
         if self.neupunkte_sichtbar {
             for (i, e) in self.neupunkte.iter().enumerate() {
-                pruefe(e.distance_to(wx, wy), Auswahl::Neupunkt(i));
+                kandidaten.push((e.distance_to(wx, wy), Auswahl::Neupunkt(i), PICK_RADIUS_PX));
             }
         }
         for (l, layer) in self.import_layer.iter().enumerate().filter(|(_, l)| l.sichtbar) {
             for (i, e) in layer.entities.iter().enumerate() {
-                pruefe(e.distance_to(wx, wy), Auswahl::Import(l, i));
+                kandidaten.push((e.distance_to(wx, wy), Auswahl::Import(l, i), PICK_RADIUS_PX));
             }
         }
         if self.dxf_sichtbar {
@@ -871,18 +898,15 @@ impl DxfViewer {
                 if e.ist_insert() && !self.punkte_sichtbar {
                     continue;
                 }
-                pruefe(e.distance_to(wx, wy), Auswahl::Zeichnung(i));
+                kandidaten.push((e.distance_to(wx, wy), Auswahl::Zeichnung(i), PICK_RADIUS_PX));
             }
         }
-        if self.marker_sichtbar && !self.marker.is_empty() {
-            let grenze = MARKER_PICK_PX / self.scale;
+        if self.marker_sichtbar {
             for (i, m) in self.marker.iter().enumerate() {
-                if m.distance_to(wx, wy) < grenze {
-                    return Some(Auswahl::Marker(i));
-                }
+                kandidaten.push((m.distance_to(wx, wy), Auswahl::Marker(i), MARKER_PICK_PX));
             }
         }
-        treffer
+        naechster_treffer(kandidaten.into_iter().map(|(d, a, r)| (d * self.scale, a, r)))
     }
 
     fn ist_zeichenbar(&self, e: &DxfEntity, ursprung: Pos2, groesse: Vec2) -> bool {
@@ -928,6 +952,9 @@ impl DxfViewer {
                 self.bediene_geraet(projekt, geraet);
             }
             self.zeichne(ui, projekt, geraet);
+            if !self.ist_auswahl() {
+                self.zeige_absteckfenster(&ui.ctx().clone(), projekt, geraet);
+            }
             let ruhe = !(geraet.ist_verbunden() || geraet.verbindet() || geraet.beschaeftigt());
             ui.ctx().request_repaint_after(if ruhe { REPAINT_INTERVALL_RUHE } else { REPAINT_INTERVALL });
 
@@ -979,6 +1006,10 @@ impl DxfViewer {
     }
 
     fn beim_schliessen(&mut self, projekt: &mut Projekt) {
+        // Absteckung: Protokoll der abgesteckten Punkte schreiben (offene Messung nur innerhalb der Toleranz)
+        if let Some(mut a) = self.absteckung.take() {
+            a.beim_schliessen_des_viewers(projekt);
+        }
         if let Err(e)=projekt.rechenparameter.speichern() {self.status=format!("PDF-Vorgaben konnten nicht gespeichert werden: {e}");}
         projekt.einstellungen.letzter_modus_neupunkt = self.neupunkt_modus;
         let _ = projekt.einstellungen.speichern();
@@ -1046,7 +1077,10 @@ impl DxfViewer {
             .show(ui, |ui| self.zeichne_canvas(ui, projekt));
 
         // A-Taste des Toughpad (als MESS_TASTE konfiguriert) löst die Messung aus, solange kein Dialog offen ist
-        if self.dialog.is_none() && self.neupunkt_modus && self.mess_taste {
+        let absteck_ziel = self.absteckung.as_ref().is_some_and(|a| a.ziel.is_some());
+        if self.dialog.is_none() && absteck_ziel && self.mess_taste {
+            self.absteck_messen(projekt, geraet);
+        } else if self.dialog.is_none() && self.neupunkt_modus && self.mess_taste {
             if self.getrennt_messung.is_some() {
                 self.uebernimm_getrennte_messung(projekt, geraet);
             } else {
@@ -1138,6 +1172,21 @@ auswählen").strong().size(11.0).color(Color32::from_rgb(255, 190, 100))),
                     .clicked()
                 {
                     self.oeffne_kontrolle(projekt);
+                }
+                let abstecken_moeglich = projekt.hat_aktive_aufstellung() && (projekt.hat_gueltige_station() || self.lokales_system);
+                let abstecken_aktiv = self.absteckung.is_some();
+                let (fill, rand) = if abstecken_aktiv { (Color32::from_rgb(235, 120, 0), Color32::from_rgb(255, 170, 60)) } else { (TOOLBAR_KNOPF, TOOLBAR_KNOPF_RAND) };
+                let abstecken = egui::Button::new(RichText::new("Ab-\nstecken").strong().size(11.0).color(Color32::WHITE))
+                    .fill(fill)
+                    .stroke(Stroke::new(1.0, rand))
+                    .min_size(Vec2::new(NEUER_STP_BREITE, KNOPF_GROESSE));
+                if ui
+                    .add_enabled(abstecken_moeglich || abstecken_aktiv, abstecken)
+                    .on_hover_text(if abstecken_aktiv { "Absteckung beenden (Protokoll wird geschrieben)" } else { "Punktabsteckung: Zielpunkt im Plan antippen" })
+                    .on_disabled_hover_text("Erst nach einer gültigen Stationierung möglich")
+                    .clicked()
+                {
+                    self.absteckung_umschalten(projekt);
                 }
                 ui.add_space(6.0);
                 let prisma = egui::Button::image(egui::Image::new(egui::include_image!("../../icons/toolbar_prisma.png")).fit_to_exact_size(Vec2::splat(24.0)))

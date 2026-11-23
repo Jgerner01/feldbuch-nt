@@ -262,6 +262,11 @@ impl DxfViewer {
 
     /// Reicht ein Messergebnis an den offenen Dialog weiter, wenn dieser auf eines wartet.
     pub(super) fn messergebnis_fuer_dialog(&mut self, ergebnis: MessErgebnis) -> Option<MessErgebnis> {
+        // Absteckung wartet auf ihre Messung
+        if let Some(a) = self.absteckung.as_mut().filter(|a| a.wartet) {
+            a.uebernimm(ergebnis);
+            return None;
+        }
         match &mut self.dialog {
             Some(Dialog::Messdaten(d)) if d.wartet => {
                 d.wartet = false;

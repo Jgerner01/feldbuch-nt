@@ -7,13 +7,15 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-use crate::daten::messdaten::{TYP_ANSCHLUSSPUNKT, TYP_KONTROLLPUNKT, TYP_NEUPUNKT};
+use crate::daten::messdaten::{TYP_ABSTECKUNG, TYP_ANSCHLUSSPUNKT, TYP_KONTROLLPUNKT, TYP_NEUPUNKT};
 use crate::grundlagen::format::parse_zahl;
 
 /// Spaltenindizes der Messdatei.
 
 const KOMMENTAR_STATIONIERUNG: &str = "# STATIONIERUNG:";
 const KOMMENTAR_SP_SCHLUESSEL: &str = "SP=";
+/// Instrumentenhöhen gelten als gleich bis zu dieser Differenz [m].
+const IH_GLEICH_M: f64 = 0.0005;
 
 /// Eine Messzeile der dat.csv.
 #[derive(Clone, Debug, PartialEq)]
@@ -99,7 +101,7 @@ pub fn parse(zeilen: &[String], ist_koordinatenpunkt: impl Fn(&str) -> bool) -> 
         }
         let typ = d.zelle(z, "Typ").to_uppercase();
         // Kontrollmessungen (Orientierungskontrolle) gehören weder zur Stationierung noch zu den Polarpunkten
-        if typ == TYP_KONTROLLPUNKT {
+        if typ == TYP_KONTROLLPUNKT || typ == TYP_ABSTECKUNG {
             continue;
         }
         let geschaetzt = typ.is_empty();
@@ -136,20 +138,38 @@ pub fn parse(zeilen: &[String], ist_koordinatenpunkt: impl Fn(&str) -> bool) -> 
         });
     }
     weise_standpunkte_zu(&mut daten, &kommentare);
-    // Eine Aufstellung hat genau eine Instrumentenhöhe (sonst Fehler). Unterschiedliche Standpunktnummern
-    // entstehen beim Umbenennen des Standpunkts; sie werden nur gemeldet und bilden eigene Gruppen.
-    let mut aufstellungen: std::collections::HashMap<String, (Vec<String>, Option<f64>)> = std::collections::HashMap::new();
+    // Eine Aufstellung hat genau eine Instrumentenhöhe. Unterscheiden sich die Zeilen, wurde die Höhe während der
+    // Aufstellung korrigiert („IH“ im DXF-Viewer oder in der Freien Stationierung, gleiche AufstellungId): die zuletzt
+    // geschriebene Höhe gilt für die ganze Aufstellung, die Abweichung wird gemeldet. Unterschiedliche
+    // Standpunktnummern entstehen beim Umbenennen des Standpunkts; sie werden nur gemeldet und bilden eigene Gruppen.
+    let mut aufstellungen: std::collections::HashMap<String, (Vec<String>, Vec<f64>)> = std::collections::HashMap::new();
     for m in &daten.messungen {
         if m.aufstellung_id.is_empty() {
             continue;
         }
-        let eintrag = aufstellungen.entry(m.aufstellung_id.clone()).or_insert_with(|| (Vec::new(), m.instrumenten_hoehe));
-        if eintrag.1 != m.instrumenten_hoehe {
-            return Err(crate::daten::csv_basis::fehler(format!("Aufstellung {} enthält widersprüchliche Instrumentenhöhen.", m.aufstellung_id)));
+        let eintrag = aufstellungen.entry(m.aufstellung_id.clone()).or_default();
+        if let Some(ih) = m.instrumenten_hoehe {
+            if eintrag.1.last().is_none_or(|l| (l - ih).abs() > IH_GLEICH_M) {
+                eintrag.1.push(ih);
+            }
         }
         if !eintrag.0.contains(&m.standpunkt_nr) {
             eintrag.0.push(m.standpunkt_nr.clone());
         }
+    }
+    let mut korrigiert: Vec<(&String, &Vec<f64>)> = aufstellungen.iter().filter(|(_, (_, ihs))| ihs.len() > 1).map(|(id, (_, ihs))| (id, ihs)).collect();
+    korrigiert.sort_by(|a, b| a.0.cmp(b.0));
+    for (id, ihs) in korrigiert {
+        let gueltig = *ihs.last().unwrap_or(&0.0);
+        for m in daten.messungen.iter_mut().filter(|m| &m.aufstellung_id == id) {
+            m.instrumenten_hoehe = Some(gueltig);
+        }
+        let verlauf: Vec<String> = ihs.iter().map(|h| crate::grundlagen::format::f(*h, 3)).collect();
+        daten.hinweise.push(format!(
+            "Aufstellung {id}: Instrumentenhöhe wurde korrigiert ({} m). Verwendet wird die letzte Höhe {} m für alle Messungen der Aufstellung.",
+            verlauf.join(" → "),
+            crate::grundlagen::format::f(gueltig, 3)
+        ));
     }
     let mut mehrdeutig: Vec<_> = aufstellungen.into_iter().filter(|(_, (nrn, _))| nrn.len() > 1).collect();
     mehrdeutig.sort_by(|a, b| a.0.cmp(&b.0));
@@ -263,3 +283,4 @@ PunktNr;HZ_gon;V_gon;Strecke_m;Zielhoehe_m;Code;Zeitstempel;ExzLaengs_m;ExzQuer_
         assert!(parse(&zeilen(text), |_| false).is_err());
     }
 }
+

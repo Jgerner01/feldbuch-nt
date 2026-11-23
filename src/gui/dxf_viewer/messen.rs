@@ -151,7 +151,7 @@ impl DxfViewer {
         }
         geraet.live_hz_aktiv = true;
         // V wird nur für die getrennte Messung (hier) und den Messdaten-Dialog (schaltet selbst ein) abgefragt
-        geraet.live_v_aktiv = self.getrennt_messung.is_some();
+        geraet.live_v_aktiv = self.getrennt_messung.is_some() || self.absteckung.is_some();
         self.ziel_hz = geraet.live_hz;
         if let Some(text) = geraet.messung_status() {
             self.status = text.to_string();

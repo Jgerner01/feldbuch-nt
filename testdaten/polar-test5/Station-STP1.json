@@ -1,0 +1,152 @@
+{
+  "AufstellungId": "STP1-20261123T232504191324800",
+  "StandpunktNr": "STP1",
+  "InstrumentenHoehe": 1.5,
+  "Datum": "2026-11-23",
+  "Messungen": [
+    {
+      "PunktNr": "6",
+      "R": 2.9446,
+      "H": 1.4694,
+      "Hoehe": 1.355,
+      "HZ": 70.534,
+      "V": 75.13,
+      "Strecke": 3.559,
+      "Zielhoehe": 0.0
+    },
+    {
+      "PunktNr": "5",
+      "R": 0.3021,
+      "H": 2.3929,
+      "Hoehe": 1.509,
+      "HZ": 7.9995,
+      "V": 66.2145,
+      "Strecke": 2.982,
+      "Zielhoehe": 0.0
+    },
+    {
+      "PunktNr": "2",
+      "R": -1.3822,
+      "H": 0.479,
+      "Hoehe": 0.154,
+      "HZ": 321.224,
+      "V": 94.256,
+      "Strecke": 1.469,
+      "Zielhoehe": 0.0
+    },
+    {
+      "PunktNr": "7",
+      "R": -1.7315,
+      "H": -1.0229,
+      "Hoehe": 0.382,
+      "HZ": 266.029,
+      "V": 88.0485,
+      "Strecke": 2.047,
+      "Zielhoehe": 0.0
+    }
+  ],
+  "Ergebnis": {
+    "R": 0.00009571335880304673,
+    "H": 0.0002492300406863849,
+    "Hoehe": -1.5001604059137872,
+    "Orientierung_gon": 399.9986052510798,
+    "Massstab": 0.9999858991848645,
+    "s0_mm": 4.311713005540155,
+    "Redundanz": 4,
+    "Iterationen": 3,
+    "Konvergiert": true,
+    "Berechnung3D": true,
+    "IstLokalesSystem": false,
+    "WarnungHoehe": "",
+    "Residuen": [
+      {
+        "PunktNr": "6",
+        "StreckeH": 3.2908615901675766,
+        "vWinkel_cc": 43.36681716643768,
+        "vQuer_mm": 0.22416188323513617,
+        "vStrecke_mm": 0.1915248282351456,
+        "vHoehe_mm": -0.09270489604573662,
+        "RichtungAktiv": true,
+        "StreckeAktiv": true,
+        "HoeheAktiv": true,
+        "GewichtRichtung": 1.0
+      },
+      {
+        "PunktNr": "5",
+        "StreckeH": 2.5718327012638422,
+        "vWinkel_cc": -48.56900499686023,
+        "vQuer_mm": -0.18398850733690056,
+        "vStrecke_mm": "NaN",
+        "vHoehe_mm": -0.14425409025897729,
+        "RichtungAktiv": true,
+        "StreckeAktiv": false,
+        "HoeheAktiv": true,
+        "GewichtRichtung": 1.0
+      },
+      {
+        "PunktNr": "2",
+        "StreckeH": 1.4630246166826713,
+        "vWinkel_cc": 32.34278335505399,
+        "vQuer_mm": 0.07431875855859571,
+        "vStrecke_mm": 0.1699626220710293,
+        "vHoehe_mm": "NaN",
+        "RichtungAktiv": true,
+        "StreckeAktiv": true,
+        "HoeheAktiv": false,
+        "GewichtRichtung": 1.0
+      },
+      {
+        "PunktNr": "7",
+        "StreckeH": 2.0110336358778955,
+        "vWinkel_cc": -27.140595524506782,
+        "vQuer_mm": -0.08574570310258707,
+        "vStrecke_mm": -0.24905470924085904,
+        "vHoehe_mm": 0.12282220279580258,
+        "RichtungAktiv": true,
+        "StreckeAktiv": true,
+        "HoeheAktiv": true,
+        "GewichtRichtung": 1.0
+      }
+    ],
+    "Konfidenz": {
+      "a_mm": 0.516643499733514,
+      "b_mm": 0.29884876369519053,
+      "Theta_rad": 0.3341407371754219,
+      "SigmaR_mm": 0.13357881875583463,
+      "SigmaH_mm": 0.08835142823021166,
+      "Niveau": 0.95,
+      "APriori": false
+    }
+  },
+  "AktivRichtung": [
+    true,
+    true,
+    true,
+    true
+  ],
+  "AktivStrecke": [
+    true,
+    false,
+    true,
+    true
+  ],
+  "AktivHoehe": [
+    true,
+    true,
+    false,
+    true
+  ],
+  "Code": "",
+  "Beginn": "2026-11-23T23:25:04",
+  "BekannterStandpunkt": null,
+  "Geraet": {
+    "Modell": "LeicaTPS300",
+    "Verbunden": true,
+    "EdmModus": "Reflektorlos",
+    "Prisma": "GPR1 Standard",
+    "Prismenkonstante_mm": 0.0,
+    "Atm_ppm": null,
+    "Laengsneigung_mgon": null,
+    "Querneigung_mgon": null
+  }
+}

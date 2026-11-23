@@ -472,6 +472,21 @@ impl eframe::App for FeldbuchApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.titel()));
         // Gerät: Verbindungsversuch und Empfang verarbeiten, auch wenn das Kommunikationsfenster zu ist
         self.geraet.aktualisiere();
+        // Bestätigte Schaltvorgänge (EDM, Laserpointer) als gewünschten Zustand speichern; die Vorgabe wird vor der
+        // ersten Messung jeder Verbindung ans Gerät übertragen (nicht beim Programmstart)
+        if let Some(z) = self.geraet.nimm_bestaetigung() {
+            let e = &mut self.projekt.einstellungen;
+            match z {
+                geraet::SchalterZiel::Reflektorlos(rl) => {
+                    if rl != (e.mess_modus_name != "Prisma") {
+                        e.mess_modus_name = if rl { "ReflektorlosKurz" } else { "Prisma" }.to_string();
+                    }
+                }
+                geraet::SchalterZiel::Laser(an) => e.laser_an = an,
+            }
+            let _ = e.speichern();
+        }
+        self.geraet.setze_vorgabe(crate::tachymeter::einrichtung::Vorgabe::aus_einstellungen(&self.projekt.einstellungen));
         self.messprotokoll_beobachter.pruefe(&self.projekt.einstellungen, self.geraet.ist_verbunden(), self.geraet.reflektorlos, self.geraet.modell.name());
         if self.geraet.verbindet() || self.geraet.test.is_some() || self.geraet.schalter.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
