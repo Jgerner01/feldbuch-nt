@@ -1,5 +1,5 @@
 // Zweck:    RTF-Protokollgenerator: liest eine XML-Steuerdatei (Vorlage) und erzeugt daraus ein RTF-Dokument.
-//           Abschnittstypen: Titel, Zeile, Monoblock, Tabelle, Leerzeile, Trennlinie; Farben, Querformat, bedingte
+//           Abschnittstypen: Titel, Zeile, Monoblock, Tabelle, Bild (PNG als Hex-Feld), Leerzeile, Trennlinie; Farben, Querformat, bedingte
 //           Abschnitte und Spalten (zeigenWenn), Ampelfärbung der Tabellenzeilen über den Schlüssel „_ampel".
 // Hardware: keine
 // Autor:    Johann Gerner
@@ -194,6 +194,14 @@ pub fn erzeuge(vorlage: &str, felder: &Felder, tabellen: &Tabellen) -> Result<St
                     rtf.push_str(&format!("{{{fmt} {}}}", maskiere(&feld_wert(feld, felder))));
                 }
                 zeile(&mut rtf, "\\par");
+            }
+            "Bild" => {
+                // PNG als Hex-Text im Feld `var`, Größe in mm (Attribute breite/hoehe)
+                let hex = felder.get(a.attribute("var").unwrap_or("")).map_or("", String::as_str);
+                if !hex.is_empty() {
+                    let (b, h) = (mm(a, "breite", 150), mm(a, "hoehe", 112));
+                    zeile(&mut rtf, &format!("\\pard\\qc\\sa{sa} {{\\pict\\pngblip\\picw{b}\\pich{h}\\picwgoal{b}\\pichgoal{h} {hex}}}\\par"));
+                }
             }
             "Monoblock" => {
                 let inhalt = felder.get(a.attribute("var").unwrap_or("")).cloned().unwrap_or_default();

@@ -127,6 +127,28 @@ pub struct Rechenparameter {
     pub absteck_toleranz_hoehe_mm: f64,
     pub pdf: PdfParameter,
     pub dxf: DxfParameter,
+    /// Füllfarbe (RGB) der Flächenberechnung im DXF-Viewer.
+    pub flaeche_farbe: [u8; 3],
+    /// Flächenprotokoll mit Grafik (Lageplan mit Punktnummern) ergänzen.
+    pub flaeche_grafik_im_protokoll: bool,
+}
+
+/// Standardfarbe der Flächenberechnung.
+pub const FLAECHE_FARBE_STANDARD: [u8; 3] = [0, 150, 200];
+
+/// RGB als „RRGGBB".
+fn farbe_hex(f: [u8; 3]) -> String {
+    format!("{:02X}{:02X}{:02X}", f[0], f[1], f[2])
+}
+
+/// „RRGGBB" (auch mit führendem „#") als RGB.
+fn farbe_aus_hex(text: &str) -> Option<[u8; 3]> {
+    let t = text.trim().trim_start_matches('#');
+    if t.len() != 6 || !t.is_ascii() {
+        return None;
+    }
+    let teil = |i: usize| u8::from_str_radix(&t[i..i + 2], 16).ok();
+    Some([teil(0)?, teil(2)?, teil(4)?])
 }
 
 impl Default for Rechenparameter {
@@ -149,6 +171,8 @@ impl Default for Rechenparameter {
             absteck_toleranz_hoehe_mm: ABSTECK_TOLERANZ_STANDARD_MM,
             pdf: PdfParameter::default(),
             dxf: DxfParameter::default(),
+            flaeche_farbe: FLAECHE_FARBE_STANDARD,
+            flaeche_grafik_im_protokoll: true,
         }
     }
 }
@@ -265,6 +289,8 @@ impl RechenparameterManager {
             ("DxfMassstab", f(dxf.massstab, 0)),
             ("DxfSymbol_mm", f(dxf.symbol_mm, 1)),
             ("DxfText_mm", f(dxf.text_mm, 1)),
+            ("FlaecheFarbe", farbe_hex(p.flaeche_farbe)),
+            ("FlaecheGrafikImProtokoll", wahr(p.flaeche_grafik_im_protokoll)),
         ];
         datei_speicher::schreibe_text(&self.pfad, &xml_einfach::schreibe(WURZEL, &eintraege))
     }
@@ -312,6 +338,8 @@ fn parse_parameter(doc: &XmlDokument) -> Rechenparameter {
             symbol_mm: zahl("DxfSymbol_mm", standard.dxf.symbol_mm),
             text_mm: zahl("DxfText_mm", standard.dxf.text_mm),
         }.normalisiert(),
+        flaeche_farbe: doc.text("FlaecheFarbe").and_then(farbe_aus_hex).unwrap_or(standard.flaeche_farbe),
+        flaeche_grafik_im_protokoll: wahrheit("FlaecheGrafikImProtokoll", standard.flaeche_grafik_im_protokoll),
     }
 }
 
@@ -343,6 +371,22 @@ mod tests {
         assert_eq!(neu.params.dxf, m.params.dxf);
         assert!((neu.params.sigma_wert(1.5) - 3.0).abs() < 1e-12);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn flaechenparameter_sind_standardmaessig_an_und_werden_gespeichert() {
+        let doc = xml_einfach::lese(&format!("<{WURZEL}></{WURZEL}>")).unwrap();
+        let p = parse_parameter(&doc);
+        assert!(p.flaeche_grafik_im_protokoll);
+        assert_eq!(p.flaeche_farbe, FLAECHE_FARBE_STANDARD);
+        let doc = xml_einfach::lese(&format!("<{WURZEL}><FlaecheFarbe>#FF8000</FlaecheFarbe><FlaecheGrafikImProtokoll>false</FlaecheGrafikImProtokoll></{WURZEL}>")).unwrap();
+        let p = parse_parameter(&doc);
+        assert_eq!(p.flaeche_farbe, [255, 128, 0]);
+        assert!(!p.flaeche_grafik_im_protokoll);
+        assert_eq!(farbe_hex([255, 128, 0]), "FF8000");
+        assert_eq!(farbe_aus_hex("zz"), None);
+        let doc = xml_einfach::lese(&format!("<{WURZEL}><FlaecheFarbe>12</FlaecheFarbe></{WURZEL}>")).unwrap();
+        assert_eq!(parse_parameter(&doc).flaeche_farbe, FLAECHE_FARBE_STANDARD);
     }
 
     #[test]

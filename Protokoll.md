@@ -181,7 +181,7 @@ Das Protokoll wird von vorne nach hinten „abgespielt“:
 - [x] 6. Nummern, Ersetzen, Löschen, Exzentrizitäten (L7, L12), Stationierungsmodus-Messung als `VERWORFEN` (L13)
 - [x] 7. `schreibe_tagesprotokoll` und `Data-protocol-*.csv` stilllegen (P2); Kommentarzeilen in der dat.csv bleiben
 - [x] 8. Import Altprojekte (P7)
-- [ ] 9. Funktion „Aus Protokoll ableiten“ (stp.csv, dat.csv, Koordinaten neu gerechnet) mit Vergleich
+- [x] 9. Funktion „Extraktion aus Messdaten“ (stp.csv je Aufstellung, dat.csv, kor.csv mit neu gerechneten Koordinaten); der Vergleich mit den Projektdateien ist noch offen
 
 ## 6. Umsetzungsstand (22.11.2026)
 
@@ -214,4 +214,4 @@ laufende Nummer (`LfdNr`), nur Anhängen. Schreibfehler blockieren nichts, ersch
   `STATIONIERUNG`; Messdatei → NP/KP-`MESSUNG`; `Data-protocol-*.csv` → `ALTMESSUNG`; zeitlich sortiert.
 - **Noch nicht belegt:** `NUMMER` (Umbenennen einer bereits gespeicherten Messung) – das Programm hat dafür
   derzeit keine eigene Funktion; Änderungen im Datenmanager stehen nur als `BEMERKUNG` ohne Feldvergleich.
-- **Offen:** Schritt 9 „Aus Protokoll ableiten“.
+- **Schritt 9 umgesetzt (24.11.2026):** Hauptmenü „Extraktion aus Messdaten“ ([src/daten/messdaten_extraktion.rs](src/daten/messdaten_extraktion.rs), [src/gui/extraktion_ansicht.rs](src/gui/extraktion_ansicht.rs)). Das Protokoll wird abgespielt (`KORREKTUR`, `NUMMER`, `EXZ`, `ERSETZT`, `GELOESCHT`, `IH`, `STP_UMBENANNT` über `Bezug`); je Aufstellung entsteht eine `-stp.csv` (AP mit Koordinaten, Stationierungsergebnis), alle NP/KP/AB-Messungen stehen in einer gemeinsamen `-dat.csv`, `-kor.csv` enthält Standpunkte und neu gerechnete Neupunkte. Ablage: Projektordner\Extraktion aus Messdaten\, Dateinamen mit Zeitmarke. Auswahl einzelner Aufstellungen möglich. **Offen:** Vergleich mit den aktuellen Projektdateien.

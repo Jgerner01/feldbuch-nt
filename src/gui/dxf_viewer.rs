@@ -95,6 +95,7 @@ const S0_SCHWACH_MM: f64 = 15.0;
 mod absteckung;
 mod auswahl;
 mod export;
+mod flaechenberechnung;
 mod pdf_export;
 mod messdaten_eingabe;
 mod messen;
@@ -302,6 +303,8 @@ pub struct DxfViewer {
     zielstrahlen_sichtbar: bool,
     /// Abstecken-Modus mit Zielpunkt, Messungen und Absteckfenster (Absteckung.md).
     absteckung: Option<Box<absteckung::Absteckung>>,
+    /// Flächenberechnung (Eckpunkte per Klick), solange aktiv.
+    flaeche: Option<Box<flaechenberechnung::FlaechenModus>>,
     txt_instr_hoehe: String,
     txt_zielhoehe: String,
     txt_exz_laengs: String,
@@ -384,6 +387,7 @@ impl Default for DxfViewer {
             neupunkt_zaehler: 1,
             zielstrahlen_sichtbar: true,
             absteckung: None,
+            flaeche: None,
             txt_instr_hoehe: "0.000".to_string(),
             txt_zielhoehe: "0.000".to_string(),
             txt_exz_laengs: "0.000".to_string(),
@@ -954,6 +958,7 @@ impl DxfViewer {
             self.zeichne(ui, projekt, geraet);
             if !self.ist_auswahl() {
                 self.zeige_absteckfenster(&ui.ctx().clone(), projekt, geraet);
+                self.zeige_flaechenfenster(&ui.ctx().clone(), projekt);
             }
             let ruhe = !(geraet.ist_verbunden() || geraet.verbindet() || geraet.beschaeftigt());
             ui.ctx().request_repaint_after(if ruhe { REPAINT_INTERVALL_RUHE } else { REPAINT_INTERVALL });
@@ -1153,98 +1158,70 @@ auswählen").strong().size(11.0).color(Color32::from_rgb(255, 190, 100))),
             // Links (feste Positionen): Neuer Stp, Kontrolle, Prisma, EDM, Laser, PDF, DXF, Modus
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_space(4.0);
-                let neuer_stp = egui::Button::new(RichText::new("Neuer\nStp").strong().size(11.0).color(Color32::WHITE))
-                    .fill(standpunkt::NEUER_STP_FARBE)
-                    .stroke(Stroke::new(1.0, standpunkt::NEUER_STP_RAND))
-                    .min_size(Vec2::new(NEUER_STP_BREITE, KNOPF_GROESSE));
-                if ui.add(neuer_stp).on_hover_text("Neuen Standpunkt anlegen, vorhandenen fortsetzen oder umbenennen").clicked() {
-                    self.oeffne_standpunkt_dialog(projekt, geraet);
-                }
-                let kontrolle_moeglich = projekt.hat_gueltige_station() && !self.lokales_system;
-                let kontrolle = egui::Button::new(RichText::new("Kon-\ntrolle").strong().size(11.0).color(Color32::WHITE))
-                    .fill(TOOLBAR_KNOPF)
-                    .stroke(Stroke::new(1.0, TOOLBAR_KNOPF_RAND))
-                    .min_size(Vec2::new(NEUER_STP_BREITE, KNOPF_GROESSE));
-                if ui
-                    .add_enabled(kontrolle_moeglich, kontrolle)
-                    .on_hover_text("Orientierungskontrolle: einen Anschlusspunkt anzielen und messen")
-                    .on_disabled_hover_text("Erst nach einer gültigen Stationierung möglich")
-                    .clicked()
-                {
-                    self.oeffne_kontrolle(projekt);
-                }
+                let ctx = ui.ctx().clone();
+                let kachel = Vec2::splat(KNOPF_GROESSE);
+                // Gruppe Standpunkt: Neuer Stp, Kontrolle, Abstecken (Hauptknopf zeigt eine laufende Absteckung)
                 let abstecken_moeglich = projekt.hat_aktive_aufstellung() && (projekt.hat_gueltige_station() || self.lokales_system);
                 let abstecken_aktiv = self.absteckung.is_some();
-                let (fill, rand) = if abstecken_aktiv { (Color32::from_rgb(235, 120, 0), Color32::from_rgb(255, 170, 60)) } else { (TOOLBAR_KNOPF, TOOLBAR_KNOPF_RAND) };
-                let abstecken = egui::Button::new(RichText::new("Ab-\nstecken").strong().size(11.0).color(Color32::WHITE))
-                    .fill(fill)
-                    .stroke(Stroke::new(1.0, rand))
-                    .min_size(Vec2::new(NEUER_STP_BREITE, KNOPF_GROESSE));
-                if ui
-                    .add_enabled(abstecken_moeglich || abstecken_aktiv, abstecken)
-                    .on_hover_text(if abstecken_aktiv { "Absteckung beenden (Protokoll wird geschrieben)" } else { "Punktabsteckung: Zielpunkt im Plan antippen" })
-                    .on_disabled_hover_text("Erst nach einer gültigen Stationierung möglich")
-                    .clicked()
-                {
-                    self.absteckung_umschalten(projekt);
-                }
+                let stp_haupt = zeichnen::bildknopf(ui, zeichnen::knopfbild("neuer_stp"), kachel, abstecken_aktiv.then_some(true));
+                zeichnen::ausklappmenue(&ctx, "toolbar_standpunkt", &stp_haupt, false, |ui| {
+                    if zeichnen::bildknopf(ui, zeichnen::knopfbild("neuer_stp"), kachel, None).on_hover_text("Neuen Standpunkt anlegen, vorhandenen fortsetzen oder umbenennen").clicked() {
+                        self.oeffne_standpunkt_dialog(projekt, geraet);
+                    }
+                    let kontrolle_moeglich = projekt.hat_gueltige_station() && !self.lokales_system;
+                    if ui
+                        .add_enabled_ui(kontrolle_moeglich, |ui| zeichnen::bildknopf(ui, zeichnen::knopfbild("kontrolle"), kachel, None))
+                        .inner
+                        .on_hover_text("Orientierungskontrolle: einen Anschlusspunkt anzielen und messen")
+                        .on_disabled_hover_text("Erst nach einer gültigen Stationierung möglich")
+                        .clicked()
+                    {
+                        self.oeffne_kontrolle(projekt);
+                    }
+                    if ui
+                        .add_enabled_ui(abstecken_moeglich || abstecken_aktiv, |ui| zeichnen::bildknopf(ui, zeichnen::knopfbild("abstecken"), kachel, abstecken_aktiv.then_some(true)))
+                        .inner
+                        .on_hover_text(if abstecken_aktiv { "Absteckung beenden (Protokoll wird geschrieben)" } else { "Punktabsteckung: Zielpunkt im Plan antippen" })
+                        .on_disabled_hover_text("Erst nach einer gültigen Stationierung möglich")
+                        .clicked()
+                    {
+                        self.absteckung_umschalten(projekt);
+                    }
+                });
                 ui.add_space(6.0);
-                let prisma = egui::Button::image(egui::Image::new(egui::include_image!("../../icons/toolbar_prisma.png")).fit_to_exact_size(Vec2::splat(24.0)))
-                    .fill(TOOLBAR_KNOPF)
-                    .stroke(Stroke::new(1.0, TOOLBAR_KNOPF_RAND))
-                    .min_size(Vec2::splat(KNOPF_GROESSE));
-                if ui.add(prisma).on_hover_text("Prismenkonstante").clicked() {
-                    self.oeffne_prisma_dialog(projekt);
-                }
-                let (edm_fill, edm_rand, edm_text, edm_tip) = if reflektorlos {
-                    (Color32::from_rgb(150, 70, 20), Color32::from_rgb(200, 100, 40), "RL", "EDM: Reflektorlos – Klick → Prisma")
-                } else {
-                    (TOOLBAR_KNOPF, TOOLBAR_KNOPF_RAND, "P", "EDM: Prisma – Klick → Reflektorlos")
-                };
-                let edm = egui::Button::new(egui::RichText::new(edm_text).strong().color(Color32::WHITE))
-                    .fill(edm_fill)
-                    .stroke(Stroke::new(1.0, edm_rand))
-                    .min_size(Vec2::splat(KNOPF_GROESSE));
-                if ui.add(edm).on_hover_text(edm_tip).clicked() {
-                    if let Err(fehler) = geraet.starte_ziel_umschaltung() {
-                        self.status = fehler;
+                // Gruppe Messgerät: Prismenkonstante, Reflektor/Reflektorlos, Laserpointer (Hauptknopf zeigt Ziel und Laser)
+                let edm_bild = if reflektorlos { "edm_rl" } else { "edm_prisma" };
+                let edm_tip = if reflektorlos { "EDM: Reflektorlos – Klick → Prisma" } else { "EDM: Prisma – Klick → Reflektorlos" };
+                let laser_tip = if laser_an { "Laserpointer AN – Klick zum Ausschalten" } else { "Laserpointer AUS – Klick zum Einschalten" };
+                let haupt = zeichnen::bildknopf(ui, zeichnen::knopfbild(edm_bild), kachel, laser_an.then_some(true));
+                zeichnen::ausklappmenue(&ctx, "toolbar_geraet", &haupt, false, |ui| {
+                    if zeichnen::bildknopf(ui, zeichnen::knopfbild("prisma"), kachel, None).on_hover_text("Prismenkonstante").clicked() {
+                        self.oeffne_prisma_dialog(projekt);
                     }
-                }
-                let (laser_fill, laser_rand, laser_tip) = if laser_an {
-                    (Color32::from_rgb(180, 55, 15), Color32::from_rgb(240, 90, 30), "Laserpointer AN – Klick zum Ausschalten")
-                } else {
-                    (TOOLBAR_KNOPF, TOOLBAR_KNOPF_RAND, "Laserpointer AUS – Klick zum Einschalten")
-                };
-                let laser = egui::Button::new(egui::RichText::new("●").color(Color32::WHITE))
-                    .fill(laser_fill)
-                    .stroke(Stroke::new(1.0, laser_rand))
-                    .min_size(Vec2::splat(KNOPF_GROESSE));
-                if ui.add(laser).on_hover_text(laser_tip).clicked() {
-                    if let Err(fehler) = geraet.starte_laser_umschaltung() {
-                        self.status = fehler;
+                    if zeichnen::bildknopf(ui, zeichnen::knopfbild(edm_bild), kachel, None).on_hover_text(edm_tip).clicked() {
+                        if let Err(fehler) = geraet.starte_ziel_umschaltung() {
+                            self.status = fehler;
+                        }
                     }
-                }
+                    if zeichnen::bildknopf(ui, zeichnen::knopfbild("laser"), kachel, Some(laser_an)).on_hover_text(laser_tip).clicked() {
+                        if let Err(fehler) = geraet.starte_laser_umschaltung() {
+                            self.status = fehler;
+                        }
+                    }
+                });
+                // Gruppe Ausgabe: PDF-Ausschnitt, DXF-Export
                 let pdf_aktiv = self.pdf_mitte.is_some();
-                let (pdf_fill, pdf_rand, pdf_tip) = if pdf_aktiv {
-                    (Color32::from_rgb(180, 85, 20), Color32::from_rgb(240, 140, 50), "PDF-Ausschnitt AN – Klick zum Ausschalten")
-                } else {
-                    (TOOLBAR_KNOPF, TOOLBAR_KNOPF_RAND, "PDF-Ausschnitt AUS – Klick zum Einschalten")
-                };
-                let pdf = egui::Button::new(RichText::new("PDF").strong().size(11.0).color(Color32::WHITE))
-                    .fill(pdf_fill)
-                    .stroke(Stroke::new(1.0, pdf_rand))
-                    .min_size(Vec2::splat(KNOPF_GROESSE));
-                if ui.add(pdf).on_hover_text(pdf_tip).clicked() {
-                    self.pdf_mitte = if pdf_aktiv { None } else { Some(self.mitte) };
-                    self.pdf_ziehen = false;
-                }
-                let dxf_export = egui::Button::new(RichText::new("DXF").strong().size(11.0).color(Color32::WHITE))
-                    .fill(TOOLBAR_KNOPF)
-                    .stroke(Stroke::new(1.0, TOOLBAR_KNOPF_RAND))
-                    .min_size(Vec2::splat(KNOPF_GROESSE));
-                if ui.add(dxf_export).on_hover_text("Als DXF exportieren").clicked() {
-                    self.oeffne_export_dialog(projekt);
-                }
+                let pdf_tip = if pdf_aktiv { "PDF-Ausschnitt AN – Klick zum Ausschalten" } else { "PDF-Ausschnitt AUS – Klick zum Einschalten" };
+                let ausgabe = zeichnen::bildknopf(ui, zeichnen::knopfbild("pdf"), kachel, pdf_aktiv.then_some(true));
+                zeichnen::ausklappmenue(&ctx, "toolbar_ausgabe", &ausgabe, false, |ui| {
+                    if zeichnen::bildknopf(ui, zeichnen::knopfbild("pdf"), kachel, Some(pdf_aktiv).filter(|a| *a)).on_hover_text(pdf_tip).clicked() {
+                        self.pdf_mitte = if pdf_aktiv { None } else { Some(self.mitte) };
+                        self.pdf_ziehen = false;
+                    }
+                    if zeichnen::bildknopf(ui, zeichnen::knopfbild("dxf_export"), kachel, None).on_hover_text("Als DXF exportieren").clicked() {
+                        self.oeffne_export_dialog(projekt);
+                    }
+                });
                 ui.add_space(MODUS_KNOPF_ABSTAND);
                 self.zeichne_modus_knopf(ui);
             });

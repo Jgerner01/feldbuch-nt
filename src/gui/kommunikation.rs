@@ -81,6 +81,18 @@ impl KommunikationAnsicht {
         ui.heading("Messgerät – Kommunikation");
         ui.add_space(6.0);
 
+        // OK / Abbrechen oben links
+        ui.horizontal(|ui| {
+            if ui.add(egui::Button::new(RichText::new("OK").strong()).min_size(Vec2::new(130.0, 36.0))).clicked() {
+                self.uebernehmen(projekt, geraet);
+                schliessen = true;
+            }
+            if ui.add(egui::Button::new("Abbrechen").min_size(Vec2::new(130.0, 36.0))).clicked() {
+                schliessen = true;
+            }
+        });
+        ui.add_space(6.0);
+
         // Zwei Spalten, relativ zur Fensterbreite
         let gesamt = ui.available_width();
         ui.horizontal_top(|ui| {
@@ -103,15 +115,6 @@ impl KommunikationAnsicht {
             let farbe = if self.fehler { Color32::RED } else { ui.visuals().text_color() };
             ui.colored_label(farbe, &self.meldung);
         }
-        ui.horizontal(|ui| {
-            if ui.add(egui::Button::new(RichText::new("OK").strong()).min_size(Vec2::new(130.0, 36.0))).clicked() {
-                self.uebernehmen(projekt, geraet);
-                schliessen = true;
-            }
-            if ui.add(egui::Button::new("Abbrechen").min_size(Vec2::new(130.0, 36.0))).clicked() {
-                schliessen = true;
-            }
-        });
         schliessen
     }
 

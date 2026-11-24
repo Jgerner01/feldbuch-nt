@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Protokoll modul="Fl&#228;chenberechnung">
+
+  <Seite breite="210" hoehe="297" randLinks="20" randRechts="20" randOben="20" randUnten="20"/>
+
+  <Schriften>
+    <Schrift id="0" name="Arial Narrow" typ="swiss"/>
+    <Schrift id="1" name="Courier New"  typ="modern"/>
+  </Schriften>
+
+  <Farben>
+    <Farbe r="42" g="72" b="130"/>
+    <Farbe r="190" g="40" b="40"/>
+  </Farben>
+
+  <Inhalt>
+
+    <Abschnitt typ="Titel" schrift="0" groesse="13" fett="true" unterlinie="true" abstandNach="80">
+      <Feld text="Fl&#228;chenberechnung"/>
+      <Feld text="     Bearbeiter: "/>
+      <Feld var="Bearbeiter"/>
+      <Feld text="     Datum/Uhrzeit:  "/>
+      <Feld var="Zeitpunkt"/>
+    </Abschnitt>
+
+    <Abschnitt typ="Zeile" schrift="1" groesse="10" fett="true" abstandNach="20">
+      <Feld var="Flaeche_m2" label="Fl&#228;che:   "/>
+      <Feld text="    "/>
+      <Feld var="Flaeche_ha" label="="/>
+    </Abschnitt>
+
+    <Abschnitt typ="Zeile" schrift="1" groesse="9" abstandNach="20">
+      <Feld var="Umfang" label="Umfang:   "/>
+      <Feld text="    "/>
+      <Feld var="Anzahl" label="Eckpunkte: "/>
+    </Abschnitt>
+
+    <Abschnitt typ="Zeile" schrift="1" groesse="9" abstandNach="20">
+      <Feld var="Schwerpunkt" label="Schwerpunkt: "/>
+    </Abschnitt>
+
+    <Abschnitt typ="Zeile" schrift="1" groesse="9" fett="true" farbe="2" abstandNach="20" zeigenWenn="HatHinweis">
+      <Feld var="Hinweis"/>
+    </Abschnitt>
+
+    <Abschnitt typ="Zeile" schrift="1" groesse="9" abstandNach="60">
+      <Feld text="Berechnung nach der Gau&#223;'schen Fl&#228;chenformel aus den Eckkoordinaten (Umlauf in der Reihenfolge der Auswahl)."/>
+    </Abschnitt>
+
+    <Abschnitt typ="Tabelle" schrift="1" groesse="8" kopfFett="true" ampel="false">
+      <Spalte var="Lfd" header="Lfd."    breite="4"  ausrichtung="R"/>
+      <Spalte var="Nr"  header="Punkt"   breite="12" ausrichtung="L"/>
+      <Spalte var="R"   header="R [m]"   breite="14" ausrichtung="R"/>
+      <Spalte var="H"   header="H [m]"   breite="14" ausrichtung="R"/>
+    </Abschnitt>
+
+    <Abschnitt typ="Leerzeile" schrift="0" groesse="8" abstandNach="60"/>
+
+    <Abschnitt typ="Bild" var="Lageplan" breite="165" hoehe="124" zeigenWenn="MitGrafik" abstandNach="20"/>
+
+  </Inhalt>
+
+</Protokoll>

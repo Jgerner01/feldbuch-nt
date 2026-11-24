@@ -6,6 +6,7 @@ mod absteckung;
 pub mod bildschirmtastatur;
 mod berechnungen;
 mod daten_editor;
+mod extraktion_ansicht;
 mod flaechenteilung;
 mod dxf_viewer;
 mod konvertierung;
@@ -42,6 +43,7 @@ enum Ansicht {
     Berechnungen(berechnungen::BerechnungenAnsicht),
     Absteckung(absteckung::AbsteckungAnsicht),
     Datenmanager(Box<daten_editor::DatenEditorAnsicht>),
+    Extraktion(extraktion_ansicht::ExtraktionAnsicht),
     Konvertierung(Box<konvertierung::KonvertierungAnsicht>),
     Testmessungen(Box<testmessungen::TestmessungenAnsicht>),
     Aufnahmetest(Box<aufnahmetest::AufnahmetestAnsicht>),

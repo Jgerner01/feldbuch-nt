@@ -52,6 +52,7 @@ pub fn zeichne(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
             Ansicht::Berechnungen(ansicht) => ansicht.zeichne(ui, &mut app.projekt),
             Ansicht::Absteckung(ansicht) => ansicht.zeichne(ui, &app.projekt, &mut app.geraet),
             Ansicht::Datenmanager(ansicht) => ansicht.zeichne(ui, &app.projekt),
+            Ansicht::Extraktion(ansicht) => ansicht.zeichne(ui, &app.projekt),
             Ansicht::Testmessungen(ansicht) => {
                 egui::ScrollArea::both().show(ui, |ui| ansicht.zeichne(ui, &mut app.projekt, &mut app.geraet));
             }
@@ -152,9 +153,11 @@ fn zeichne_start(app: &mut FeldbuchApp, ui: &mut egui::Ui) {
     knopf(ui, &DXF_VIEWER, ui.available_width(), DXF_KNOPF_HOEHE);
     ui.add_space(abstand);
     for zeile in &MODUL_ZEILEN {
+        // Eine einzelne Schaltfläche in der Zeile füllt die ganze Breite
+        let breite = if zeile.len() == 1 { ui.available_width() } else { halbe_breite };
         ui.horizontal(|ui| {
-            for modul in zeile {
-                knopf(ui, modul, halbe_breite, KNOPF_HOEHE);
+            for modul in *zeile {
+                knopf(ui, modul, breite, KNOPF_HOEHE);
             }
         });
     }
@@ -183,24 +186,25 @@ const FARBE_SONSTIGES: egui::Color32 = egui::Color32::from_rgb(100, 105, 115);
 const DXF_VIEWER: Modul = Modul { name: "DXF-Viewer", farbe: FARBE_ZENTRAL, schriftgroesse: SCHRIFT_ZENTRAL };
 
 /// Anordnung der übrigen Module in zwei Spalten.
-const MODUL_ZEILEN: [[Modul; 2]; 5] = [
-    [
+const MODUL_ZEILEN: [&[Modul]; 6] = [
+    &[
         Modul { name: "Freie Stationierung", farbe: FARBE_STATIONIERUNG, schriftgroesse: SCHRIFT_NORMAL },
         Modul { name: "Polarpunkte", farbe: FARBE_STATIONIERUNG, schriftgroesse: SCHRIFT_NORMAL },
     ],
-    [
+    &[
         Modul { name: "Berechnungen", farbe: FARBE_RECHNEN, schriftgroesse: SCHRIFT_NORMAL },
         Modul { name: "Absteckung", farbe: FARBE_RECHNEN, schriftgroesse: SCHRIFT_NORMAL },
     ],
-    [
+    &[
         Modul { name: "Datenmanager", farbe: FARBE_DATEN, schriftgroesse: SCHRIFT_NORMAL },
         Modul { name: "Konvertierung", farbe: FARBE_DATEN, schriftgroesse: SCHRIFT_NORMAL },
     ],
-    [
+    &[Modul { name: "Extraktion aus Messdaten", farbe: FARBE_DATEN, schriftgroesse: SCHRIFT_NORMAL }],
+    &[
         Modul { name: "Tachymeter-Kommunikation", farbe: FARBE_GERAET, schriftgroesse: SCHRIFT_NORMAL },
         Modul { name: "Rechenparameter", farbe: FARBE_GERAET, schriftgroesse: SCHRIFT_NORMAL },
     ],
-    [
+    &[
         Modul { name: "Testmessungen", farbe: FARBE_SONSTIGES, schriftgroesse: SCHRIFT_NORMAL },
         Modul { name: "Info", farbe: FARBE_SONSTIGES, schriftgroesse: SCHRIFT_NORMAL },
     ],
@@ -240,6 +244,7 @@ fn oeffne_modul(app: &mut FeldbuchApp, name: &str) {
         "Absteckung" => Ansicht::Absteckung(Default::default()),
         "Datenmanager" => Ansicht::Datenmanager(Default::default()),
         "Konvertierung" => app.konvertierung_oeffnen(),
+        "Extraktion aus Messdaten" => Ansicht::Extraktion(Default::default()),
         "Tachymeter-Kommunikation" => Ansicht::Kommunikation(Default::default()),
         "Rechenparameter" => Ansicht::Rechenparameter(rechenparameter_ansicht::RechenparameterAnsicht::default()),
         "Testmessungen" => Ansicht::Testmessungen(Box::new(super::testmessungen::TestmessungenAnsicht::neu(&app.projekt))),

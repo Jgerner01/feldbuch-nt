@@ -73,10 +73,17 @@ struct KnopfFarben {
     fill: Color32,
     fore: Color32,
     rand: Color32,
+    /// Zustand eines Umschalters: `Some(true)` eingeschaltet (orange Rahmen), `Some(false)` ausgeschaltet (abgedunkelt).
+    an: Option<bool>,
+}
+
+/// Farben mit Umschalterzustand (für Knöpfe mit Grafik).
+const fn zust(f: KnopfFarben, an: bool) -> KnopfFarben {
+    KnopfFarben { an: Some(an), ..f }
 }
 
 const fn farben(fill: (u8, u8, u8), fore: (u8, u8, u8), rand: (u8, u8, u8)) -> KnopfFarben {
-    KnopfFarben { fill: Color32::from_rgb(fill.0, fill.1, fill.2), fore: Color32::from_rgb(fore.0, fore.1, fore.2), rand: Color32::from_rgb(rand.0, rand.1, rand.2) }
+    KnopfFarben { fill: Color32::from_rgb(fill.0, fill.1, fill.2), fore: Color32::from_rgb(fore.0, fore.1, fore.2), rand: Color32::from_rgb(rand.0, rand.1, rand.2), an: None }
 }
 
 const BASIS: (u8, u8, u8) = (68, 74, 92);
@@ -97,38 +104,132 @@ enum Inhalt {
 /// Abstand des vollflächigen Bildes zum Knopfrand [pt].
 const BILD_VOLL_RAND: f32 = 2.0;
 
-/// Icon der Module Freie Stationierung und Polarpunkte: füllt den ganzen Knopf.
-fn modul_bild(name: &str) -> Inhalt {
+/// Grafik eines Knopfes (fertige Kachel, 96 × 96 px).
+pub(super) fn knopfbild(name: &str) -> egui::ImageSource<'static> {
     use egui::include_image;
-    Inhalt::BildVoll(match name {
+    match name {
+        "open" => include_image!("../../../icons/btn_dxf_oeffnen.png"),
+        "import_kor" => include_image!("../../../icons/btn_import_kor.png"),
+        "import_json" => include_image!("../../../icons/btn_import_json.png"),
+        "zoom_in" => include_image!("../../../icons/btn_zoom_plus.png"),
+        "zoom_out" => include_image!("../../../icons/btn_zoom_minus.png"),
+        "fit" => include_image!("../../../icons/btn_einpassen.png"),
+        "snap" => include_image!("../../../icons/btn_punktfang.png"),
+        "points" => include_image!("../../../icons/btn_katasterpunkte.png"),
+        "dxf_toggle" => include_image!("../../../icons/btn_dxf_anzeige.png"),
+        "new" => include_image!("../../../icons/btn_dxf_leeren.png"),
+        "loeschen" => include_image!("../../../icons/btn_loeschen.png"),
+        "index" => include_image!("../../../icons/btn_index.png"),
+        "digital" => include_image!("../../../icons/btn_digital.png"),
+        "aufnahme" => include_image!("../../../icons/btn_aufnahmetest.png"),
         "freie_stationierung" => include_image!("../../../icons/freie_stationierung.png"),
-        _ => include_image!("../../../icons/polarpunkte.png"),
-    })
+        "polarpunkte" => include_image!("../../../icons/btn_polarpunkte.png"),
+        "festpunkte" => include_image!("../../../icons/btn_festpunkte.png"),
+        "flaeche" => include_image!("../../../icons/btn_flaeche.png"),
+        "prisma" => include_image!("../../../icons/btn_prisma.png"),
+        "edm_prisma" => include_image!("../../../icons/btn_edm_prisma.png"),
+        "edm_rl" => include_image!("../../../icons/btn_edm_rl.png"),
+        "laser" => include_image!("../../../icons/btn_laser.png"),
+        "pdf" => include_image!("../../../icons/btn_pdf.png"),
+        "dxf_export" => include_image!("../../../icons/btn_dxf_export.png"),
+        "neuer_stp" => include_image!("../../../icons/btn_neuer_stp.png"),
+        "kontrolle" => include_image!("../../../icons/btn_kontrolle.png"),
+        _ => include_image!("../../../icons/btn_abstecken.png"),
+    }
 }
 
 fn bild(name: &str) -> Inhalt {
-    use egui::include_image;
-    Inhalt::Bild(match name {
-        "open" => include_image!("../../../icons/sidebar_open.png"),
-        "zoom_in" => include_image!("../../../icons/sidebar_zoom_in.png"),
-        "zoom_out" => include_image!("../../../icons/sidebar_zoom_out.png"),
-        "fit" => include_image!("../../../icons/sidebar_fit.png"),
-        "snap" => include_image!("../../../icons/sidebar_snap.png"),
-        "points" => include_image!("../../../icons/sidebar_points.png"),
-        "dxf_toggle" => include_image!("../../../icons/sidebar_dxf_toggle.png"),
-        "dxf_export" => include_image!("../../../icons/sidebar_dxf_export.png"),
-        "new" => include_image!("../../../icons/sidebar_new.png"),
-        "import_kor" => include_image!("../../../icons/sidebar_import_kor.png"),
-        _ => include_image!("../../../icons/sidebar_import_json.png"),
-    })
+    Inhalt::BildVoll(knopfbild(name))
+}
+
+/// Knopf, der nur aus seiner Grafik besteht. `an`: Zustand eines Umschalters (orange Rahmen bzw. abgedunkelt);
+/// unter der Maus erscheint ein heller Rahmen, gesperrte Knöpfe sind abgedunkelt.
+pub(super) fn bildknopf(ui: &mut egui::Ui, quelle: egui::ImageSource<'static>, groesse: Vec2, an: Option<bool>) -> egui::Response {
+    let antwort = ui.add_sized(groesse, egui::Button::new("").frame(false));
+    let seite = groesse.x.min(groesse.y) - 2.0 * BILD_VOLL_RAND;
+    let flaeche = Rect::from_center_size(antwort.rect.center(), Vec2::splat(seite));
+    let gedimmt = an == Some(false) || !ui.is_enabled();
+    let tint = if gedimmt { Color32::from_rgba_unmultiplied(255, 255, 255, 100) } else { Color32::WHITE };
+    egui::Image::new(quelle).tint(tint).paint_at(ui, flaeche);
+    let rahmen = antwort.rect.shrink(0.5);
+    if an == Some(true) {
+        ui.painter().rect_stroke(rahmen, 9.0, Stroke::new(2.5, Color32::from_rgb(255, 170, 40)), egui::StrokeKind::Inside);
+    } else if antwort.hovered() && ui.is_enabled() {
+        ui.painter().rect_stroke(rahmen, 9.0, Stroke::new(2.0, Color32::from_rgba_unmultiplied(255, 255, 255, 190)), egui::StrokeKind::Inside);
+    }
+    antwort
 }
 
 fn seitenknopf(ui: &mut egui::Ui, inhalt: Inhalt, f: KnopfFarben, tooltip: &str) -> bool {
+    seitenknopf_antwort(ui, inhalt, f, tooltip).clicked()
+}
+
+/// Menü, das beim Überfahren des Hauptknopfs `haupt` aufklappt und offen bleibt, solange die Maus auf Knopf
+/// oder Menü ist. `nach_links`: Menü links neben dem Knopf (Seitenleiste), sonst darunter (obere Leiste).
+pub(super) fn ausklappmenue(ctx: &egui::Context, id: &str, haupt: &egui::Response, nach_links: bool, inhalt: impl FnOnce(&mut egui::Ui)) {
+    let rect_id = egui::Id::new(("ausklappmenue", id));
+    let letzter: Option<Rect> = ctx.data(|d| d.get_temp(rect_id));
+    let offen = haupt.hovered() || matches!((letzter, ctx.pointer_hover_pos()), (Some(r), Some(p)) if r.expand(8.0).contains(p));
+    if !offen {
+        ctx.data_mut(|d| d.insert_temp(rect_id, Rect::NOTHING));
+        return;
+    }
+    let (pos, pivot) = if nach_links {
+        (Pos2::new(haupt.rect.left() - 2.0, haupt.rect.top()), Align2::RIGHT_TOP)
+    } else {
+        (Pos2::new(haupt.rect.left(), haupt.rect.bottom() + 2.0), Align2::LEFT_TOP)
+    };
+    let ergebnis = egui::Area::new(rect_id).order(egui::Order::Foreground).pivot(pivot).fixed_pos(pos).show(ctx, |ui| {
+        egui::Frame::popup(ui.style()).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
+            ui.horizontal(inhalt);
+        });
+    });
+    ctx.data_mut(|d| d.insert_temp(rect_id, ergebnis.response.rect));
+    ctx.request_repaint();
+}
+
+/// Eintrag einer Ausklappgruppe der Seitenleiste.
+struct Eintrag<'a> {
+    symbol: &'static str,
+    farben: KnopfFarben,
+    tip: &'a str,
+    aktiv: bool,
+}
+
+fn eintrag<'a>(symbol: &'static str, farben: KnopfFarben, tip: &'a str, aktiv: bool) -> Eintrag<'a> {
+    Eintrag { symbol, farben, tip, aktiv }
+}
+
+/// Grafik eines Eintrags (Name siehe `knopfbild`).
+fn symbol_inhalt(symbol: &'static str) -> Inhalt {
+    bild(symbol)
+}
+
+/// Ausklappgruppe der Seitenleiste: ein Knopf; beim Überfahren erscheinen die Einträge links daneben.
+/// Liefert den Index des angeklickten Eintrags.
+fn gruppenknopf(ui: &mut egui::Ui, id: &str, haupt: &'static str, f: KnopfFarben, aktiv: bool, eintraege: &[Eintrag]) -> Option<usize> {
+    let antwort = ui.add_enabled_ui(aktiv, |ui| seitenknopf_antwort(ui, symbol_inhalt(haupt), f, "")).inner;
+    if !aktiv {
+        return None;
+    }
+    let mut gewaehlt = None;
+    ausklappmenue(&ui.ctx().clone(), id, &antwort, true, |ui| {
+        for (i, e) in eintraege.iter().enumerate() {
+            let klick = ui.add_enabled_ui(e.aktiv, |ui| seitenknopf(ui, symbol_inhalt(e.symbol), e.farben, e.tip)).inner;
+            if klick {
+                gewaehlt = Some(i);
+            }
+        }
+    });
+    gewaehlt
+}
+
+fn seitenknopf_antwort(ui: &mut egui::Ui, inhalt: Inhalt, f: KnopfFarben, tooltip: &str) -> egui::Response {
     let groesse = Vec2::splat(KNOPF_GROESSE);
+    let mit_tip = |a: egui::Response| if tooltip.is_empty() { a } else { a.on_hover_text(tooltip) };
     if let Inhalt::BildVoll(quelle) = inhalt {
-        let antwort = ui.add_sized(groesse, egui::Button::new("").fill(f.fill).stroke(Stroke::new(1.0, f.rand)));
-        egui::Image::new(quelle).paint_at(ui, antwort.rect.shrink(BILD_VOLL_RAND));
-        return antwort.on_hover_text(tooltip).clicked();
+        return mit_tip(bildknopf(ui, quelle, groesse, f.an));
     }
     let knopf = match inhalt {
         Inhalt::BildVoll(_) => unreachable!(),
@@ -138,7 +239,21 @@ fn seitenknopf(ui: &mut egui::Ui, inhalt: Inhalt, f: KnopfFarben, tooltip: &str)
     .fill(f.fill)
     .stroke(Stroke::new(1.0, f.rand))
     .min_size(groesse);
-    ui.add_sized(groesse, knopf).on_hover_text(tooltip).clicked()
+    mit_tip(ui.add_sized(groesse, knopf))
+}
+
+/// Dunkles Fadenkreuz mit weißem Saum, auf hellem und dunklem Grund gut zu erkennen.
+fn zeichne_flaechen_zeiger(maler: &egui::Painter, pos: Pos2) {
+    const ARM: f32 = 14.0;
+    const LUECKE: f32 = 3.0;
+    for (breite, farbe) in [(4.5, Color32::WHITE), (1.8, Color32::from_rgb(200, 0, 40))] {
+        let stift = Stroke::new(breite, farbe);
+        maler.line_segment([Pos2::new(pos.x - ARM, pos.y), Pos2::new(pos.x - LUECKE, pos.y)], stift);
+        maler.line_segment([Pos2::new(pos.x + LUECKE, pos.y), Pos2::new(pos.x + ARM, pos.y)], stift);
+        maler.line_segment([Pos2::new(pos.x, pos.y - ARM), Pos2::new(pos.x, pos.y - LUECKE)], stift);
+        maler.line_segment([Pos2::new(pos.x, pos.y + LUECKE), Pos2::new(pos.x, pos.y + ARM)], stift);
+    }
+    maler.circle_filled(pos, 2.0, Color32::from_rgb(200, 0, 40));
 }
 
 /// Koordinaten als Statustext.
@@ -201,91 +316,135 @@ impl DxfViewer {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             ui.vertical_centered(|ui| {
                 ui.add_space(6.0);
-                if knopf(ui, bild("open"), BLAU_FARBEN, "DXF-Datei öffnen") {
-                    self.datei_oeffnen(projekt);
+                // Dateien: DXF öffnen, KOR/CSV importieren, JSON importieren
+                let datei = gruppenknopf(
+                    ui,
+                    "datei",
+                    "open",
+                    BLAU_FARBEN,
+                    frei,
+                    &[eintrag("open", BLAU_FARBEN, "DXF-Datei öffnen", true), eintrag("import_kor", ROT_FARBEN, "KOR / CSV importieren", true), eintrag("import_json", ROT_FARBEN, "JSON importieren", true)],
+                );
+                match datei {
+                    Some(0) => self.datei_oeffnen(projekt),
+                    Some(1) => self.import_kor_csv(projekt),
+                    Some(2) => self.import_json(projekt),
+                    _ => {}
                 }
                 ui.add_space(6.0);
-                if seitenknopf(ui, bild("zoom_in"), basis, "Zoom +") {
-                    self.zoom(ZOOM_KNOPF_FAKTOR, self.canvas_rect.center(), self.canvas_rect.center());
-                }
-                ui.add_space(2.0);
-                if seitenknopf(ui, bild("zoom_out"), basis, "Zoom −") {
-                    self.zoom(1.0 / ZOOM_KNOPF_FAKTOR, self.canvas_rect.center(), self.canvas_rect.center());
-                }
-                ui.add_space(2.0);
-                if seitenknopf(ui, bild("fit"), basis, "Einpassen") {
-                    self.fit_to_view();
+                // Zoom: Zoom +, Zoom −, Einpassen
+                let zoom = gruppenknopf(ui, "zoom", "zoom_in", basis, true, &[eintrag("zoom_in", basis, "Zoom +", true), eintrag("zoom_out", basis, "Zoom −", true), eintrag("fit", basis, "Einpassen", true)]);
+                match zoom {
+                    Some(0) => self.zoom(ZOOM_KNOPF_FAKTOR, self.canvas_rect.center(), self.canvas_rect.center()),
+                    Some(1) => self.zoom(1.0 / ZOOM_KNOPF_FAKTOR, self.canvas_rect.center(), self.canvas_rect.center()),
+                    Some(2) => self.fit_to_view(),
+                    _ => {}
                 }
                 ui.add_space(6.0);
 
-                let snap = if self.snap_aktiv { AKTIV_FARBEN } else { INAKTIV_FARBEN };
-                let tip = format!("Punktfang (Snap) – aktuell {}", if self.snap_aktiv { "EIN" } else { "AUS" });
-                if seitenknopf(ui, bild("snap"), snap, &tip) {
-                    self.snap_aktiv = !self.snap_aktiv;
-                    if frei {
-                        let _ = projekt.projektdaten.set_value("Einstellungen", "Snap", if self.snap_aktiv { "Aktiv" } else { "Inaktiv" });
+                // Punktfang und Katasterpunkte
+                let snap = zust(AKTIV_FARBEN, self.snap_aktiv);
+                let snap_tip = format!("Punktfang (Snap) – aktuell {}", if self.snap_aktiv { "EIN" } else { "AUS" });
+                let pk = zust(AKTIV_FARBEN, self.punkte_sichtbar);
+                let pk_tip = format!("Katasterpunkte – aktuell {}", if self.punkte_sichtbar { "EIN" } else { "AUS" });
+                let fang = gruppenknopf(
+                    ui,
+                    "fang",
+                    "snap",
+                    snap,
+                    true,
+                    &[eintrag("snap", snap, &snap_tip, true), eintrag("points", pk, &pk_tip, true)],
+                );
+                match fang {
+                    Some(0) => {
+                        self.snap_aktiv = !self.snap_aktiv;
+                        if frei {
+                            let _ = projekt.projektdaten.set_value("Einstellungen", "Snap", if self.snap_aktiv { "Aktiv" } else { "Inaktiv" });
+                        }
                     }
-                }
-                ui.add_space(2.0);
-                let pk = if self.punkte_sichtbar { AKTIV_FARBEN } else { INAKTIV_FARBEN };
-                let tip = format!("Katasterpunkte – aktuell {}", if self.punkte_sichtbar { "EIN" } else { "AUS" });
-                if seitenknopf(ui, bild("points"), pk, &tip) {
-                    self.punkte_sichtbar = !self.punkte_sichtbar;
-                    if frei {
-                        let _ = projekt.projektdaten.set_value("Einstellungen", "Katasterpunkte", if self.punkte_sichtbar { "Aktiv" } else { "Inaktiv" });
+                    Some(1) => {
+                        self.punkte_sichtbar = !self.punkte_sichtbar;
+                        if frei {
+                            let _ = projekt.projektdaten.set_value("Einstellungen", "Katasterpunkte", if self.punkte_sichtbar { "Aktiv" } else { "Inaktiv" });
+                        }
                     }
+                    _ => {}
                 }
                 ui.add_space(6.0);
-                let dxf = if self.dxf_sichtbar { farben((60, 100, 160), (255, 255, 255), (40, 80, 140)) } else { INAKTIV_FARBEN };
+                // DXF-Darstellung ein/aus, DXF leeren
+                let dxf = zust(BLAU_FARBEN, self.dxf_sichtbar);
                 let tip = format!("DXF-Darstellung – aktuell {}", if self.dxf_sichtbar { "EIN" } else { "AUS" });
-                if seitenknopf(ui, bild("dxf_toggle"), dxf, &tip) {
-                    self.dxf_sichtbar = !self.dxf_sichtbar;
+                let dxf_gruppe = gruppenknopf(
+                    ui,
+                    "dxf",
+                    "dxf_toggle",
+                    dxf,
+                    true,
+                    &[eintrag("dxf_toggle", dxf, &tip, true), eintrag("new", farben(BASIS, (200, 205, 225), BASIS_RAND), "DXF leeren", frei)],
+                );
+                match dxf_gruppe {
+                    Some(0) => self.dxf_sichtbar = !self.dxf_sichtbar,
+                    Some(1) => self.dialog = Some(Dialog::DxfLeeren),
+                    _ => {}
                 }
                 ui.add_space(6.0);
-                if knopf(ui, bild("new"), farben(BASIS, (200, 205, 225), BASIS_RAND), "DXF leeren") {
-                    self.dialog = Some(Dialog::DxfLeeren);
+                // Punkte löschen, Punkt-Index zurücksetzen, Digitalisierung
+                let loesch = zust(AKTIV_FARBEN, self.loesch_modus);
+                let dig = zust(AKTIV_FARBEN, self.digital_modus);
+                let (haupt_symbol, haupt_farben) = if self.digital_modus && !self.loesch_modus { ("digital", dig) } else { ("loeschen", loesch) };
+                let bearbeiten = gruppenknopf(
+                    ui,
+                    "bearbeiten",
+                    haupt_symbol,
+                    haupt_farben,
+                    frei,
+                    &[
+                        eintrag("loeschen", loesch, "Punkte löschen (Fenster aufziehen)", true),
+                        eintrag("index", farben(BASIS, (200, 210, 230), BASIS_RAND), "Punkt-Index zurücksetzen (neu nummerieren)", true),
+                        eintrag("digital", dig, "Digitalisierung: Klick → Punkt in KOR/CSV schreiben", true),
+                    ],
+                );
+                match bearbeiten {
+                    Some(0) => {
+                        self.loesch_modus = !self.loesch_modus;
+                        self.status = if self.loesch_modus {
+                            "Lösch-Modus: Fenster aufziehen  |  Erneut klicken zum Abbrechen".to_string()
+                        } else {
+                            "Lösch-Modus beendet.".to_string()
+                        };
+                    }
+                    Some(1) => self.dialog = Some(Dialog::IndexReset),
+                    Some(2) => self.digitalisierung_umschalten(projekt),
+                    _ => {}
                 }
                 ui.add_space(6.0);
-                if knopf(ui, bild("import_kor"), ROT_FARBEN, "KOR / CSV importieren") {
-                    self.import_kor_csv(projekt);
-                }
-                ui.add_space(2.0);
-                if knopf(ui, bild("import_json"), ROT_FARBEN, "JSON importieren") {
-                    self.import_json(projekt);
-                }
-                ui.add_space(6.0);
-                let loesch = if self.loesch_modus { farben((160, 40, 40), (255, 255, 255), (130, 20, 20)) } else { farben(BASIS, (220, 200, 200), BASIS_RAND) };
-                if knopf(ui, Inhalt::Text("⌫", 16.0), loesch, "Punkte löschen (Fenster aufziehen)") {
-                    self.loesch_modus = !self.loesch_modus;
-                    self.status =
-                        if self.loesch_modus { "Lösch-Modus: Fenster aufziehen  |  Erneut klicken zum Abbrechen".to_string() } else { "Lösch-Modus beendet.".to_string() };
-                }
-                ui.add_space(6.0);
-                if knopf(ui, Inhalt::Text("↻", 16.0), farben(BASIS, (200, 210, 230), BASIS_RAND), "Punkt-Index zurücksetzen (neu nummerieren)") {
-                    self.dialog = Some(Dialog::IndexReset);
-                }
-                ui.add_space(6.0);
-                let dig = if self.digital_modus { farben((36, 120, 60), (255, 255, 255), (20, 90, 40)) } else { farben(BASIS, (200, 230, 210), BASIS_RAND) };
-                if knopf(ui, Inhalt::Text("✎", 16.0), dig, "Digitalisierung: Klick → Punkt in KOR/CSV schreiben") {
-                    self.digitalisierung_umschalten(projekt);
-                }
-                ui.add_space(6.0);
-                if knopf(ui, Inhalt::Text("⊙", 16.0), farben((40, 70, 110), (180, 210, 255), (25, 50, 85)), "Aufnahmetest: Koordinaten messen & Punkt anfahren (motorisiert)")
+                if knopf(ui, bild("aufnahme"), farben((40, 70, 110), (180, 210, 255), (25, 50, 85)), "Aufnahmetest: Koordinaten messen & Punkt anfahren (motorisiert)")
                 {
                     self.wunsch = Some(Wunsch::Aufnahmetest);
                 }
                 ui.add_space(6.0);
-                if knopf(ui, modul_bild("freie_stationierung"), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Freie Stationierung") {
-                    self.wunsch = Some(Wunsch::FreieStationierung);
-                }
-                ui.add_space(6.0);
-                if knopf(ui, modul_bild("polarpunkte"), farben((80, 55, 20), (240, 210, 150), (60, 40, 10)), "Polarpunkte") {
-                    self.wunsch = Some(Wunsch::Polarpunkte);
-                }
-                ui.add_space(6.0);
-                if knopf(ui, Inhalt::Text("→FP", 11.0), farben((40, 90, 70), (255, 255, 255), (25, 65, 50)), "Gemessene Neupunkte als Festpunkte übernehmen (lokales System)")
-                {
-                    self.festpunkte_dialog_oeffnen(projekt);
+                // Stationierung und Polarpunkte, Festpunkte übernehmen, Flächenberechnung
+                let modul = farben((80, 55, 20), (240, 210, 150), (60, 40, 10));
+                let flaeche_farben = zust(AKTIV_FARBEN, self.flaeche.is_some());
+                let module = gruppenknopf(
+                    ui,
+                    "module",
+                    "freie_stationierung",
+                    modul,
+                    frei,
+                    &[
+                        eintrag("freie_stationierung", modul, "Freie Stationierung", true),
+                        eintrag("polarpunkte", modul, "Polarpunkte", true),
+                        eintrag("festpunkte", farben((40, 90, 70), (255, 255, 255), (25, 65, 50)), "Gemessene Neupunkte als Festpunkte übernehmen (lokales System)", true),
+                        eintrag("flaeche", flaeche_farben, "Flächenberechnung: Eckpunkte im Plan anklicken, Fläche und Protokoll", true),
+                    ],
+                );
+                match module {
+                    Some(0) => self.wunsch = Some(Wunsch::FreieStationierung),
+                    Some(1) => self.wunsch = Some(Wunsch::Polarpunkte),
+                    Some(2) => self.festpunkte_dialog_oeffnen(projekt),
+                    Some(3) => self.flaeche_umschalten(),
+                    _ => {}
                 }
             });
         });
@@ -479,6 +638,11 @@ impl DxfViewer {
         if self.loesch_modus && antwort.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
         }
+        // Flächenberechnung: der Systemzeiger ist auf hellem Plan kaum zu sehen und wird durch ein eigenes Fadenkreuz ersetzt
+        let flaeche_zeiger = if self.flaeche.is_some() { antwort.hover_pos() } else { None };
+        if flaeche_zeiger.is_some() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        }
 
         if self.ist_auswahl() {
             self.verarbeite_auswahl_eingabe(ui, &antwort, ursprung);
@@ -571,6 +735,10 @@ impl DxfViewer {
             self.zeichne_transformationspunkte(&maler, &a, projekt);
         }
         self.zeichne_absteckziele(&maler, &a);
+        self.zeichne_flaeche(&maler, &a, projekt);
+        if let Some(pos) = flaeche_zeiger {
+            zeichne_flaechen_zeiger(&maler, pos);
+        }
         if self.residuen_sichtbar && !self.ellipsen.is_empty() {
             self.zeichne_ellipsen_massstab(&maler, rect);
         }
@@ -846,6 +1014,9 @@ impl DxfViewer {
     /// Wird aufgerufen, wenn ein Punkt per Klick gewählt wurde (PointPicked mit isClick).
     fn punkt_gewaehlt(&mut self, projekt: &Projekt, punkt: (f64, f64)) {
         let (x, y) = punkt;
+        if self.flaeche_punkt_gewaehlt(x, y) {
+            return;
+        }
         if self.digital_modus {
             let mut nr = self.txt_punkt_nr.trim().to_string();
             let code = self.txt_code.trim().to_string();

@@ -4,6 +4,7 @@
 
 pub mod absteckung;
 pub mod bogenschnitt;
+pub mod flaeche;
 pub mod flaechenteilung;
 pub mod freie_stationierung;
 pub mod gauss;

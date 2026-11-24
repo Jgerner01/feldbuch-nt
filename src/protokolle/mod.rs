@@ -5,6 +5,7 @@
 pub mod absteckung;
 pub mod berechnungen;
 pub mod fl_teilung;
+pub mod flaeche;
 pub mod polar;
 pub mod rtf;
 pub mod stationierung;
@@ -29,6 +30,7 @@ pub const VORLAGE_BOGENSCHNITT: &str = include_str!("../../vorlagen/Bogenschnitt
 pub const VORLAGE_HOCHPUNKT: &str = include_str!("../../vorlagen/Hochpunktherablegung_Protokoll.xml");
 pub const VORLAGE_TRANSFORMATION: &str = include_str!("../../vorlagen/KoordTransformation_Protokoll.xml");
 pub const VORLAGE_FLAECHENTEILUNG: &str = include_str!("../../vorlagen/Flaechenteilung_Protokoll.xml");
+pub const VORLAGE_FLAECHENBERECHNUNG: &str = include_str!("../../vorlagen/Flaechenberechnung_Protokoll.xml");
 pub const VORLAGE_POLARPUNKTE: &str = include_str!("../../vorlagen/Polarpunkte_Protokoll.xml");
 pub const VORLAGE_PUNKTABSTECKUNG: &str = include_str!("../../vorlagen/Punktabsteckung_Protokoll.xml");
 pub const VORLAGE_ACHSABSTECKUNG: &str = include_str!("../../vorlagen/Achsabsteckung_Protokoll.xml");
@@ -238,6 +240,7 @@ mod tests {
             VORLAGE_HOCHPUNKT,
             VORLAGE_TRANSFORMATION,
             VORLAGE_FLAECHENTEILUNG,
+            VORLAGE_FLAECHENBERECHNUNG,
             VORLAGE_POLARPUNKTE,
             VORLAGE_PUNKTABSTECKUNG,
             VORLAGE_ACHSABSTECKUNG,

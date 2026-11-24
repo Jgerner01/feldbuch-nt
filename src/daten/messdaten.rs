@@ -62,7 +62,7 @@ pub fn neue_aufstellung_id(nr: &str) -> String {
     format!("{sicher}-{}", Local::now().format("%Y%m%dT%H%M%S%f"))
 }
 
-fn messzeit(zeit: NaiveDateTime) -> String {
+pub(crate) fn messzeit(zeit: NaiveDateTime) -> String {
     use chrono::TimeZone;
     // Nur eindeutig zuordenbare neue lokale Zeiten mit Offset ausgeben.
     Local.from_local_datetime(&zeit).single().map(|z| z.to_rfc3339_opts(chrono::SecondsFormat::Secs, false)).unwrap_or_else(|| zeit.format("%Y-%m-%d %H:%M:%S").to_string())
