@@ -22,7 +22,7 @@ impl Protokoll {
     pub fn fuer(modell: TachymeterModell, sprache: Sprache) -> Self {
         match modell {
             TachymeterModell::TopconGts => Self::Topcon,
-            TachymeterModell::GnssNmea | TachymeterModell::Manuell => Self::Keines,
+            TachymeterModell::GnssSapos | TachymeterModell::Manuell => Self::Keines,
             TachymeterModell::TrimbleS3 => Self::GeoCom,
             _ => match sprache {
                 Sprache::GeoCom => Self::GeoCom,

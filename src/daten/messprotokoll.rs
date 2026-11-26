@@ -32,7 +32,7 @@ const MGON_PRO_RAD: f64 = 200_000.0 / std::f64::consts::PI;
 const ZEIT_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
 /// Trenner mehrerer Rohantworten in einer Zelle.
 pub const ROH_TRENNER: &str = " | ";
-/// Anzahl GNSS-Spalten (aus dem früheren Tagesprotokoll übernommen, derzeit leer).
+/// Anzahl GNSS-Spalten (Breite, Länge, ellipsoidische Höhe, Genauigkeit Lage/Höhe, Fix, Satelliten, HDOP, PDOP).
 const GNSS_SPALTEN: usize = 9;
 
 /// Spalten des Messprotokolls.
@@ -111,10 +111,14 @@ pub enum Ereignis {
     Bemerkung,
     /// Zeile aus einem alten Data-protocol-*.csv (nur Nachweis, wird beim Ableiten nicht verwendet).
     Altmessung,
+    /// GNSS-Empfänger verbunden/getrennt, SAPOS, Konfiguration
+    GnssVerbindung,
+    /// GNSS-Einpassung übernommen, gewechselt oder gelöscht
+    Einpassung,
 }
 
 impl Ereignis {
-    pub const ALLE: [Ereignis; 18] = [
+    pub const ALLE: [Ereignis; 20] = [
         Self::Projekt,
         Self::Geraet,
         Self::Edm,
@@ -133,6 +137,8 @@ impl Ereignis {
         Self::Verworfen,
         Self::Bemerkung,
         Self::Altmessung,
+        Self::GnssVerbindung,
+        Self::Einpassung,
     ];
 
     pub fn name(self) -> &'static str {
@@ -155,12 +161,33 @@ impl Ereignis {
             Self::Verworfen => "VERWORFEN",
             Self::Bemerkung => "BEMERKUNG",
             Self::Altmessung => "ALTMESSUNG",
+            Self::GnssVerbindung => "GNSS_VERBINDUNG",
+            Self::Einpassung => "EINPASSUNG",
         }
     }
 
     pub fn aus_name(name: &str) -> Option<Self> {
         Self::ALLE.into_iter().find(|e| e.name().eq_ignore_ascii_case(name.trim()))
     }
+}
+
+/// Werte einer GNSS-Messung für das Messprotokoll.
+#[derive(Clone, Debug, Default)]
+pub struct GnssWerte {
+    pub breite: f64,
+    pub laenge: f64,
+    /// ellipsoidische Höhe des Bodenpunkts
+    pub h_ell: f64,
+    /// Streuung der Mittelung (Lage, Höhe) [m]
+    pub gen_lage_m: Option<f64>,
+    pub gen_hoehe_m: Option<f64>,
+    pub fix: String,
+    pub satelliten: Option<u8>,
+    pub pdop: Option<f64>,
+    /// Stabhöhe [m]
+    pub stab_m: f64,
+    /// weitere Angaben (Schlüssel, Wert) für die Spalte „Roh“
+    pub zusatz: Vec<(String, String)>,
 }
 
 /// Eine Zeile des Messprotokolls.
@@ -308,6 +335,27 @@ impl Eintrag {
 
     pub fn exzentrizitaet(mut self, laengs: f64, quer: f64) -> Self {
         (self.exz_l, self.exz_q) = (endlich(laengs), endlich(quer));
+        self
+    }
+
+    /// GNSS-Messwerte: belegt die GNSS-Spalten, weitere Angaben (UTM, Höhenbezug, Epochen, Mountpoint …) stehen in „Roh“.
+    pub fn mit_gnss(mut self, g: &GnssWerte) -> Self {
+        let zahl_text = |w: Option<f64>, s: usize| zahl(w, s);
+        self.gnss = [
+            f(g.breite, 9),
+            f(g.laenge, 9),
+            f(g.h_ell, 4),
+            zahl_text(g.gen_lage_m, 4),
+            zahl_text(g.gen_hoehe_m, 4),
+            g.fix.clone(),
+            g.satelliten.map_or_else(String::new, |n| n.to_string()),
+            String::new(),
+            zahl_text(g.pdop, 2),
+        ];
+        self.zh = endlich(g.stab_m);
+        let zusatz = g.zusatz.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(ROH_TRENNER);
+        self.roh = if self.roh.is_empty() { zusatz } else { format!("{zusatz}{ROH_TRENNER}{}", self.roh) };
+        self.quelle = QUELLE_GERAET.to_string();
         self
     }
 

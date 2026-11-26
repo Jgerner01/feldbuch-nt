@@ -6,7 +6,6 @@ pub mod anfahren;
 pub mod befehle;
 pub mod einrichtung;
 pub mod geocom;
-pub mod gnss;
 pub mod gsi;
 pub mod hilfen;
 pub mod konfiguration;

@@ -1,6 +1,6 @@
 // Zweck:    Tachymeter-Modelle mit Voreinstellungen, Anzeigetexten und der wählbaren Gerätesprache
 //           (Leica GeoCOM oder GSI Online)
-// Hardware: Leica TS06, TPS300-Serie, TPS1200 (GeoCOM), Topcon GTS, GNSS NMEA 0183
+// Hardware: Leica TS06, TPS300-Serie, TPS1200 (GeoCOM), Topcon GTS, GNSS-Empfänger u-blox ZED-F9P (SAPOS)
 // Autor:    Johann Gerner
 
 /// Unterstützte Messgeräte.
@@ -17,7 +17,8 @@ pub enum TachymeterModell {
     LeicaTs11,
     TrimbleS3,
     TopconGts,
-    GnssNmea,
+    /// GNSS-Empfänger u-blox ZED-F9P mit SAPOS HEPS; Anbindung über das GNSS-Modul, nicht über die Tachymeter-Schnittstelle.
+    GnssSapos,
     Manuell,
 }
 
@@ -30,7 +31,7 @@ pub const ALLE_MODELLE: [TachymeterModell; 9] = [
     TachymeterModell::LeicaTs11,
     TachymeterModell::TrimbleS3,
     TachymeterModell::TopconGts,
-    TachymeterModell::GnssNmea,
+    TachymeterModell::GnssSapos,
     TachymeterModell::Manuell,
 ];
 
@@ -60,8 +61,10 @@ impl Sprache {
 const BAUD_GEOCOM_SCHNELL: u32 = 38_400;
 /// Standard-Baudrate der meisten Geräte.
 const BAUD_STANDARD: u32 = 9_600;
-/// Baudrate für NMEA-0183-Empfänger.
-const BAUD_NMEA: u32 = 4_800;
+/// Baudrate des GNSS-Empfängers an USB (nur Anzeige, die Verbindung stellt das GNSS-Modul her).
+const BAUD_GNSS: u32 = 115_200;
+/// Früherer Name des GNSS-Gerätetyps (NMEA 0183); wird beim Laden auf GNSS-SAPOS umgestellt.
+const ALTER_GNSS_NAME: &str = "GnssNmea";
 
 /// Voreinstellung der seriellen Schnittstelle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,14 +84,22 @@ impl TachymeterModell {
             Self::LeicaTs11 => "LeicaTS11",
             Self::TrimbleS3 => "TrimbleS3",
             Self::TopconGts => "TopconGTS",
-            Self::GnssNmea => "GnssNmea",
+            Self::GnssSapos => "GnssSapos",
             Self::Manuell => "Manuell",
         }
     }
 
     /// Findet ein Modell anhand des gespeicherten Namens.
     pub fn aus_name(name: &str) -> Option<Self> {
+        if name.eq_ignore_ascii_case(ALTER_GNSS_NAME) {
+            return Some(Self::GnssSapos);
+        }
         ALLE_MODELLE.into_iter().find(|m| m.name().eq_ignore_ascii_case(name))
+    }
+
+    /// Ist das Gerät ein GNSS-Empfänger (Messung über das GNSS-Modul)?
+    pub fn ist_gnss(self) -> bool {
+        self == Self::GnssSapos
     }
 
     /// Kann bei diesem Modell zwischen GeoCOM und GSI Online gewählt werden?
@@ -108,7 +119,7 @@ impl TachymeterModell {
     pub fn preset(self) -> SeriellPreset {
         let baud = match self {
             Self::LeicaGeoCom => BAUD_GEOCOM_SCHNELL,
-            Self::GnssNmea => BAUD_NMEA,
+            Self::GnssSapos => BAUD_GNSS,
             _ => BAUD_STANDARD,
         };
         SeriellPreset { baud, datenbits: 8 }
@@ -124,7 +135,7 @@ impl TachymeterModell {
             Self::LeicaTs11 => "Leica TS11",
             Self::TrimbleS3 => "Trimble S3",
             Self::TopconGts => "Topcon GTS/GPT",
-            Self::GnssNmea => "GNSS  (NMEA 0183)",
+            Self::GnssSapos => "GNSS – SAPOS  (u-blox ZED-F9P)",
             Self::Manuell => "Manuell",
         }
     }
@@ -142,6 +153,8 @@ mod tests {
         assert_eq!(TachymeterModell::aus_name("gibtsnicht"), None);
         // Sokkia wird nicht mehr unterstützt
         assert_eq!(TachymeterModell::aus_name("SokkiaSDR"), None);
+        // Der frühere NMEA-Typ wird auf GNSS-SAPOS umgestellt
+        assert_eq!(TachymeterModell::aus_name("GnssNmea"), Some(TachymeterModell::GnssSapos));
     }
 
     #[test]
@@ -152,7 +165,9 @@ mod tests {
         assert!(TachymeterModell::LeicaTps300.sprache_waehlbar());
         assert!(!TachymeterModell::TrimbleS3.sprache_waehlbar());
         assert!(!TachymeterModell::Manuell.sprache_waehlbar());
-        assert_eq!(TachymeterModell::GnssNmea.preset().baud, 4800);
+        assert_eq!(TachymeterModell::GnssSapos.preset().baud, 115_200);
+        assert!(TachymeterModell::GnssSapos.ist_gnss());
+        assert!(!TachymeterModell::LeicaTs06.ist_gnss());
         assert_eq!(TachymeterModell::LeicaGeoCom.preset().baud, 38_400);
         assert_eq!(TachymeterModell::LeicaTps300.preset().baud, 9_600);
         // Die TS06 arbeitet im Praxistest über Bluetooth mit 9600 Baud (Protokoll vom 4.11.2026)

@@ -1,11 +1,12 @@
 // Zweck:    Einstiegspunkt des Feldbuchs (Rust-Neuimplementierung "Feldbuch-NT")
-// Hardware: Tachymeter über serielle Schnittstelle (Leica, Sokkia, Topcon, GNSS)
+// Hardware: Tachymeter über serielle Schnittstelle (Leica, Sokkia, Topcon), GNSS-Empfänger u-blox ZED-F9P
 // Autor:    Johann Gerner
 
 #![windows_subsystem = "windows"]
 
 mod daten;
 mod dxf;
+mod gnss;
 mod grundlagen;
 mod gui;
 mod protokolle;

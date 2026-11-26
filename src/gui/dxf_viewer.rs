@@ -96,6 +96,9 @@ mod absteckung;
 mod auswahl;
 mod export;
 mod flaechenberechnung;
+mod gnss;
+mod gnss_absteckung;
+mod gnss_einpassung;
 mod pdf_export;
 mod messdaten_eingabe;
 mod messen;
@@ -340,6 +343,8 @@ pub struct DxfViewer {
     offen: bool,
     /// Auswahlmodus für die Konvertierung (eigene Instanz, nur grafische Funktionen).
     auswahl_modus: Option<Box<auswahl::AuswahlModus>>,
+    /// GNSS-Betrieb (Messquelle GNSS-Empfänger): Live-Position, Einpassung, Absteckung.
+    gnss: Box<gnss::GnssZustand>,
 }
 
 impl Default for DxfViewer {
@@ -413,6 +418,7 @@ impl Default for DxfViewer {
             startgroesse_gesetzt: false,
             offen: true,
             auswahl_modus: None,
+            gnss: Box::default(),
         }
     }
 }
@@ -486,7 +492,10 @@ impl DxfViewer {
 
         self.neupunkt_modus = projekt.hat_gueltige_station() && projekt.einstellungen.letzter_modus_neupunkt;
         self.aktualisiere_lokales_system(projekt);
-        self.pruefe_aufstellung_beim_start(projekt);
+        // Im GNSS-Betrieb gibt es keine Aufstellung zu prüfen
+        if !projekt.einstellungen.tachymeter_modell.ist_gnss() {
+            self.pruefe_aufstellung_beim_start(projekt);
+        }
         if !self.lokales_system
             && !projekt.einstellungen.hat_dxf_datei()
             && (!self.overlay.is_empty() || !self.import_layer.is_empty() || !self.neupunkte.is_empty())
@@ -932,7 +941,7 @@ impl DxfViewer {
     // ── Hauptfenster des Viewers ──────────────────────────────────────────────
 
     /// Zeigt den Viewer als eigenes Fenster. Der Rückgabewert ist `false`, wenn er geschlossen wurde.
-    pub fn zeige(&mut self, ctx: &egui::Context, projekt: &mut Projekt, geraet: &mut Geraet) -> bool {
+    pub fn zeige(&mut self, ctx: &egui::Context, projekt: &mut Projekt, geraet: &mut Geraet, mut gnss: Option<&mut crate::gnss::ansicht::app::App>) -> bool {
         if !self.initialisiert {
             self.initialisiere(projekt);
         }
@@ -955,12 +964,31 @@ impl DxfViewer {
                 self.war_fokussiert = fokus;
                 self.bediene_geraet(projekt, geraet);
             }
+            // Messquelle GNSS: Momentaufnahme der GNSS-Sitzung vor dem Zeichnen
+            self.gnss.aktiv = !self.ist_auswahl() && projekt.einstellungen.tachymeter_modell.ist_gnss();
+            if self.gnss.aktiv
+                && let Some(g) = gnss.as_deref_mut()
+            {
+                self.gnss_vorher(g, projekt);
+            }
             self.zeichne(ui, projekt, geraet);
             if !self.ist_auswahl() {
-                self.zeige_absteckfenster(&ui.ctx().clone(), projekt, geraet);
-                self.zeige_flaechenfenster(&ui.ctx().clone(), projekt);
+                let ctx = ui.ctx().clone();
+                if self.gnss.aktiv {
+                    self.zeige_einpassfenster(&ctx, projekt);
+                    self.zeige_gnss_absteckung(&ctx, projekt);
+                    self.zeige_gnss_startfrage(&ctx, projekt);
+                } else {
+                    self.zeige_absteckfenster(&ctx, projekt, geraet);
+                }
+                self.zeige_flaechenfenster(&ctx, projekt);
             }
-            let ruhe = !(geraet.ist_verbunden() || geraet.verbindet() || geraet.beschaeftigt());
+            if self.gnss.aktiv
+                && let Some(g) = gnss.as_deref_mut()
+            {
+                self.gnss_nachher(g);
+            }
+            let ruhe = !(geraet.ist_verbunden() || geraet.verbindet() || geraet.beschaeftigt() || (self.gnss.aktiv && self.gnss.status.connected));
             ui.ctx().request_repaint_after(if ruhe { REPAINT_INTERVALL_RUHE } else { REPAINT_INTERVALL });
 
             if ui.ctx().input(|i| i.viewport().close_requested()) {
@@ -1015,6 +1043,7 @@ impl DxfViewer {
         if let Some(mut a) = self.absteckung.take() {
             a.beim_schliessen_des_viewers(projekt);
         }
+        self.gnss_beim_schliessen(projekt);
         if let Err(e)=projekt.rechenparameter.speichern() {self.status=format!("PDF-Vorgaben konnten nicht gespeichert werden: {e}");}
         projekt.einstellungen.letzter_modus_neupunkt = self.neupunkt_modus;
         let _ = projekt.einstellungen.speichern();
@@ -1055,7 +1084,11 @@ impl DxfViewer {
             .exact_size(TOOLBAR_HOEHE)
             .frame(egui::Frame::new().fill(TOOLBAR_FARBE))
             .show(ui, |ui| {
-                ui.add_enabled_ui(frei, |ui| self.zeichne_toolbar(ui, projekt, geraet));
+                if self.gnss.aktiv {
+                    self.zeichne_toolbar_gnss(ui, projekt);
+                } else {
+                    ui.add_enabled_ui(frei, |ui| self.zeichne_toolbar(ui, projekt, geraet));
+                }
             });
         if !frei {
             egui::Panel::top("dxf_auswahl_leiste")
@@ -1083,7 +1116,11 @@ impl DxfViewer {
 
         // A-Taste des Toughpad (als MESS_TASTE konfiguriert) löst die Messung aus, solange kein Dialog offen ist
         let absteck_ziel = self.absteckung.as_ref().is_some_and(|a| a.ziel.is_some());
-        if self.dialog.is_none() && absteck_ziel && self.mess_taste {
+        if self.gnss.aktiv {
+            if self.dialog.is_none() && self.mess_taste {
+                self.gnss_messen_geklickt(projekt);
+            }
+        } else if self.dialog.is_none() && absteck_ziel && self.mess_taste {
             self.absteck_messen(projekt, geraet);
         } else if self.dialog.is_none() && self.neupunkt_modus && self.mess_taste {
             if self.getrennt_messung.is_some() {

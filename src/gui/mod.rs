@@ -82,6 +82,12 @@ pub struct FeldbuchApp {
     auswahl_viewer: Option<Box<dxf_viewer::DxfViewer>>,
     /// Erkennt Änderungen von Verbindung, EDM-Modus und Prisma für das Messprotokoll.
     messprotokoll_beobachter: crate::daten::messprotokoll::Beobachter,
+    /// GNSS-Sitzung (Empfänger, SAPOS); läuft weiter, wenn das GNSS-Fenster geschlossen ist.
+    gnss: Option<Box<crate::gnss::ansicht::app::App>>,
+    /// Das GNSS-Fenster ist geöffnet.
+    gnss_fenster: bool,
+    /// Verbindungszustand der GNSS-Sitzung im letzten Bild (für das Messprotokoll).
+    gnss_war_verbunden: bool,
 }
 
 /// Gewünschte Fenstergröße (Innenfläche) beim Start in Punkten: Full HD.
@@ -95,6 +101,8 @@ const TASKLEISTE_RESERVE: f32 = 48.0;
 const FENSTER_FREIE_STATIONIERUNG: [f32; 2] = [1000.0, 780.0];
 /// Fenstergröße der Polarpunkte (Innenfläche) in Punkten.
 const FENSTER_POLARPUNKTE: [f32; 2] = [1150.0, 780.0];
+/// Fenstergröße der GNSS-Vermessung (Innenfläche) in Punkten.
+const FENSTER_GNSS: [f32; 2] = [1280.0, 820.0];
 /// Mindestgröße der Modulfenster.
 const FENSTER_MIN: [f32; 2] = [760.0, 480.0];
 
@@ -172,7 +180,7 @@ impl FeldbuchApp {
         let mut meldungen = Vec::new();
         // Gespeichertes Gerät einmalig verbinden (nicht bei GNSS/manuell ohne Port)
         // (im Hintergrund, höchstens 10 s – das Fenster bleibt bedienbar)
-        if !geraet.einstellung.port.is_empty() {
+        if !geraet.einstellung.port.is_empty() && !geraet.modell.ist_gnss() {
             if let Err(fehler) = geraet.starte_verbinden() {
                 meldungen.push(format!(
                     "Tachymeter ({}) konnte nicht verbunden werden:\n{fehler}",
@@ -203,7 +211,85 @@ impl FeldbuchApp {
             konvertierung_merker: None,
             auswahl_viewer: None,
             messprotokoll_beobachter: crate::daten::messprotokoll::Beobachter::default(),
+            gnss: None,
+            gnss_fenster: false,
+            gnss_war_verbunden: false,
         }
+    }
+
+    /// Öffnet das GNSS-Fenster; die Sitzung wird beim ersten Öffnen angelegt.
+    pub(crate) fn oeffne_gnss(&mut self) {
+        self.gnss_fenster = true;
+    }
+
+    /// Führt einen Wunsch der Messgerät-Kommunikation an die GNSS-Sitzung aus.
+    pub(crate) fn gnss_ausfuehren(&mut self, wunsch: kommunikation::GnssWunsch, ctx: &egui::Context) {
+        match wunsch {
+            kommunikation::GnssWunsch::Fenster => self.oeffne_gnss(),
+            kommunikation::GnssWunsch::Verbinden => {
+                let gnss = self.gnss.get_or_insert_with(|| Box::new(crate::gnss::ansicht::app::App::new(ctx)));
+                gnss.verbinde(ctx);
+                if let Some((text, true)) = gnss.meldung() {
+                    self.meldungen.push(format!("GNSS: {text}"));
+                }
+                protokoll::log("GNSS", "Verbinden angefordert");
+            }
+            kommunikation::GnssWunsch::Trennen => {
+                if let Some(gnss) = self.gnss.as_mut() {
+                    gnss.trenne();
+                    protokoll::log("GNSS", "Getrennt");
+                }
+            }
+        }
+    }
+
+    /// Status der GNSS-Sitzung für die Lampe im Hauptmenü.
+    pub(crate) fn gnss_status(&self) -> Option<crate::gnss::ansicht::app::LinkStatus> {
+        self.gnss.as_ref().map(|g| g.status())
+    }
+
+    /// Hält die GNSS-Sitzung am Laufen und zeigt das GNSS-Fenster, falls geöffnet.
+    fn bediene_gnss(&mut self, ctx: &egui::Context) {
+        if self.gnss_fenster && self.gnss.is_none() {
+            self.gnss = Some(Box::new(crate::gnss::ansicht::app::App::new(ctx)));
+            protokoll::log("GNSS", "GNSS-Modul gestartet");
+        }
+        let Some(gnss) = self.gnss.as_mut() else {
+            return;
+        };
+        gnss.aktualisiere(ctx);
+        // Verbinden und Trennen im Messprotokoll festhalten
+        let status = gnss.status();
+        if status.connected != self.gnss_war_verbunden {
+            self.gnss_war_verbunden = status.connected;
+            let text = if status.connected {
+                format!("GNSS verbunden: {}{}", if status.replay { "Wiedergabe".to_string() } else { status.device.clone() }, ", Empfängerkonfiguration dauerhaft (Flash nur bei Änderungen)")
+            } else {
+                "GNSS getrennt".to_string()
+            };
+            crate::daten::messprotokoll::protokolliere(
+                &self.projekt.einstellungen,
+                crate::daten::messprotokoll::Eintrag::neu(crate::daten::messprotokoll::Ereignis::GnssVerbindung).quelle(crate::daten::messprotokoll::QUELLE_GERAET).text(text.clone()),
+            );
+            protokoll::log("GNSS", &text);
+        }
+        if !self.gnss_fenster {
+            return;
+        }
+        let id = egui::ViewportId::from_hash_of("gnss_vermessung");
+        let builder = egui::ViewportBuilder::default()
+            .with_title("GNSS-Vermessung")
+            .with_inner_size(FENSTER_GNSS)
+            .with_min_inner_size(FENSTER_MIN);
+        let mut offen = true;
+        ctx.show_viewport_immediate(id, builder, |ui, _klasse| {
+            gnss.zeichne(ui);
+            if ui.ctx().input(|i| i.viewport().close_requested()) {
+                offen = false;
+            }
+        });
+        // Schließen des Fensters beendet nicht die Messung: Empfänger und SAPOS bleiben verbunden
+        self.gnss_fenster = offen;
     }
 
     /// Legt beim Start die Fenstergröße des Hauptfensters fest (siehe [`setze_startgroesse_fenster`]).
@@ -349,7 +435,7 @@ impl FeldbuchApp {
         let Some(viewer) = self.auswahl_viewer.as_mut() else {
             return;
         };
-        if viewer.zeige(ctx, &mut self.projekt, &mut self.geraet) {
+        if viewer.zeige(ctx, &mut self.projekt, &mut self.geraet, None) {
             return;
         }
         let ergebnis = viewer.nimm_auswahl_ergebnis();
@@ -362,6 +448,8 @@ impl FeldbuchApp {
     fn update_blockiert(&self) -> bool {
         self.auswahl_viewer.is_some()
             || self.dxf_viewer.is_some()
+            || self.gnss_fenster
+            || self.gnss.as_ref().is_some_and(|g| g.ist_verbunden())
             || self.freie_stationierung.is_some()
             || self.polarpunkte.is_some()
             || !matches!(self.ansicht, Ansicht::Start | Ansicht::Info)
@@ -505,8 +593,13 @@ impl eframe::App for FeldbuchApp {
 
         // DXF-Viewer als eigenes Fenster
         let mut wunsch = None;
+        // GNSS als Messquelle: die Sitzung muss laufen, auch wenn das GNSS-Fenster nie geöffnet wurde
+        if self.dxf_viewer.is_some() && self.projekt.einstellungen.tachymeter_modell.ist_gnss() && self.gnss.is_none() {
+            self.gnss = Some(Box::new(crate::gnss::ansicht::app::App::new(&ctx)));
+            protokoll::log("GNSS", "GNSS-Modul für den DXF-Viewer gestartet");
+        }
         if let Some(viewer) = self.dxf_viewer.as_mut() {
-            let offen = viewer.zeige(&ctx, &mut self.projekt, &mut self.geraet);
+            let offen = viewer.zeige(&ctx, &mut self.projekt, &mut self.geraet, self.gnss.as_deref_mut());
             wunsch = viewer.nimm_wunsch();
             if !offen {
                 self.dxf_viewer = None;
@@ -539,10 +632,14 @@ impl eframe::App for FeldbuchApp {
         }
 
         self.zeige_modulfenster(&ctx);
+        self.bediene_gnss(&ctx);
         self.pruefe_beenden(&ctx);
     }
 
     fn on_exit(&mut self) {
+        if let Some(gnss) = self.gnss.as_mut() {
+            gnss.beenden();
+        }
         protokoll::log("ENDE", "Programm beendet");
     }
 }

@@ -671,6 +671,7 @@ impl DxfViewer {
             || !self.overlay.is_empty()
             || !self.import_layer.is_empty()
             || !self.neupunkte.is_empty()
+            || (self.gnss.aktiv && (self.gnss.pos.is_some() || !self.gnss.punkte.is_empty()))
             || self.hat_auswahl_kandidaten();
         if !hat_daten {
             if self.pdf_mitte.is_some() {
@@ -678,7 +679,9 @@ impl DxfViewer {
                 return;
             }
             maler.text(Pos2::new(rect.center().x - 90.0, rect.center().y - 10.0), Align2::LEFT_TOP, "DXF-Datei öffnen …", FontId::proportional(18.0), Color32::GRAY);
-            if !self.ist_auswahl() {
+            if self.gnss.aktiv {
+                self.zeichne_gnss_info(&maler, rect, projekt);
+            } else if !self.ist_auswahl() {
                 self.zeichne_standpunkt_info(&maler, rect, projekt);
             }
             return;
@@ -725,7 +728,7 @@ impl DxfViewer {
                 }
             }
         }
-        if !self.ist_auswahl() && !bewegung {
+        if !self.ist_auswahl() && !bewegung && !self.gnss.aktiv {
             self.zeichne_zielstrahlen(&maler, &a, projekt);
         }
         for (e, farbe, auswahl) in self.weitere_entities() {
@@ -735,6 +738,9 @@ impl DxfViewer {
             self.zeichne_transformationspunkte(&maler, &a, projekt);
         }
         self.zeichne_absteckziele(&maler, &a);
+        if self.gnss.aktiv {
+            self.zeichne_gnss(&maler, &a);
+        }
         self.zeichne_flaeche(&maler, &a, projekt);
         if let Some(pos) = flaeche_zeiger {
             zeichne_flaechen_zeiger(&maler, pos);
@@ -754,7 +760,9 @@ impl DxfViewer {
             return;
         }
 
-        self.zeichne_zielrichtung(&maler, &a, projekt);
+        if !self.gnss.aktiv {
+            self.zeichne_zielrichtung(&maler, &a, projekt);
+        }
 
         // Fadenkreuz
         let kreuz = Stroke::new(1.0, FADENKREUZ_FARBE);
@@ -782,8 +790,12 @@ impl DxfViewer {
             }
         }
 
-        // Standpunkt und Stationierungsqualität oben links (über allem anderen)
-        self.zeichne_standpunkt_info(&maler, rect, projekt);
+        // Standpunkt und Stationierungsqualität oben links (über allem anderen); im GNSS-Betrieb der GNSS-Status
+        if self.gnss.aktiv {
+            self.zeichne_gnss_info(&maler, rect, projekt);
+        } else {
+            self.zeichne_standpunkt_info(&maler, rect, projekt);
+        }
     }
 
     /// Liegt die Entity im sichtbaren Bereich und ist groß genug, um gezeichnet zu werden?
@@ -1078,6 +1090,11 @@ impl DxfViewer {
         let nr = nr.filter(|n| !n.is_empty());
         if let Some(nr) = &nr {
             self.txt_punkt_nr.clone_from(nr);
+        }
+        // GNSS-Betrieb: Soll für Einpassung oder Absteckung, kein Messdatendialog
+        if self.gnss.aktiv {
+            self.gnss_punkt_gewaehlt(projekt, x, y, nr, hoehe);
+            return;
         }
         // Abstecken-Modus: der gewählte Punkt wird Absteckziel
         if self.absteckung.is_some() {

@@ -9,6 +9,7 @@ pub mod flaechenteilung;
 pub mod freie_stationierung;
 pub mod gauss;
 pub mod hochpunkt;
+pub mod hoehen_einpassung;
 pub mod koord_transformation;
 pub mod neupunkt;
 pub mod polar;

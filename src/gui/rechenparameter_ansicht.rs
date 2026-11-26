@@ -1,4 +1,4 @@
-// Zweck:    Bearbeitung der Rechenparameter (Fehlergrenzen, Maßstab, Gewichtung, Zentrierfehler)
+// Zweck:    Bearbeitung der Rechenparameter (Fehlergrenzen, Maßstab, Gewichtung, Zentrierfehler, GNSS-Einpassung)
 // Hardware: keine
 // Autor:    Johann Gerner
 
@@ -6,7 +6,8 @@ use eframe::egui;
 
 use crate::daten::projekt::Projekt;
 use crate::gui::bildschirmtastatur;
-use crate::daten::rechenparameter::{DXF_GROESSE_BEREICH_MM, DXF_MASSSTAB_BEREICH};
+use crate::daten::rechenparameter::{DXF_GROESSE_BEREICH_MM, DXF_MASSSTAB_BEREICH, GnssParameter};
+use crate::gnss::einpassung::{EinpassMethode, GnssBezug, HoehenEinpassung};
 use crate::rechnen::polar::MassstabModus;
 
 /// Größte Schrittweite der Zahlenfelder.
@@ -146,6 +147,7 @@ impl RechenparameterAnsicht {
                     zahl(ui, "Toleranz Lage (längs/quer) [mm]", &mut p.absteck_toleranz_lage_mm);
                     zahl(ui, "Toleranz Höhe [mm]", &mut p.absteck_toleranz_hoehe_mm);
                 });
+                gnss_bereich(ui, &mut p.gnss);
             }
         });
         ui.label("PDF-Ausschnitt im DXF-Viewer einschalten. Mindestgrößen gelten auf dem Papier.");
@@ -181,6 +183,57 @@ fn bereich(ui: &mut egui::Ui, titel: &str, farbe: egui::Color32, inhalt: impl Fn
             egui::Grid::new(titel).num_columns(2).spacing([12.0, 6.0]).show(ui, inhalt);
         });
     ui.add_space(8.0);
+}
+
+/// Vorgaben der GNSS-Messung: Koordinatenbezug, Einpassung, Kontrollen, Absteckung.
+fn gnss_bereich(ui: &mut egui::Ui, g: &mut GnssParameter) {
+    bereich(ui, "GNSS – Einpassung und Absteckung", egui::Color32::from_rgb(20, 95, 80), |ui| {
+        ui.label("Koordinatenbezug");
+        egui::ComboBox::from_id_salt("gnss_bezug").selected_text(g.bezug.anzeige()).show_ui(ui, |ui| {
+            for b in GnssBezug::ALLE {
+                ui.selectable_value(&mut g.bezug, b, b.anzeige());
+            }
+        });
+        ui.end_row();
+        ui.label("Einpassung Lage");
+        egui::ComboBox::from_id_salt("gnss_methode").selected_text(g.methode.anzeige()).show_ui(ui, |ui| {
+            for m in EinpassMethode::ALLE {
+                ui.selectable_value(&mut g.methode, m, m.anzeige());
+            }
+        });
+        ui.end_row();
+        ui.label("Einpassung Höhe");
+        egui::ComboBox::from_id_salt("gnss_hoehe").selected_text(g.hoehe.anzeige()).show_ui(ui, |ui| {
+            for h in HoehenEinpassung::ALLE {
+                ui.selectable_value(&mut g.hoehe, h, h.anzeige());
+            }
+        });
+        ui.end_row();
+        ui.label("Ampel Residuen grün/gelb/rot [cm]");
+        ui.horizontal(|ui| {
+            for wert in [&mut g.ampel_gruen_cm, &mut g.ampel_gelb_cm, &mut g.ampel_rot_cm] {
+                ui.add(egui::DragValue::new(wert).range(0.1..=100.0).speed(SCHRITT).fixed_decimals(1));
+            }
+        });
+        ui.end_row();
+        ganzzahl(ui, "T-Punkt: Epochen", &mut g.tpunkt_epochen);
+        zahl(ui, "T-Punkt: Mindestdauer [s]", &mut g.tpunkt_sekunden);
+        zahl(ui, "Kontrollpunkt: Grenze Lage [mm]", &mut g.kontrolle_lage_mm);
+        zahl(ui, "Kontrollpunkt: Grenze Höhe [mm]", &mut g.kontrolle_hoehe_mm);
+        zahl(ui, "Puffer um die T-Punkte [%]", &mut g.extrapolation_prozent);
+        ganzzahl(ui, "Absteckung: Epochen der Messung", &mut g.absteck_epochen);
+        zahl(ui, "Absteckung: Mindestweg für Gehrichtung [m]", &mut g.ausrichtung_min_m);
+        ganzzahl(ui, "Absteckung: Epochen stabil in Toleranz", &mut g.stabil_epochen);
+        ui.label("Absteckung: Ton bei Toleranz");
+        ui.checkbox(&mut g.annaeherungston, "");
+        ui.end_row();
+    });
+}
+
+fn ganzzahl(ui: &mut egui::Ui, bezeichnung: &str, wert: &mut usize) {
+    ui.label(bezeichnung);
+    ui.add(egui::DragValue::new(wert).range(1..=3600).speed(1.0));
+    ui.end_row();
 }
 
 fn zahl(ui: &mut egui::Ui, bezeichnung: &str, wert: &mut f64) {

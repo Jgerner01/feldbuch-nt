@@ -718,7 +718,7 @@ mod tests {
         assert_eq!(SeriellEinstellung::aus_einstellungen(&e), s);
         assert_eq!(s.parity(), Parity::Even);
         assert_eq!(s.kurz(), "38400 7E2");
-        assert_eq!(SeriellEinstellung::voreinstellung(TachymeterModell::GnssNmea, "COM1").baud, 4800);
+        assert_eq!(SeriellEinstellung::voreinstellung(TachymeterModell::GnssSapos, "COM1").baud, 115_200);
     }
 
     #[test]

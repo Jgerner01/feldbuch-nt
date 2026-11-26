@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::grundlagen::format::{f, parse_zahl};
 use crate::grundlagen::xml_einfach::{self, XmlDokument};
 use crate::grundlagen::datei_speicher;
+use crate::gnss::einpassung::{EinpassMethode, GnssBezug, HoehenEinpassung};
 use crate::rechnen::polar::MassstabModus;
 
 /// Wurzelelement der Rechenparameterdatei.
@@ -24,6 +25,55 @@ pub const ZENTRIERFEHLER_ZIEL_STANDARD_MM: f64 = 2.0;
 pub const ZENTRIERFEHLER_STANDPUNKT_STANDARD_MM: f64 = 0.0;
 /// Vorgabe der Absteck-Toleranzen (Lage und Höhe) [mm].
 pub const ABSTECK_TOLERANZ_STANDARD_MM: f64 = 10.0;
+
+/// Vorgaben der GNSS-Messung im DXF-Viewer: Koordinatenbezug, Einpassung, Kontrollen und Absteckung.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GnssParameter {
+    pub bezug: GnssBezug,
+    pub methode: EinpassMethode,
+    pub hoehe: HoehenEinpassung,
+    /// Ampelgrenzen der Einpassungsresiduen [cm]
+    pub ampel_gruen_cm: f64,
+    pub ampel_gelb_cm: f64,
+    pub ampel_rot_cm: f64,
+    /// Messvorgaben der T-Punkte: Epochen und Mindestdauer [s]
+    pub tpunkt_epochen: usize,
+    pub tpunkt_sekunden: f64,
+    /// Grenzen der Kontrollpunktmessung [mm]
+    pub kontrolle_lage_mm: f64,
+    pub kontrolle_hoehe_mm: f64,
+    /// Puffer um die T-Punkte, bevor „außerhalb der Einpassung“ gemeldet wird [%]
+    pub extrapolation_prozent: f64,
+    /// Epochen der Kontrollmessung bei der Absteckung
+    pub absteck_epochen: usize,
+    /// Mindestbewegung für die Ausrichtung der Absteckgrafik [m]
+    pub ausrichtung_min_m: f64,
+    /// So viele Epochen in Folge innerhalb der Toleranz, bevor die Absteckung grün zeigt
+    pub stabil_epochen: usize,
+    pub annaeherungston: bool,
+}
+
+impl Default for GnssParameter {
+    fn default() -> Self {
+        Self {
+            bezug: GnssBezug::Einpassung,
+            methode: EinpassMethode::Helmert2D,
+            hoehe: HoehenEinpassung::Verschiebung,
+            ampel_gruen_cm: 1.0,
+            ampel_gelb_cm: 3.0,
+            ampel_rot_cm: 9.0,
+            tpunkt_epochen: 30,
+            tpunkt_sekunden: 60.0,
+            kontrolle_lage_mm: 30.0,
+            kontrolle_hoehe_mm: 50.0,
+            extrapolation_prozent: 20.0,
+            absteck_epochen: 5,
+            ausrichtung_min_m: 2.0,
+            stabil_epochen: 3,
+            annaeherungston: true,
+        }
+    }
+}
 
 /// Papierbezogene Vorgaben für den geplanten Vektor-PDF-Export des DXF-Viewers.
 #[derive(Clone, Debug, PartialEq)]
@@ -131,6 +181,7 @@ pub struct Rechenparameter {
     pub flaeche_farbe: [u8; 3],
     /// Flächenprotokoll mit Grafik (Lageplan mit Punktnummern) ergänzen.
     pub flaeche_grafik_im_protokoll: bool,
+    pub gnss: GnssParameter,
 }
 
 /// Standardfarbe der Flächenberechnung.
@@ -173,6 +224,7 @@ impl Default for Rechenparameter {
             dxf: DxfParameter::default(),
             flaeche_farbe: FLAECHE_FARBE_STANDARD,
             flaeche_grafik_im_protokoll: true,
+            gnss: GnssParameter::default(),
         }
     }
 }
@@ -291,6 +343,21 @@ impl RechenparameterManager {
             ("DxfText_mm", f(dxf.text_mm, 1)),
             ("FlaecheFarbe", farbe_hex(p.flaeche_farbe)),
             ("FlaecheGrafikImProtokoll", wahr(p.flaeche_grafik_im_protokoll)),
+            ("GnssBezug", p.gnss.bezug.name().to_string()),
+            ("GnssEinpassMethode", p.gnss.methode.name().to_string()),
+            ("GnssHoehenEinpassung", p.gnss.hoehe.name().to_string()),
+            ("GnssAmpelGruen_cm", f(p.gnss.ampel_gruen_cm, 1)),
+            ("GnssAmpelGelb_cm", f(p.gnss.ampel_gelb_cm, 1)),
+            ("GnssAmpelRot_cm", f(p.gnss.ampel_rot_cm, 1)),
+            ("GnssTPunktEpochen", p.gnss.tpunkt_epochen.to_string()),
+            ("GnssTPunktSekunden", f(p.gnss.tpunkt_sekunden, 0)),
+            ("GnssKontrolleLage_mm", f(p.gnss.kontrolle_lage_mm, 1)),
+            ("GnssKontrolleHoehe_mm", f(p.gnss.kontrolle_hoehe_mm, 1)),
+            ("GnssExtrapolation_Prozent", f(p.gnss.extrapolation_prozent, 0)),
+            ("GnssAbsteckEpochen", p.gnss.absteck_epochen.to_string()),
+            ("GnssAusrichtungMin_m", f(p.gnss.ausrichtung_min_m, 1)),
+            ("GnssStabilEpochen", p.gnss.stabil_epochen.to_string()),
+            ("GnssAnnaeherungston", wahr(p.gnss.annaeherungston)),
         ];
         datei_speicher::schreibe_text(&self.pfad, &xml_einfach::schreibe(WURZEL, &eintraege))
     }
@@ -340,6 +407,27 @@ fn parse_parameter(doc: &XmlDokument) -> Rechenparameter {
         }.normalisiert(),
         flaeche_farbe: doc.text("FlaecheFarbe").and_then(farbe_aus_hex).unwrap_or(standard.flaeche_farbe),
         flaeche_grafik_im_protokoll: wahrheit("FlaecheGrafikImProtokoll", standard.flaeche_grafik_im_protokoll),
+        gnss: {
+            let g = GnssParameter::default();
+            let ganz = |tag: &str, ersatz: usize| doc.text(tag).and_then(|t| t.trim().parse().ok()).unwrap_or(ersatz);
+            GnssParameter {
+                bezug: doc.text("GnssBezug").and_then(GnssBezug::aus_name).unwrap_or(g.bezug),
+                methode: doc.text("GnssEinpassMethode").and_then(EinpassMethode::aus_name).unwrap_or(g.methode),
+                hoehe: doc.text("GnssHoehenEinpassung").and_then(HoehenEinpassung::aus_name).unwrap_or(g.hoehe),
+                ampel_gruen_cm: zahl("GnssAmpelGruen_cm", g.ampel_gruen_cm),
+                ampel_gelb_cm: zahl("GnssAmpelGelb_cm", g.ampel_gelb_cm),
+                ampel_rot_cm: zahl("GnssAmpelRot_cm", g.ampel_rot_cm),
+                tpunkt_epochen: ganz("GnssTPunktEpochen", g.tpunkt_epochen),
+                tpunkt_sekunden: zahl("GnssTPunktSekunden", g.tpunkt_sekunden),
+                kontrolle_lage_mm: zahl("GnssKontrolleLage_mm", g.kontrolle_lage_mm),
+                kontrolle_hoehe_mm: zahl("GnssKontrolleHoehe_mm", g.kontrolle_hoehe_mm),
+                extrapolation_prozent: zahl("GnssExtrapolation_Prozent", g.extrapolation_prozent),
+                absteck_epochen: ganz("GnssAbsteckEpochen", g.absteck_epochen),
+                ausrichtung_min_m: zahl("GnssAusrichtungMin_m", g.ausrichtung_min_m),
+                stabil_epochen: ganz("GnssStabilEpochen", g.stabil_epochen),
+                annaeherungston: wahrheit("GnssAnnaeherungston", g.annaeherungston),
+            }
+        },
     }
 }
 

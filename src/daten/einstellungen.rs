@@ -129,7 +129,7 @@ impl Einstellungen {
 
     /// Wird ein GNSS-Empfänger verwendet?
     pub fn ist_gnss_geraet(&self) -> bool {
-        self.tachymeter_modell == TachymeterModell::GnssNmea
+        self.tachymeter_modell.ist_gnss()
     }
 
     /// Pfad zu einer Datei im Projektverzeichnis.
@@ -268,10 +268,8 @@ impl Einstellungen {
         if let Some(m) = TachymeterModell::aus_name(modell_text) {
             self.tachymeter_modell = m;
         }
-        if self.tachymeter_modell != TachymeterModell::GnssNmea
-            && text("IstGnssGeraet").is_some_and(|t| t.eq_ignore_ascii_case("true"))
-        {
-            self.tachymeter_modell = TachymeterModell::GnssNmea;
+        if !self.tachymeter_modell.ist_gnss() && text("IstGnssGeraet").is_some_and(|t| t.eq_ignore_ascii_case("true")) {
+            self.tachymeter_modell = TachymeterModell::GnssSapos;
         }
         self.tachymeter_port = text("TachymeterPort").unwrap_or("").to_string();
         self.tachymeter_baud_rate = ganzzahl("TachymeterBaudRate", self.tachymeter_baud_rate);

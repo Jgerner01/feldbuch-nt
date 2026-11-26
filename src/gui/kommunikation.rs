@@ -1,6 +1,7 @@
 // Zweck:    Fenster "Messgerät – Kommunikation": Gerätetyp, COM-Port, Kommunikationsparameter, Verbinden;
 //           zusätzlich Empfangsprotokoll und Testbefehl zum Prüfen der Verbindung
-// Hardware: Tachymeter und GNSS über serielle Schnittstelle (RS-232, Bluetooth-SPP)
+//           Beim Gerätetyp „GNSS – SAPOS“ stattdessen Status und Bedienung der GNSS-Sitzung.
+// Hardware: Tachymeter über serielle Schnittstelle (RS-232, Bluetooth-SPP), GNSS-Empfänger u-blox ZED-F9P
 // Autor:    Johann Gerner
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +31,18 @@ const FARBE_GETRENNT: Color32 = Color32::from_rgb(200, 50, 50);
 /// Hinweis zu 1,5 Stoppbits.
 const HINWEIS_STOPPBITS: &str = "Hinweis: 1,5 Stoppbits werden von der seriellen Bibliothek nicht unterstützt (es wird 2 verwendet).";
 
+/// Wunsch der Maske an die GNSS-Sitzung (wird vom Hauptfenster ausgeführt).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GnssWunsch {
+    Fenster,
+    Verbinden,
+    Trennen,
+}
+
+/// Farben des GNSS-Lösungsstatus.
+const FARBE_FIX: Color32 = Color32::from_rgb(40, 160, 60);
+const FARBE_FLOAT: Color32 = Color32::from_rgb(200, 150, 0);
+
 /// Zustand einer laufenden oder beendeten Analyse (wird vom Arbeits-Thread befüllt).
 #[derive(Default)]
 struct AnalyseZustand {
@@ -50,11 +63,18 @@ pub struct KommunikationAnsicht {
     analyse_abbruch: Arc<AtomicBool>,
     war_verbindet: bool,
     libelle: super::libelle::Libelle,
+    gnss_wunsch: Option<GnssWunsch>,
 }
 
 impl KommunikationAnsicht {
     /// Zeichnet die Maske; liefert `true`, wenn sie geschlossen werden soll.
-    pub fn zeichne(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt, geraet: &mut Geraet) -> bool {
+    pub fn zeichne(
+        &mut self,
+        ui: &mut egui::Ui,
+        projekt: &mut Projekt,
+        geraet: &mut Geraet,
+        gnss: Option<&crate::gnss::ansicht::app::LinkStatus>,
+    ) -> bool {
         if !self.geladen {
             self.geladen = true;
             self.ports = verfuegbare_ports();
@@ -92,6 +112,16 @@ impl KommunikationAnsicht {
             }
         });
         ui.add_space(6.0);
+
+        // GNSS: keine Tachymeter-Schnittstelle, stattdessen die GNSS-Sitzung
+        if geraet.modell.ist_gnss() {
+            ui.vertical(|ui| {
+                ui.set_width(ui.available_width() * SPALTE_LINKS);
+                self.gruppe_geraetetyp(ui, geraet);
+                self.gruppe_gnss(ui, gnss);
+            });
+            return schliessen;
+        }
 
         // Zwei Spalten, relativ zur Fensterbreite
         let gesamt = ui.available_width();
@@ -134,6 +164,17 @@ impl KommunikationAnsicht {
                         }
                     });
                 if neu != geraet.modell {
+                    // Wechsel zwischen Tachymeter und GNSS: die jeweils andere Verbindung trennen
+                    if neu.ist_gnss() && (geraet.ist_verbunden() || geraet.verbindet()) {
+                        geraet.abbrechen_verbinden();
+                        geraet.trennen();
+                        self.meldung = "Tachymeter getrennt – Messungen kommen jetzt vom GNSS-Empfänger.".to_string();
+                        self.fehler = false;
+                    } else if geraet.modell.ist_gnss() && !neu.ist_gnss() {
+                        self.gnss_wunsch = Some(GnssWunsch::Trennen);
+                        self.meldung = "GNSS-Empfänger getrennt – Messungen kommen jetzt vom Tachymeter.".to_string();
+                        self.fehler = false;
+                    }
                     geraet.setze_modell(neu);
                     // Voreinstellungen je Modell (außer Manuell)
                     if neu != TachymeterModell::Manuell {
@@ -145,9 +186,7 @@ impl KommunikationAnsicht {
                     }
                 }
             });
-            if geraet.modell == TachymeterModell::GnssNmea {
-                ui.label("Gerät / Protokoll: nicht relevant für GNSS (typisch: 4800 Baud, 8N1 für NMEA)");
-            }
+
             if geraet.modell.sprache_waehlbar() {
                 ui.horizontal(|ui| {
                     ui.label("Sprache am Gerät:");
@@ -163,6 +202,78 @@ impl KommunikationAnsicht {
                         .small(),
                 );
             }
+        });
+    }
+
+    /// Wunsch an die GNSS-Sitzung abholen.
+    pub fn nimm_gnss_wunsch(&mut self) -> Option<GnssWunsch> {
+        self.gnss_wunsch.take()
+    }
+
+    /// Status und Bedienung der GNSS-Sitzung.
+    fn gruppe_gnss(&mut self, ui: &mut egui::Ui, status: Option<&crate::gnss::ansicht::app::LinkStatus>) {
+        use crate::gnss::kern::model::Fix;
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.strong("GNSS-Empfänger  (simpleRTK2B / u-blox ZED-F9P, SAPOS HEPS)");
+            let verbunden = status.is_some_and(|s| s.connected);
+            egui::Grid::new("gnss_status").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                ui.label("Verbindung:");
+                match status {
+                    Some(s) if s.connected => {
+                        let art = if s.replay { "Wiedergabe" } else { s.device.as_str() };
+                        ui.colored_label(FARBE_VERBUNDEN, format!("verbunden ({art})"));
+                    }
+                    _ => {
+                        ui.colored_label(FARBE_GETRENNT, "nicht verbunden");
+                    }
+                }
+                ui.end_row();
+                if let Some(s) = status.filter(|s| s.connected) {
+                    ui.label("Lösung:");
+                    match s.fix {
+                        Some(f) => {
+                            let farbe = match f {
+                                Fix::Fixed => FARBE_FIX,
+                                Fix::Float => FARBE_FLOAT,
+                                _ => FARBE_GETRENNT,
+                            };
+                            let seit = s
+                                .fix_seconds
+                                .filter(|_| f == Fix::Fixed)
+                                .map(|t| format!("  seit {}", crate::grundlagen::format::f(t, 0)) + " s")
+                                .unwrap_or_default();
+                            ui.colored_label(farbe, format!("{}{seit}", f.label()));
+                        }
+                        None => {
+                            ui.colored_label(FARBE_GETRENNT, "keine Position");
+                        }
+                    }
+                    ui.end_row();
+                    ui.label("SAPOS:");
+                    ui.label(format!("{}  {}", s.ntrip, s.mountpoint));
+                    ui.end_row();
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let text = if verbunden { "Trennen" } else { "Verbinden" };
+                if ui.add(egui::Button::new(RichText::new(text).strong()).min_size(Vec2::new(130.0, 32.0))).clicked() {
+                    self.gnss_wunsch = Some(if verbunden { GnssWunsch::Trennen } else { GnssWunsch::Verbinden });
+                }
+                if ui.add(egui::Button::new("GNSS-Fenster öffnen").min_size(Vec2::new(160.0, 32.0))).clicked() {
+                    self.gnss_wunsch = Some(GnssWunsch::Fenster);
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(
+                    "Schnittstelle, SAPOS-Zugang, Messvorgaben, Antenne und Höhenbezug werden im Fenster \
+                     GNSS-Vermessung eingestellt (Reiter Konfiguration). Die Empfängerkonfiguration wird beim \
+                     Verbinden dauerhaft im Empfänger gespeichert (Flash nur bei Änderungen).",
+                )
+                .small(),
+            );
         });
     }
 
