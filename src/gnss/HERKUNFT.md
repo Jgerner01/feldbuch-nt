@@ -4,6 +4,9 @@
 Ab der Übernahme wird der Code hier **eigenständig** gepflegt; gnss-vermessung bleibt unverändert und wird getrennt weiterentwickelt.
 Verbesserungen werden nur bewusst und von Hand übertragen und unten unter „Übertragene Änderungen“ vermerkt.
 
+Der Projektordner des Originals heißt seit 27.11.2026 **`GNSS-NT`** (vorher `gnss-vermessung`); Paketname,
+Programmdateien, Einstellungsordner `%APPDATA%\gnss-vermessung` und Repository sind unverändert.
+
 Modulpfade wurden angepasst (`crate::` → `crate::gnss::kern::` bzw. `crate::gnss::ansicht::`), jede Datei trägt einen Herkunftsvermerk im Kopf.
 
 ## Dateien
@@ -46,6 +49,7 @@ Modulpfade wurden angepasst (`crate::` → `crate::gnss::kern::` bzw. `crate::gn
 | `ansicht/view_time.rs` | `src/bin/gnss-gui/view_time.rs` | nur Modulpfade |
 | `ansicht/view_track.rs` | `src/bin/gnss-gui/view_track.rs` | nur Modulpfade |
 | `ansicht/widgets.rs` | `src/bin/gnss-gui/widgets.rs` | nur Modulpfade |
+| `ansicht/view_wizard.rs` | `src/bin/gnss-gui/view_wizard.rs` (übernommen 27.11.2026) | letzter Schritt „Töne und Abschluss“ statt „Darstellung und Abschluss“, ohne Update-Abfrage |
 
 Nicht übernommen: `main.rs`, `menu.rs`, `session.rs` (Kommandozeile), `update.rs`, `view_update.rs` (Update), `bin/gnss-gui/main.rs`, `tools/`.
 
@@ -55,4 +59,4 @@ Neu in Feldbuch-NT (kein Gegenstück im Original): `einpassung.rs`, `bewegung.rs
 
 | Datum | Richtung | Inhalt |
 |---|---|---|
-| – | – | – |
+| 27.11.2026 | GNSS-NT → Feldbuch-NT | Commit `c66832e` (Zweig `schnelleinrichtung`): Einrichtungsassistent „Schnelleinrichtung“ (`view_wizard.rs`, Hilfe-Menü, Hilfe-Reiter, automatisch beim ersten Start bzw. nach „Nicht übernehmen“), Feldhervorhebung in der Konfiguration (`view_config::caption`/`set_highlight`), `Settings::set_criteria`, Dialoge über `widgets::dialog` oben links im Arbeitsbereich, SAPOS-Button grün/rot (`view_ntrip`), SAPOS-Feld der Statusleiste grün/rot mit Hinweis. Nicht übernommen: maximierter Start bei FullHD (`fit_window`) – das Fenster gehört Feldbuch-NT. |

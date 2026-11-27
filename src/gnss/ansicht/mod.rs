@@ -19,4 +19,5 @@ mod view_sky;
 mod view_status;
 mod view_time;
 mod view_track;
+mod view_wizard;
 mod widgets;

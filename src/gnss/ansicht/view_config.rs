@@ -58,8 +58,34 @@ fn grid(ui: &mut Ui, id: &str, add: impl FnOnce(&mut Ui)) {
         .show(ui, add);
 }
 
+/// Rahmenbreite der vom Assistenten hervorgehobenen Felder
+const HIGHLIGHT_STROKE: f32 = 2.0;
+const HIGHLIGHT_MARGIN: i8 = 2;
+
+fn highlight_id() -> egui::Id {
+    egui::Id::unique("wizard_highlight")
+}
+
+/// Legt fest, welche Feldbeschriftungen der Einrichtungsassistent hervorhebt.
+pub fn set_highlight(ctx: &egui::Context, fields: &'static [&'static str]) {
+    ctx.data_mut(|d| d.insert_temp(highlight_id(), fields));
+}
+
+/// Feldbeschriftung; vom Assistenten gewählte Felder erhalten einen Rahmen.
+fn caption(ui: &mut Ui, label: &str) {
+    let fields: &'static [&'static str] = ui.data(|d| d.get_temp(highlight_id())).unwrap_or(&[]);
+    if fields.contains(&label) {
+        egui::Frame::new()
+            .stroke(egui::Stroke::new(HIGHLIGHT_STROKE, WARN))
+            .inner_margin(HIGHLIGHT_MARGIN)
+            .show(ui, |ui| ui.label(egui::RichText::new(label).strong()));
+    } else {
+        ui.label(label);
+    }
+}
+
 fn text(ui: &mut Ui, label: &str, value: &mut String) {
-    ui.label(label);
+    caption(ui, label);
     ui.add(egui::TextEdit::singleline(value).desired_width(320.0));
     ui.end_row();
 }
@@ -71,13 +97,13 @@ fn num<N: egui::emath::Numeric>(
     range: std::ops::RangeInclusive<N>,
     speed: f64,
 ) {
-    ui.label(label);
+    caption(ui, label);
     number(ui, v, range, speed);
     ui.end_row();
 }
 
 fn check(ui: &mut Ui, label: &str, v: &mut bool) {
-    ui.label(label);
+    caption(ui, label);
     ui.checkbox(v, "");
     ui.end_row();
 }
@@ -123,7 +149,7 @@ pub fn show(
     egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| match v.tab {
         ConfigTab::Port => {
             grid(ui, "port", |ui| {
-                ui.label("Schnittstelle");
+                caption(ui, "Schnittstelle");
                 ui.horizontal(|ui| {
                     let selected = if s.device.is_empty() { "wählen" } else { &s.device };
                     egui::ComboBox::from_id_salt("ports").selected_text(selected).width(280.0).show_ui(ui, |ui| {
@@ -150,7 +176,7 @@ pub fn show(
             grid(ui, "sapos", |ui| {
                 text(ui, "Caster", &mut s.caster);
                 num(ui, "Port", &mut s.caster_port, 1..=u16::MAX, 1.0);
-                ui.label("Mountpoint");
+                caption(ui, "Mountpoint");
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut s.mountpoint).desired_width(180.0));
                     if !v.mountpoints.is_empty() {
@@ -163,7 +189,7 @@ pub fn show(
                 });
                 ui.end_row();
                 text(ui, "Benutzer", &mut s.user);
-                ui.label("Passwort");
+                caption(ui, "Passwort");
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(password).password(!v.show_password).desired_width(250.0));
                     ui.checkbox(&mut v.show_password, "anzeigen");
@@ -184,7 +210,7 @@ pub fn show(
         ConfigTab::Receiver => {
             grid(ui, "receiver", |ui| {
                 num(ui, "Messrate [ms]", &mut s.rate_ms, 100..=10_000, 10.0);
-                ui.label("Dynamikmodell");
+                caption(ui, "Dynamikmodell");
                 let models = [(0u8, "tragbar"), (2, "stationär"), (3, "Fußgänger"), (4, "Fahrzeug")];
                 let name = models.iter().find(|m| m.0 == s.dyn_model).map_or("anderes", |m| m.1);
                 egui::ComboBox::from_id_salt("dyn").selected_text(name).show_ui(ui, |ui| {
@@ -254,7 +280,7 @@ pub fn show(
             grid(ui, "antenna", |ui| {
                 num(ui, "Stabhöhe [m]", &mut s.pole_height, 0.0..=10.0, 0.001);
                 num(ui, "Antennenoffset ARP → Phasenzentrum [m]", &mut s.antenna_offset, -1.0..=1.0, 0.001);
-                ui.label("Höhenbezug");
+                caption(ui, "Höhenbezug");
                 ui.vertical(|ui| {
                     ui.checkbox(&mut s.sapos_transform, "DHHN2016 aus SAPOS-Transformationsnachrichten (RTCM 1023), hat Vorrang");
                     ui.add_enabled_ui(!s.sapos_transform, |ui| {
@@ -360,7 +386,7 @@ pub fn tools(ui: &mut Ui, t: &mut ToolsView) {
     }
 }
 
-pub fn help(ui: &mut Ui, st: &State) {
+pub fn help(ui: &mut Ui, st: &State, actions: &mut Vec<Action>) {
     egui::ScrollArea::vertical()
         .auto_shrink(false)
         .show(ui, |ui| {
@@ -370,6 +396,13 @@ pub fn help(ui: &mut Ui, st: &State) {
             ui.label("RTK-Punktbestimmung mit simpleRTK2B (u-blox ZED-F9P) und SAPOS HEPS Bayern");
             ui.label("Updates kommen mit Feldbuch-NT (Info → Nach Updates suchen).");
             ui.separator();
+            if ui
+                .button("🧭 Schnelleinrichtung starten")
+                .on_hover_text("Führt Schritt für Schritt durch alle nötigen Einstellungen")
+                .clicked()
+            {
+                actions.push(Action::WizardGoto(0));
+            }
             ui.strong("Kurzanleitung");
             for l in [
                 "1. Konfiguration → Schnittstelle: COM-Port wählen.",

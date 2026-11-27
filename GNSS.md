@@ -62,7 +62,7 @@ Zeichenlogik in Feldbuch-NT einbetten.
   wird dort **nichts** geändert.
 - **Feldbuch-NT bekommt eine eigene Kopie** des Codes zum Stand **gnss-vermessung 0.4.0 (Commit `7526a36`)**.
   Ab der Übernahme wird dieser Teil **unabhängig** im Feldbuch-Repository gepflegt. Es gibt keine
-  Cargo-Abhängigkeit auf `../gnss-vermessung`; Feldbuch-NT baut auch, wenn der Ordner fehlt.
+  Cargo-Abhängigkeit auf `../GNSS-NT`; Feldbuch-NT baut auch, wenn der Ordner fehlt.
 - Verbesserungen werden zwischen den beiden Programmen **nur bewusst und von Hand** übertragen (z. B. eine
   Fehlerkorrektur im NTRIP-Client). Dafür gibt es einen Herkunftsvermerk (2.3).
 
@@ -70,7 +70,7 @@ Verworfene Alternativen:
 
 | Variante | Warum nicht |
 |---|---|
-| Pfadabhängigkeit auf `../gnss-vermessung` | koppelt die Pflege: jede Änderung im Original wirkt sofort im Feldbuch und umgekehrt; Umbau des Originals nötig |
+| Pfadabhängigkeit auf `../GNSS-NT` | koppelt die Pflege: jede Änderung im Original wirkt sofort im Feldbuch und umgekehrt; Umbau des Originals nötig |
 | `gnss-gui.exe` als eigener Prozess | zwei Fenster auf dem Toughpad, COM-Port nicht teilbar, eigene Schnittstelle für Live-Positionen nötig |
 
 ### 2.2 Ablage im Feldbuch

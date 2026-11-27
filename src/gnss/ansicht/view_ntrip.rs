@@ -380,12 +380,12 @@ fn communication(ui: &mut Ui, st: &State, v: &mut NtripView, actions: &mut Vec<A
 pub fn show(ui: &mut Ui, st: &State, v: &mut NtripView, settings: &mut Settings, running: bool, actions: &mut Vec<Action>) {
     let n = &st.ntrip;
     ui.horizontal(|ui| {
-        if running {
-            if ui.button("SAPOS trennen").clicked() {
-                actions.push(Action::NtripStop);
-            }
-        } else if ui.button("SAPOS verbinden").clicked() {
-            actions.push(Action::NtripStart);
+        // Button grün bei bestehender Verbindung, sonst rot
+        let fill = if n.phase == NtripPhase::Active { GOOD } else { BAD };
+        let caption = if running { "SAPOS trennen" } else { "SAPOS verbinden" };
+        let button = egui::Button::new(egui::RichText::new(caption).color(egui::Color32::WHITE)).fill(fill);
+        if ui.add(button).clicked() {
+            actions.push(if running { Action::NtripStop } else { Action::NtripStart });
         }
         let color = match n.phase {
             NtripPhase::Active => GOOD,

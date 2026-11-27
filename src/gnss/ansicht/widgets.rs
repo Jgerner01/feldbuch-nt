@@ -17,6 +17,23 @@ pub const STALE: Color32 = Color32::from_rgb(120, 120, 120);
 pub const BLUE: Color32 = Color32::from_rgb(50, 110, 200);
 pub const PURPLE: Color32 = Color32::from_rgb(140, 80, 180);
 
+/// Abstand der Dialogfenster zum Rand des Arbeitsbereichs
+const DIALOG_MARGIN: f32 = 16.0;
+
+/// Dialogfenster im ersten Quadranten (oben links im Arbeitsbereich unter der
+/// Menüleiste), höchstens ein Viertel des Bildschirms breit und stets innerhalb
+/// des sichtbaren Bereichs. `area` ist der Arbeitsbereich zwischen den Panels.
+pub fn dialog(ctx: &egui::Context, area: Rect, title: &str) -> egui::Window<'static> {
+    let screen = ctx.content_rect();
+    egui::Window::new(title.to_owned())
+        .collapsible(false)
+        .resizable(false)
+        .pivot(Align2::LEFT_TOP)
+        .default_pos(area.min + vec2(DIALOG_MARGIN, DIALOG_MARGIN))
+        .max_width((screen.width() / 2.0 - 2.0 * DIALOG_MARGIN).max(DIALOG_MARGIN))
+        .constrain_to(screen.shrink(DIALOG_MARGIN))
+}
+
 pub fn fix_color(f: Fix) -> Color32 {
     match f {
         Fix::None => BAD,

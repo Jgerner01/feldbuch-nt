@@ -13,6 +13,7 @@ use crate::gnss::ansicht::view_measure::{self, MeasureView, Pending};
 use crate::gnss::ansicht::view_ntrip::NtripView;
 use crate::gnss::ansicht::view_raw::{self, RawView};
 use crate::gnss::ansicht::view_sky::{self, SkyView};
+use crate::gnss::ansicht::view_wizard::{self, Wizard};
 use crate::gnss::ansicht::widgets::*;
 use crate::gnss::ansicht::{view_ntrip, view_status, view_time};
 use chrono::Local;
@@ -22,7 +23,7 @@ use crate::gnss::kern::engine::{Engine, Source};
 use crate::gnss::kern::export;
 use crate::gnss::kern::height::{Grid, HeightModel};
 use crate::gnss::kern::measure::{Criteria, Measurement, PointRequest};
-use crate::gnss::kern::model::{Fix, State};
+use crate::gnss::kern::model::{Fix, NtripPhase, State};
 use crate::gnss::kern::ntrip::NtripConfig;
 use crate::gnss::kern::settings::{self, HeightMode, Settings};
 use crate::gnss::kern::survey::PointResult;
@@ -98,6 +99,10 @@ pub enum Action {
     ReloadSettings,
     AskDefaults,
     FetchSourcetable,
+    /// Einrichtungsassistent: zum Schritt springen (startet ihn bei Bedarf)
+    WizardGoto(usize),
+    WizardFinish,
+    WizardClose,
 }
 
 type Sourcetable = Result<Vec<(String, String)>, String>;
@@ -134,6 +139,9 @@ pub struct App {
     extern_measure: bool,
     /// Ergebnis einer Messung für Feldbuch-NT
     extern_result: Option<ExternResult>,
+    wizard: Wizard,
+    /// Arbeitsbereich zwischen den Panels (Lage der Dialogfenster)
+    work_area: egui::Rect,
 }
 
 /// Ergebnis einer Messung, die Feldbuch-NT gestartet hat.
@@ -177,6 +185,8 @@ const TONE_DONE: &[(u32, u32)] = &[(1000, 100), (1000, 100), (1500, 200)];
 
 impl App {
     pub fn new(ctx: &egui::Context) -> Self {
+        // erster Start des GNSS-Moduls: noch keine eigene Einstellungsdatei vorhanden
+        let first_start = !Settings::path().exists();
         let import_offer = Settings::import_possible();
         let (settings, message) = match Settings::load() {
             Ok(s) => (s, None),
@@ -219,13 +229,28 @@ impl App {
             last_fix: Fix::None,
             extern_measure: false,
             extern_result: None,
+            wizard: Wizard::default(),
+            work_area: egui::Rect::NOTHING,
             settings,
         };
         app.reload_points();
+        // ohne Übernahmeangebot gleich einrichten; sonst nach „Nicht übernehmen“
+        if first_start && !app.import_offer {
+            app.wizard_goto(0);
+        }
         if app.settings.auto_connect && !app.import_offer {
             app.connect(ctx);
         }
         app
+    }
+
+    /// Einrichtungsassistent: Schritt aufrufen und den passenden Konfigurationsreiter zeigen.
+    fn wizard_goto(&mut self, step: usize) {
+        self.config.tab = self.wizard.goto(step);
+        self.tab = Tab::Config;
+        if self.config.tab == ConfigTab::Port {
+            self.config.ports = view_config::list_ports();
+        }
     }
 
     fn info(&mut self, text: impl Into<String>) {
@@ -812,6 +837,16 @@ impl App {
                 Err(e) => self.error(format!("{e:#}")),
             },
             Action::AskDefaults => self.confirm_defaults = true,
+            Action::WizardGoto(step) => self.wizard_goto(step),
+            Action::WizardFinish => {
+                self.wizard.active = false;
+                self.tab = Tab::Status;
+                self.info("Schnelleinrichtung abgeschlossen");
+            }
+            Action::WizardClose => {
+                self.wizard.active = false;
+                self.info("Schnelleinrichtung abgebrochen");
+            }
             Action::FetchSourcetable => {
                 let cfg = self.ntrip_config();
                 let (tx, rx) = mpsc::channel();
@@ -1033,6 +1068,10 @@ impl App {
                 }
             });
             ui.menu_button("Hilfe", |ui| {
+                if item(ui, "Schnelleinrichtung …", true) {
+                    actions.push(Action::WizardGoto(0));
+                }
+                ui.separator();
                 if item(ui, "Kurzanleitung und Info", true) {
                     self.tab = Tab::Help;
                 }
@@ -1058,11 +1097,21 @@ impl App {
                 }
             }
             ui.separator();
-            ui.label(format!(
-                "SAPOS {} {:.1} kB/s",
-                st.ntrip.phase.label(),
-                st.ntrip.rate / 1024.0
-            ));
+            // SAPOS-Feld: grün bei Verbindung, sonst rot mit Hinweis zum Einschalten
+            let sapos_active = st.ntrip.phase == NtripPhase::Active;
+            let sapos = ui.colored_label(
+                if sapos_active { GOOD } else { BAD },
+                format!("● SAPOS {} {:.1} kB/s", st.ntrip.phase.label(), st.ntrip.rate / 1024.0),
+            );
+            if !sapos_active {
+                sapos.on_hover_text(
+                    "SAPOS ist nicht verbunden. Einschalten über:\n\
+                     • Reiter „Korrekturdaten“ → Button „SAPOS verbinden“\n\
+                     • Menü Verbindung → SAPOS starten\n\
+                     • automatisch: Konfiguration → SAPOS → „Beim Verbinden SAPOS starten“\n\
+                     Voraussetzung: Empfänger verbunden (F5), Zugangsdaten unter Konfiguration → SAPOS.",
+                );
+            }
             if let Some(s) = &st.solution {
                 ui.separator();
                 ui.colored_label(fix_color(s.fix), s.fix.label());
@@ -1097,7 +1146,7 @@ impl App {
 
     fn dialogs(&mut self, ctx: &egui::Context) {
         if self.confirm_defaults {
-            egui::Window::new("Werkseinstellungen").collapsible(false).show(ctx, |ui| {
+            dialog(ctx, self.work_area, "Werkseinstellungen").show(ctx, |ui| {
                 ui.label("Alle Einstellungen auf die Vorgaben zurücksetzen?\nDas gespeicherte Passwort und die Punktdateien bleiben erhalten.");
                 ui.horizontal(|ui| {
                     if ui.button("Zurücksetzen").clicked() {
@@ -1114,9 +1163,7 @@ impl App {
         }
         if self.import_offer {
             let mut done = false;
-            egui::Window::new("GNSS-Einstellungen übernehmen")
-                .collapsible(false)
-                .resizable(false)
+            dialog(ctx, self.work_area, "GNSS-Einstellungen übernehmen")
                 .show(ctx, |ui| {
                     ui.label(format!(
                         "Es gibt Einstellungen des eigenständigen Programms gnss-vermessung:\n{}\n\n\
@@ -1133,6 +1180,7 @@ impl App {
                             // eigene Datei anlegen, damit nicht erneut gefragt wird
                             self.save_settings();
                             done = true;
+                            self.wizard_goto(0);
                         }
                     });
                 });
@@ -1442,6 +1490,19 @@ impl App {
                 }
             };
             egui::Panel::bottom("statusbar").show(ui, |ui| self.status_bar(ui, st));
+            view_config::set_highlight(&ctx, self.wizard.highlight());
+            if self.wizard.active {
+                let inputs = view_wizard::Inputs {
+                    st,
+                    connected,
+                    ntrip_running,
+                    password_set: !self.password.is_empty(),
+                    mountpoints: self.config.mountpoints.len(),
+                };
+                egui::Panel::bottom("wizard").show(ui, |ui| {
+                    self.wizard.show(ui, &mut self.settings, &inputs, &mut actions);
+                });
+            }
             if !matches!(self.tab, Tab::Field | Tab::Map | Tab::Track) {
                 egui::Panel::right("side")
                     .resizable(false)
@@ -1450,7 +1511,7 @@ impl App {
                         view_status::side(ui, st, &self.height);
                     });
             }
-            egui::CentralPanel::default().show(ui, |ui| match self.tab {
+            let central = egui::CentralPanel::default().show(ui, |ui| match self.tab {
                 Tab::Status => view_status::status(ui, st, &self.height),
                 Tab::Field => view_status::field(ui, st, &self.height),
                 Tab::Measure => view_measure::show(
@@ -1486,8 +1547,9 @@ impl App {
                     &mut actions,
                 ),
                 Tab::Tools => view_config::tools(ui, &mut self.tools),
-                Tab::Help => view_config::help(ui, st),
+                Tab::Help => view_config::help(ui, st, &mut actions),
             });
+            self.work_area = central.response.rect;
         }
         self.dialogs(&ctx);
         for a in actions {

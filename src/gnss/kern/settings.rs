@@ -149,6 +149,18 @@ impl Settings {
         }
     }
 
+    /// Übernimmt Messvorgaben (z. B. die Standardwerte aus dem Einrichtungsassistenten).
+    pub fn set_criteria(&mut self, c: &Criteria) {
+        self.epochs = c.epochs;
+        self.min_seconds = c.min_seconds;
+        self.max_sigma_2d = c.max_sigma_2d;
+        self.max_sigma_h = c.max_sigma_h;
+        self.max_age = c.max_age;
+        self.max_pdop = c.max_pdop;
+        self.min_sats = c.min_sats;
+        self.restart_on_fix_loss = c.restart_on_fix_loss;
+    }
+
     pub fn path() -> PathBuf {
         crate::grundlagen::pfade::benutzer_get(SETTINGS_FILE)
     }
