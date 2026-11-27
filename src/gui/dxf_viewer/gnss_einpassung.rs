@@ -366,7 +366,7 @@ fn zeichne_inhalt(
         ui.radio_value(&mut fenster.kontrolle, true, "Kontrollpunkt messen");
         let text = if misst { "■ Abbrechen" } else if fenster.kontrolle { "► Kontrolle messen" } else { "► T-Punkt messen" };
         let frei = misst || fenster.soll.is_some();
-        if ui.add_enabled(frei, egui::Button::new(RichText::new(text).strong()).min_size(Vec2::new(150.0, 26.0))).on_disabled_hover_text("Erst einen Punkt im Plan antippen").clicked() {
+        if ui.add_enabled(frei, egui::Button::new(RichText::new(text).strong().size(16.0)).min_size(Vec2::new(210.0, 46.0))).on_disabled_hover_text("Erst einen Punkt im Plan antippen").clicked() {
             aktion = Some(Aktion::Messen);
         }
     });

@@ -51,6 +51,21 @@ pub struct GnssParameter {
     /// So viele Epochen in Folge innerhalb der Toleranz, bevor die Absteckung grün zeigt
     pub stabil_epochen: usize,
     pub annaeherungston: bool,
+    /// Absteckung: Klickton, der mit abnehmendem Abstand schneller wird (Toughpad, GNSS.md 12.14)
+    pub annaeherung_klick: bool,
+    /// Grenzen der zweiten unabhängigen Belegung: Mindestabstand [min], Lage und Höhe [mm] (GNSS.md 12.2)
+    pub zweitbelegung_min: f64,
+    pub zweitbelegung_lage_mm: f64,
+    pub zweitbelegung_hoehe_mm: f64,
+    /// Nach dem Verbinden einen Kontrollpunkt vorschlagen (GNSS.md 12.3)
+    pub sitzungskontrolle: bool,
+    /// UBX-Rohdaten im Projektordner GNSS mitschreiben (GNSS.md 12.6)
+    pub rohdaten: bool,
+    /// Linienaufnahme: Punkt alle x m bzw. alle x s (0 = aus) (GNSS.md 12.8)
+    pub linie_abstand_m: f64,
+    pub linie_zeit_s: f64,
+    /// Elevationsmaske der Satellitenvorhersage [°] (GNSS.md 12.13)
+    pub vorhersage_maske_grad: f64,
 }
 
 impl Default for GnssParameter {
@@ -71,6 +86,15 @@ impl Default for GnssParameter {
             ausrichtung_min_m: 2.0,
             stabil_epochen: 3,
             annaeherungston: true,
+            annaeherung_klick: true,
+            zweitbelegung_min: 10.0,
+            zweitbelegung_lage_mm: 20.0,
+            zweitbelegung_hoehe_mm: 30.0,
+            sitzungskontrolle: true,
+            rohdaten: false,
+            linie_abstand_m: 5.0,
+            linie_zeit_s: 0.0,
+            vorhersage_maske_grad: 15.0,
         }
     }
 }
@@ -358,6 +382,15 @@ impl RechenparameterManager {
             ("GnssAusrichtungMin_m", f(p.gnss.ausrichtung_min_m, 1)),
             ("GnssStabilEpochen", p.gnss.stabil_epochen.to_string()),
             ("GnssAnnaeherungston", wahr(p.gnss.annaeherungston)),
+            ("GnssAnnaeherungKlick", wahr(p.gnss.annaeherung_klick)),
+            ("GnssZweitbelegung_min", f(p.gnss.zweitbelegung_min, 1)),
+            ("GnssZweitbelegungLage_mm", f(p.gnss.zweitbelegung_lage_mm, 1)),
+            ("GnssZweitbelegungHoehe_mm", f(p.gnss.zweitbelegung_hoehe_mm, 1)),
+            ("GnssSitzungskontrolle", wahr(p.gnss.sitzungskontrolle)),
+            ("GnssRohdaten", wahr(p.gnss.rohdaten)),
+            ("GnssLinieAbstand_m", f(p.gnss.linie_abstand_m, 2)),
+            ("GnssLinieZeit_s", f(p.gnss.linie_zeit_s, 1)),
+            ("GnssVorhersageMaske_Grad", f(p.gnss.vorhersage_maske_grad, 1)),
         ];
         datei_speicher::schreibe_text(&self.pfad, &xml_einfach::schreibe(WURZEL, &eintraege))
     }
@@ -426,6 +459,15 @@ fn parse_parameter(doc: &XmlDokument) -> Rechenparameter {
                 ausrichtung_min_m: zahl("GnssAusrichtungMin_m", g.ausrichtung_min_m),
                 stabil_epochen: ganz("GnssStabilEpochen", g.stabil_epochen),
                 annaeherungston: wahrheit("GnssAnnaeherungston", g.annaeherungston),
+                annaeherung_klick: wahrheit("GnssAnnaeherungKlick", g.annaeherung_klick),
+                zweitbelegung_min: zahl("GnssZweitbelegung_min", g.zweitbelegung_min),
+                zweitbelegung_lage_mm: zahl("GnssZweitbelegungLage_mm", g.zweitbelegung_lage_mm),
+                zweitbelegung_hoehe_mm: zahl("GnssZweitbelegungHoehe_mm", g.zweitbelegung_hoehe_mm),
+                sitzungskontrolle: wahrheit("GnssSitzungskontrolle", g.sitzungskontrolle),
+                rohdaten: wahrheit("GnssRohdaten", g.rohdaten),
+                linie_abstand_m: zahl("GnssLinieAbstand_m", g.linie_abstand_m),
+                linie_zeit_s: zahl("GnssLinieZeit_s", g.linie_zeit_s),
+                vorhersage_maske_grad: zahl("GnssVorhersageMaske_Grad", g.vorhersage_maske_grad),
             }
         },
     }

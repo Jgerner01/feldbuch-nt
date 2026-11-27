@@ -1,6 +1,7 @@
 // Zweck:    GNSS-Absteckung im DXF-Viewer: Zielpunkt im Plan wählen, Antenne und Ziel in Echtzeit, Ausrichtung der
 //           Grafik nach der Gehrichtung (Bewegungsvektor), Vor/Rechts-Anzeige, Zoomstufen, Ampel nach der
-//           Absteckgenauigkeit, Stabilitätsprüfung, Kontrollmessung, „Abgesteckt“ und Absteckprotokoll (GNSS.md Abschnitt 7)
+//           Absteckgenauigkeit, Stabilitätsprüfung, Kontrollmessung, „Abgesteckt“ und Absteckprotokoll (GNSS.md Abschnitt 7);
+//           Klickton, der mit abnehmendem Abstand schneller wird, und große Knöpfe für das Toughpad (GNSS.md 12.14)
 // Hardware: GNSS-Empfänger u-blox ZED-F9P (über das GNSS-Modul)
 // Autor:    Johann Gerner
 
@@ -34,6 +35,13 @@ const HINTERGRUND: Color32 = Color32::from_rgb(24, 28, 36);
 const RING: Color32 = Color32::from_rgb(80, 90, 110);
 const ZIEL: Color32 = Color32::from_rgb(255, 70, 70);
 const NORD: Color32 = Color32::from_rgb(200, 200, 230);
+/// Klickton: unterhalb dieses Abstands [m], Takt je Meter Abstand [s] und kürzester/längster Takt [s].
+const KLICK_BEREICH_M: f64 = 5.0;
+const KLICK_TAKT_S_PRO_M: f64 = 0.4;
+const KLICK_TAKT_MIN_S: f64 = 0.12;
+const KLICK_TAKT_MAX_S: f64 = 2.0;
+/// Größe der Knöpfe im Absteckfenster (Bedienung mit Handschuh/Stift).
+const KNOPF_GROSS: Vec2 = Vec2::new(190.0, 48.0);
 
 /// Laufende GNSS-Absteckung.
 #[derive(Default)]
@@ -49,6 +57,8 @@ pub(in crate::gui::dxf_viewer) struct GnssAbsteckung {
     pub meldung: String,
     /// Toleranz ist erreicht und wurde gemeldet (Ton nur einmal)
     gemeldet: bool,
+    /// Zeitpunkt des letzten Annäherungsklicks
+    letzter_klick: Option<std::time::Instant>,
 }
 
 /// Abweichung Ist → Soll und Bewertung.
@@ -100,6 +110,7 @@ impl DxfViewer {
     pub(super) fn gnss_absteckung_epoche(&mut self, projekt: &Projekt, pos: PlanPos, sekunden: f64) {
         let p = &projekt.rechenparameter.params;
         let (tol_lage, tol_hoehe, stabil_n, ton_an, min_m) = (p.absteck_toleranz_lage_mm, p.absteck_toleranz_hoehe_mm, p.gnss.stabil_epochen, p.gnss.annaeherungston, p.gnss.ausrichtung_min_m);
+        let klick_an = p.gnss.annaeherung_klick;
         let fix_ok = self.gnss.live.as_ref().is_some_and(|l| l.fix == crate::gnss::kern::model::Fix::Fixed && !l.stale);
         let Some(a) = self.gnss.absteckung.as_mut() else {
             return;
@@ -114,6 +125,15 @@ impl DxfViewer {
         } else {
             a.stabil = 0;
             a.gemeldet = false;
+        }
+        // Annäherung per Ton: je näher, desto schneller (in der Toleranz übernimmt der Bestätigungston)
+        let abstand = v.strecke();
+        if klick_an && fix_ok && abstand < KLICK_BEREICH_M && !v.in_toleranz(tol_lage, tol_hoehe) {
+            let takt = (abstand * KLICK_TAKT_S_PRO_M).clamp(KLICK_TAKT_MIN_S, KLICK_TAKT_MAX_S);
+            if a.letzter_klick.is_none_or(|t| t.elapsed().as_secs_f64() >= takt) {
+                a.letzter_klick = Some(std::time::Instant::now());
+                ton::klick();
+            }
         }
         if a.stabil >= stabil_n.max(1) && !a.gemeldet {
             a.gemeldet = true;
@@ -272,10 +292,10 @@ impl DxfViewer {
                         (None, true) => "■ startet …".into(),
                         _ => "► Messen".into(),
                     };
-                    if ui.add(egui::Button::new(RichText::new(text).strong()).min_size(Vec2::new(140.0, 32.0))).clicked() {
+                    if ui.add(egui::Button::new(RichText::new(text).strong().size(16.0)).min_size(KNOPF_GROSS)).clicked() {
                         messen = true;
                     }
-                    if ui.add_enabled(a.letzte_messung.is_some(), egui::Button::new(RichText::new("Abgesteckt").strong()).min_size(Vec2::new(120.0, 32.0))).clicked() {
+                    if ui.add_enabled(a.letzte_messung.is_some(), egui::Button::new(RichText::new("Abgesteckt").strong().size(16.0)).min_size(KNOPF_GROSS)).clicked() {
                         abgesteckt = true;
                     }
                 });

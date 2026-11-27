@@ -14,9 +14,9 @@ use crate::grundlagen::format::{f, parse_zahl};
 /// Trennzeichen.
 const TRENNER: char = ';';
 /// Spalten der Datei.
-pub const SPALTEN: [&str; 20] = [
+pub const SPALTEN: [&str; 22] = [
     "PunktNr", "Code", "R", "H", "Hoehe", "E_UTM", "N_UTM", "h_ell", "H_Bezug", "sR_mm", "sH_mm", "sHoehe_mm", "Epochen", "Dauer_s",
-    "Stabhoehe_m", "PCO_m", "Hoehenbezug", "EinpassungId", "Zeit", "Quelle",
+    "Stabhoehe_m", "PCO_m", "Hoehenbezug", "EinpassungId", "Zeit", "Quelle", "Zeit_GNSS", "Belegungen",
 ];
 
 /// Ein gemessener GNSS-Punkt.
@@ -44,8 +44,12 @@ pub struct GnssPunkt {
     /// leer: ohne Einpassung (UTM)
     pub einpassung_id: String,
     pub zeit: String,
-    /// „GNSS RTK“ oder „WIEDERGABE“
+    /// „GNSS RTK“, „WIEDERGABE“ oder „EXZENTRUM“
     pub quelle: String,
+    /// UTC-Zeit des Empfängers am Ende der Messung (unabhängig von der PC-Uhr)
+    pub zeit_gnss: String,
+    /// Anzahl gemittelter Belegungen (0 bei berechneten Punkten)
+    pub belegungen: usize,
 }
 
 impl GnssPunkt {
@@ -72,6 +76,8 @@ impl GnssPunkt {
             self.einpassung_id.clone(),
             self.zeit.clone(),
             self.quelle.clone(),
+            self.zeit_gnss.clone(),
+            self.belegungen.to_string(),
         ]
     }
 
@@ -103,6 +109,8 @@ impl GnssPunkt {
             einpassung_id: t("EinpassungId"),
             zeit: t("Zeit"),
             quelle: t("Quelle"),
+            zeit_gnss: t("Zeit_GNSS"),
+            belegungen: t("Belegungen").parse().unwrap_or(1),
         })
     }
 }

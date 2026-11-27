@@ -1,5 +1,5 @@
-// Zweck:    Bestätigungston (0,5 s: zwei aufsteigende Töne) nach erfolgreicher Messung und Fehlerton (0,5 s: dreimal 800 Hz)
-//           nach fehlgeschlagener Messung, ohne Zusatzbibliothek
+// Zweck:    Bestätigungston (0,5 s: zwei aufsteigende Töne) nach erfolgreicher Messung, Fehlerton (0,5 s: dreimal 800 Hz)
+//           nach fehlgeschlagener Messung und kurzer Annäherungston (GNSS-Absteckung), ohne Zusatzbibliothek
 // Hardware: Audioausgabe des Rechners (Windows: winmm PlaySound aus dem Speicher)
 // Autor:    Johann Gerner
 
@@ -22,6 +22,9 @@ const FEHLER_PAUSE_S: f64 = 0.1;
 const FEHLER_ANZAHL_PIEPS: usize = 3;
 const FEHLER_EINBLENDEN_S: f64 = 0.005;
 const FEHLER_AUSBLENDEN_S: f64 = 0.02;
+/// Annäherungston: kurzer Klick (1200 Hz, 60 ms).
+const KLICK_FREQUENZ_HZ: f64 = 1200.0;
+const KLICK_DAUER_S: f64 = 0.06;
 /// Größe des WAV-Kopfes [Byte] und Format-Konstanten (PCM, mono, 16 Bit).
 const WAV_KOPF_BYTES: u32 = 44;
 const WAV_FORMAT_PCM: u16 = 1;
@@ -121,6 +124,12 @@ pub fn bestaetigung() {
 pub fn fehler() {
     static WAV: OnceLock<Vec<u8>> = OnceLock::new();
     spiele(WAV.get_or_init(|| erzeuge_wav(werte_fehler())));
+}
+
+/// Kurzer Annäherungston; die Absteckung wiederholt ihn um so schneller, je näher das Ziel ist.
+pub fn klick() {
+    static WAV: OnceLock<Vec<u8>> = OnceLock::new();
+    spiele(WAV.get_or_init(|| erzeuge_wav(ton(KLICK_FREQUENZ_HZ, KLICK_DAUER_S, FEHLER_EINBLENDEN_S, FEHLER_AUSBLENDEN_S))));
 }
 
 #[cfg(test)]

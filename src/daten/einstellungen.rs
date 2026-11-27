@@ -58,6 +58,8 @@ pub struct Einstellungen {
     pub laser_an: bool,
 
     pub tachymeter_modell: TachymeterModell,
+    /// zuletzt verwendetes Tachymeter (Rückweg beim Wechsel GNSS → Tachymeter)
+    pub letztes_tachymeter_modell: TachymeterModell,
     pub tachymeter_port: String,
     pub tachymeter_baud_rate: i32,
     pub tachymeter_data_bits: i32,
@@ -106,6 +108,7 @@ impl Einstellungen {
             letzter_modus_neupunkt: true,
             laser_an: false,
             tachymeter_modell: TachymeterModell::Manuell,
+            letztes_tachymeter_modell: TachymeterModell::Manuell,
             tachymeter_port: String::new(),
             tachymeter_baud_rate: STANDARD_BAUDRATE,
             tachymeter_data_bits: STANDARD_DATENBITS,
@@ -271,6 +274,9 @@ impl Einstellungen {
         if !self.tachymeter_modell.ist_gnss() && text("IstGnssGeraet").is_some_and(|t| t.eq_ignore_ascii_case("true")) {
             self.tachymeter_modell = TachymeterModell::GnssSapos;
         }
+        if let Some(m) = text("LetztesTachymeterModell").and_then(TachymeterModell::aus_name).filter(|m| !m.ist_gnss()) {
+            self.letztes_tachymeter_modell = m;
+        }
         self.tachymeter_port = text("TachymeterPort").unwrap_or("").to_string();
         self.tachymeter_baud_rate = ganzzahl("TachymeterBaudRate", self.tachymeter_baud_rate);
         self.tachymeter_data_bits = ganzzahl("TachymeterDataBits", self.tachymeter_data_bits);
@@ -320,6 +326,7 @@ impl Einstellungen {
             ("LetzterModusNeupunkt", wahr(self.letzter_modus_neupunkt)),
             ("LaserAn", wahr(self.laser_an)),
             ("TachymeterModell", self.tachymeter_modell.name().to_string()),
+            ("LetztesTachymeterModell", self.letztes_tachymeter_modell.name().to_string()),
             ("TachymeterPort", self.tachymeter_port.clone()),
             ("TachymeterBaudRate", self.tachymeter_baud_rate.to_string()),
             ("TachymeterDataBits", self.tachymeter_data_bits.to_string()),

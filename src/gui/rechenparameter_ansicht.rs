@@ -227,6 +227,21 @@ fn gnss_bereich(ui: &mut egui::Ui, g: &mut GnssParameter) {
         ui.label("Absteckung: Ton bei Toleranz");
         ui.checkbox(&mut g.annaeherungston, "");
         ui.end_row();
+        ui.label("Absteckung: Klickton nach Abstand");
+        ui.checkbox(&mut g.annaeherung_klick, "");
+        ui.end_row();
+        zahl(ui, "2. Belegung: Mindestabstand [min]", &mut g.zweitbelegung_min);
+        zahl(ui, "2. Belegung: Grenze Lage [mm]", &mut g.zweitbelegung_lage_mm);
+        zahl(ui, "2. Belegung: Grenze Höhe [mm]", &mut g.zweitbelegung_hoehe_mm);
+        ui.label("Kontrollpunkt nach dem Verbinden vorschlagen");
+        ui.checkbox(&mut g.sitzungskontrolle, "");
+        ui.end_row();
+        ui.label("UBX-Rohdaten im Projekt mitschreiben");
+        ui.checkbox(&mut g.rohdaten, "").on_hover_text("Ordner GNSS im Projektverzeichnis, eine Datei je Sitzung");
+        ui.end_row();
+        zahl(ui, "Linienaufnahme: Punktabstand [m]", &mut g.linie_abstand_m);
+        zahl(ui, "Linienaufnahme: Zeittakt [s] (0 = aus)", &mut g.linie_zeit_s);
+        zahl(ui, "Satellitenvorhersage: Elevationsmaske [°]", &mut g.vorhersage_maske_grad);
     });
 }
 

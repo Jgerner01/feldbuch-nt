@@ -105,6 +105,8 @@ const FENSTER_POLARPUNKTE: [f32; 2] = [1150.0, 780.0];
 const FENSTER_GNSS: [f32; 2] = [1280.0, 820.0];
 /// Mindestgröße der Modulfenster.
 const FENSTER_MIN: [f32; 2] = [760.0, 480.0];
+/// Kennung des GNSS-Fensters (Viewport und Merker der Startgröße).
+const KENNUNG_GNSS: &str = "gnss_vermessung";
 
 /// Zeigt ein Modul als eigenes Fenster. `inhalt` liefert `true`, wenn das Modul sich selbst schließen will.
 /// Der Rückgabewert ist `false`, wenn das Fenster geschlossen wurde.
@@ -122,6 +124,7 @@ fn zeige_fenster(
         .with_min_inner_size(FENSTER_MIN);
     let mut offen = true;
     ctx.show_viewport_immediate(id, builder, |ui, _klasse| {
+        maximiere_einmal_auf_kleinem_bildschirm(ui.ctx(), kennung);
         egui::CentralPanel::default().show(ui, |ui| {
             if inhalt(ui) {
                 offen = false;
@@ -131,27 +134,67 @@ fn zeige_fenster(
             offen = false;
         }
     });
+    if !offen {
+        vergiss_startgroesse(ctx, kennung);
+    }
     offen
+}
+
+/// Ist der Bildschirm kleiner als Full HD (ein Full-HD-Fenster passt samt Rahmen und Taskleiste nicht darauf)?
+/// `None`, solange die Bildschirmgröße noch unbekannt ist. Gerechnet wird in Punkten, also nach der
+/// Windows-Skalierung: ein Full-HD-Bildschirm mit 150 % zählt wie 1280 × 720.
+fn bildschirm_kleiner_als_fullhd(ctx: &egui::Context) -> Option<(bool, egui::Vec2, egui::Vec2)> {
+    let (monitor, innen, aussen) = ctx.input(|i| {
+        let v = i.viewport();
+        (v.monitor_size, v.inner_rect, v.outer_rect)
+    });
+    let monitor = monitor?;
+    let rahmen = match (innen, aussen) {
+        (Some(innen), Some(aussen)) if aussen.size().x >= innen.size().x => aussen.size() - innen.size(),
+        _ => RAHMEN_RESERVE,
+    };
+    let aussen_groesse = START_GROESSE + rahmen;
+    let klein = monitor.x < aussen_groesse.x || monitor.y - TASKLEISTE_RESERVE < aussen_groesse.y;
+    Some((klein, monitor, aussen_groesse))
+}
+
+/// Merker je Fenster, dass die Startgröße schon gesetzt ist.
+fn startgroesse_merker(kennung: &str) -> egui::Id {
+    egui::Id::unique(("fenster_startgroesse", kennung))
+}
+
+/// Modulfenster (GNSS, Freie Stationierung, Polarpunkte …): auf einem Bildschirm unter Full HD einmal beim Öffnen
+/// maximieren, sonst die vorgesehene Größe behalten. Der Benutzer kann danach frei verkleinern.
+pub(crate) fn maximiere_einmal_auf_kleinem_bildschirm(ctx: &egui::Context, kennung: &str) {
+    let merker = startgroesse_merker(kennung);
+    if ctx.data(|d| d.get_temp::<bool>(merker)).unwrap_or(false) {
+        return;
+    }
+    match bildschirm_kleiner_als_fullhd(ctx) {
+        None => ctx.request_repaint(),
+        Some((klein, _, _)) => {
+            if klein {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+            }
+            ctx.data_mut(|d| d.insert_temp(merker, true));
+        }
+    }
+}
+
+/// Beim Schließen eines Modulfensters: beim nächsten Öffnen wieder nach der Bildschirmgröße richten.
+pub(crate) fn vergiss_startgroesse(ctx: &egui::Context, kennung: &str) {
+    ctx.data_mut(|d| d.remove::<bool>(startgroesse_merker(kennung)));
 }
 
 /// Legt die Größe des aktuellen Fensters (Viewport) fest: Full HD, wenn es samt Rahmen und Taskleiste auf den
 /// Bildschirm passt, sonst maximiert. Gibt `false` zurück, solange die Bildschirmgröße noch unbekannt ist
 /// (dann im nächsten Frame erneut aufrufen). Gilt für das Hauptfenster und den DXF-Viewer.
 pub(crate) fn setze_startgroesse_fenster(ctx: &egui::Context) -> bool {
-    let (monitor, innen, aussen) = ctx.input(|i| {
-        let v = i.viewport();
-        (v.monitor_size, v.inner_rect, v.outer_rect)
-    });
-    let Some(monitor) = monitor else {
+    let Some((klein, monitor, aussen_groesse)) = bildschirm_kleiner_als_fullhd(ctx) else {
         ctx.request_repaint();
         return false;
     };
-    let rahmen = match (innen, aussen) {
-        (Some(innen), Some(aussen)) if aussen.size().x >= innen.size().x => aussen.size() - innen.size(),
-        _ => RAHMEN_RESERVE,
-    };
-    let aussen_groesse = START_GROESSE + rahmen;
-    if monitor.x >= aussen_groesse.x && monitor.y - TASKLEISTE_RESERVE >= aussen_groesse.y {
+    if !klein {
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(START_GROESSE));
         let links = ((monitor.x - aussen_groesse.x) / 2.0).max(0.0);
         let oben = ((monitor.y - TASKLEISTE_RESERVE - aussen_groesse.y) / 2.0).max(0.0);
@@ -276,19 +319,23 @@ impl FeldbuchApp {
         if !self.gnss_fenster {
             return;
         }
-        let id = egui::ViewportId::from_hash_of("gnss_vermessung");
+        let id = egui::ViewportId::from_hash_of(KENNUNG_GNSS);
         let builder = egui::ViewportBuilder::default()
             .with_title("GNSS-Vermessung")
             .with_inner_size(FENSTER_GNSS)
             .with_min_inner_size(FENSTER_MIN);
         let mut offen = true;
         ctx.show_viewport_immediate(id, builder, |ui, _klasse| {
+            maximiere_einmal_auf_kleinem_bildschirm(ui.ctx(), KENNUNG_GNSS);
             gnss.zeichne(ui);
             if ui.ctx().input(|i| i.viewport().close_requested()) {
                 offen = false;
             }
         });
         // Schließen des Fensters beendet nicht die Messung: Empfänger und SAPOS bleiben verbunden
+        if !offen {
+            vergiss_startgroesse(ctx, KENNUNG_GNSS);
+        }
         self.gnss_fenster = offen;
     }
 

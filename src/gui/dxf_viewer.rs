@@ -99,6 +99,7 @@ mod flaechenberechnung;
 mod gnss;
 mod gnss_absteckung;
 mod gnss_einpassung;
+mod gnss_extras;
 mod pdf_export;
 mod messdaten_eingabe;
 mod messen;
@@ -212,6 +213,8 @@ enum Dialog {
     Aufstellungspruefung { text: String },
     /// Orientierungskontrolle auf einen Anschlusspunkt.
     Kontrolle(Box<standpunkt::KontrollDialog>),
+    /// Rückfragen des GNSS-Betriebs (Stabhöhe, Streuung, 2. Belegung, Höhenbezug, Sitzungskontrolle)
+    Gnss(Box<gnss_extras::GnssDialog>),
 }
 
 /// Zu löschende Punkte.
@@ -316,6 +319,8 @@ pub struct DxfViewer {
     txt_punkt_nr: String,
     /// Die A-Taste wurde in diesem Bildaufbau gedrückt.
     mess_taste: bool,
+    /// Messquelle zwischen GNSS und Tachymeter wechseln (vor dem nächsten Bild)
+    messquelle_wechseln: bool,
     /// Zwischenspeicher für Umschließungsrechtecke und Farben der DXF-Zeichnung.
     zeichen_cache: std::cell::RefCell<ZeichenCache>,
     /// Bis dahin wird vereinfacht gezeichnet (Ansicht wurde gerade geändert).
@@ -400,6 +405,7 @@ impl Default for DxfViewer {
             txt_code: String::new(),
             txt_punkt_nr: String::new(),
             mess_taste: false,
+            messquelle_wechseln: false,
             zeichen_cache: std::cell::RefCell::new(ZeichenCache::default()),
             bewegung_bis: None,
             bewegung_aktiv: false,
@@ -964,6 +970,9 @@ impl DxfViewer {
                 self.war_fokussiert = fokus;
                 self.bediene_geraet(projekt, geraet);
             }
+            if std::mem::take(&mut self.messquelle_wechseln) && !self.ist_auswahl() {
+                self.wechsle_messquelle(projekt, geraet);
+            }
             // Messquelle GNSS: Momentaufnahme der GNSS-Sitzung vor dem Zeichnen
             self.gnss.aktiv = !self.ist_auswahl() && projekt.einstellungen.tachymeter_modell.ist_gnss();
             if self.gnss.aktiv
@@ -978,6 +987,7 @@ impl DxfViewer {
                     self.zeige_einpassfenster(&ctx, projekt);
                     self.zeige_gnss_absteckung(&ctx, projekt);
                     self.zeige_gnss_startfrage(&ctx, projekt);
+                    self.zeige_gnss_extras(&ctx, projekt);
                 } else {
                     self.zeige_absteckfenster(&ctx, projekt, geraet);
                 }
@@ -1117,7 +1127,11 @@ impl DxfViewer {
         // A-Taste des Toughpad (als MESS_TASTE konfiguriert) löst die Messung aus, solange kein Dialog offen ist
         let absteck_ziel = self.absteckung.as_ref().is_some_and(|a| a.ziel.is_some());
         if self.gnss.aktiv {
-            if self.dialog.is_none() && self.mess_taste {
+            // Toughpad: Messen auch mit der Leertaste, solange kein Feld oder Knopf den Fokus hat (ein fokussierter Knopf
+            // würde die Leertaste selbst als Klick auswerten) (GNSS.md 12.14)
+            let frei = ui.ctx().memory(|m| m.focused().is_none());
+            let leertaste = frei && ui.ctx().input(|i| i.key_pressed(egui::Key::Space));
+            if self.dialog.is_none() && (self.mess_taste || leertaste) {
                 self.gnss_messen_geklickt(projekt);
             }
         } else if self.dialog.is_none() && absteck_ziel && self.mess_taste {
@@ -1261,6 +1275,13 @@ auswählen").strong().size(11.0).color(Color32::from_rgb(255, 190, 100))),
                 });
                 ui.add_space(MODUS_KNOPF_ABSTAND);
                 self.zeichne_modus_knopf(ui);
+                // GNSS und Tachymeter kombinieren: Messquelle wechseln, ohne die GNSS-Sitzung zu beenden (GNSS.md 12.5)
+                if crate::gnss::kern::settings::Settings::path().exists() {
+                    ui.add_space(6.0);
+                    if gnss::textknopf(ui, "→ GNSS", false).on_hover_text("Messquelle auf GNSS umschalten (die Tachymeterverbindung bleibt bestehen)").clicked() {
+                        self.messquelle_wechseln = true;
+                    }
+                }
             });
         });
     }

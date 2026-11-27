@@ -1250,6 +1250,13 @@ impl DxfViewer {
                 self.dialog = self.zeichne_standpunkt_dialog(&ctx, projekt, geraet, d);
                 return;
             }
+            Dialog::Gnss(d) => {
+                // die Rückfrage kann selbst einen neuen Dialog öffnen (z. B. 2. Belegung nach „Trotzdem übernehmen“)
+                if let Some(offen) = self.zeichne_gnss_dialog(&ctx, projekt, *d) {
+                    self.dialog = Some(Dialog::Gnss(Box::new(offen)));
+                }
+                return;
+            }
             anderer => anderer,
         };
         let fenster = |titel: &str| egui::Window::new(titel.to_string()).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, Vec2::ZERO);
@@ -1363,7 +1370,7 @@ impl DxfViewer {
             Dialog::Prisma { auswahl, konstante } => self.zeichne_prisma_dialog(&ctx, projekt, auswahl, konstante),
             Dialog::DxfExport { massstab, symbol, text } => self.zeichne_export_dialog(&ctx, projekt, massstab, symbol, text),
             Dialog::Messdaten(d) => self.zeichne_messdaten_dialog(&ctx, projekt, geraet, d),
-            Dialog::Standpunkt(_) | Dialog::IhKorrektur { .. } | Dialog::Aufstellungspruefung { .. } | Dialog::Kontrolle(_) => {}
+            Dialog::Standpunkt(_) | Dialog::IhKorrektur { .. } | Dialog::Aufstellungspruefung { .. } | Dialog::Kontrolle(_) | Dialog::Gnss(_) => {}
             Dialog::Loeschen { text, anzahl, ziele } => {
                 let mut antwort = None;
                 fenster("Punkte löschen").show(&ctx, |ui| {

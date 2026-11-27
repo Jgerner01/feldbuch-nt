@@ -1399,6 +1399,25 @@ impl App {
         })
     }
 
+    /// Startet die Aufzeichnung der UBX-Rohdaten (nicht bei der Wiedergabe).
+    pub fn starte_aufzeichnung(&self, pfad: &Path) -> Result<(), String> {
+        match &self.engine {
+            Some(e) if e.replay => Err("Bei der Wiedergabe wird nicht aufgezeichnet.".into()),
+            Some(e) => e.start_recording(pfad).map_err(|e| format!("{e:#}")),
+            None => Err("GNSS-Empfänger ist nicht verbunden.".into()),
+        }
+    }
+
+    /// Pfad und Größe der laufenden Rohdatenaufzeichnung.
+    pub fn aufzeichnung(&self) -> Option<(PathBuf, u64)> {
+        self.engine.as_ref().and_then(Engine::recording)
+    }
+
+    /// Empfangene GPS-Bahndaten (für die Satellitenvorhersage).
+    pub fn gps_bahndaten(&self) -> std::collections::BTreeMap<u8, crate::gnss::kern::spp::Ephemeris> {
+        self.engine.as_ref().map(|e| e.state().ephemerides.gps.clone()).unwrap_or_default()
+    }
+
     /// Holt das Ergebnis einer abgeschlossenen Messung von Feldbuch-NT ab.
     pub fn take_extern_result(&mut self) -> Option<ExternResult> {
         self.extern_result.take()
@@ -1407,16 +1426,23 @@ impl App {
     /// Übernimmt eine abgeschlossene Messung von Feldbuch-NT.
     fn collect_extern(&mut self) {
         let Some(engine) = &self.engine else { return };
-        let (measurement, mountpoint, firmware, gdop) = {
+        let (measurement, mountpoint, firmware, gdop, utc) = {
             let mut st = engine.state();
             if !st.measurement.as_ref().is_some_and(|m| m.done) {
                 return;
             }
+            // GNSS-Zeit als unabhängiger Zeitstempel (die PC-Uhr des Feldrechners ist oft ungenau)
+            let utc = st
+                .time_utc
+                .as_ref()
+                .and_then(|(t, _)| crate::gnss::kern::gtime::utc_datetime(t))
+                .map(|u| u.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+                .unwrap_or_default();
             let firmware = st.version.as_ref().map(|v| v.2.join(" ")).unwrap_or_default();
             let gdop = st.receiver_dop.map(|d| d.g);
             let mountpoint = st.ntrip.mountpoint.clone();
             match st.measurement.take() {
-                Some(m) => (m, mountpoint, firmware, gdop),
+                Some(m) => (m, mountpoint, firmware, gdop, utc),
                 None => return,
             }
         };
@@ -1431,7 +1457,8 @@ impl App {
             self.error("Punkt liegt außerhalb des Quasigeoid-Gitters. Ergebnis verworfen.");
             return;
         }
-        let protocol = self.protocol(&measurement, mountpoint, firmware, gdop);
+        let mut protocol = self.protocol(&measurement, mountpoint, firmware, gdop);
+        protocol.push(("GNSS_Zeit_UTC", utc));
         self.extern_result = Some(ExternResult { measurement, result, protocol, replay });
         if self.settings.sounds {
             tone(TONE_DONE);

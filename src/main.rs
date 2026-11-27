@@ -52,6 +52,10 @@ fn main() -> eframe::Result {
         update::fuehre_aus(&argumente);
         return Ok(());
     }
+    // nur eine Instanz: zwei Feldbücher würden dieselben Projektdateien und Schnittstellen benutzen
+    if !grundlagen::einzelinstanz::belegen() {
+        return Ok(());
+    }
     let mut viewport = eframe::egui::ViewportBuilder::default().with_inner_size(WINDOW_SIZE);
     if let Some(icon) = fenster_icon() {
         viewport = viewport.with_icon(icon);

@@ -542,6 +542,19 @@ fn hinweise(erg: &EinpassErgebnis, lage: &[&TPunkt]) -> Vec<String> {
 pub struct EinpassungsDatei {
     pub aktiv: Option<String>,
     pub einpassungen: Vec<Einpassung>,
+    /// Höhenanschluss an einen Höhenfestpunkt (gilt nur ohne Höheneinpassung, GNSS.md 12.10)
+    #[serde(default)]
+    pub hoehen_anschluss: Option<HoehenAnschluss>,
+}
+
+/// Konstante Höhenverschiebung aus der Messung eines Höhenfestpunkts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct HoehenAnschluss {
+    pub nr: String,
+    /// Soll − gemessene Höhe [m]; wird zu jeder GNSS-Höhe addiert
+    pub dz_m: f64,
+    pub hoehenbezug: String,
+    pub zeit: String,
 }
 
 impl EinpassungsDatei {

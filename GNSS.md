@@ -738,9 +738,9 @@ Keine offenen Fragen mehr; die Umsetzung kann mit Schritt 1 (Abschnitt 13) begin
 
 ---
 
-## 15. Umsetzungsstand (26.11.2026, Version 0.10.1, Build 55)
+## 15. Umsetzungsstand (27.11.2026, Version 0.11.0)
 
-Geprüft mit 503 automatischen Tests (darunter die übernommenen Tests des GNSS-Programms und eine Ende-zu-Ende-Prüfung
+Geprüft mit 508 automatischen Tests (darunter die übernommenen Tests des GNSS-Programms und eine Ende-zu-Ende-Prüfung
 mit der Wiedergabe von `testdaten/gnss/demo.ubx`). **Mit Empfänger und in der Oberfläche noch nicht geprüft.**
 
 ### Umgesetzt
@@ -755,7 +755,20 @@ mit der Wiedergabe von `testdaten/gnss/demo.ubx`). **Mit Empfänger und in der O
 | 7 Absteckung | eigenes Fenster mit Grafik, Ausrichtung nach Gehrichtung (Mindestweg, Glättung, Hysterese, Einfrieren unter 0,1 m/s und unter 1 m), Vor/Rechts bzw. Nord/Ost, Ringe 1 m / 10 cm / 1 cm, Ampel, Stabilität, Kontrollmessung, „Abgesteckt“, RTF-Absteckprotokoll |
 | 8 Einpassung | Fenster mit T-Punkten aus dem Plan, Methoden aus 8.4, Höhe getrennt, Mehrfachbelegung gemittelt, Residuen mit Ampel und Aktiv-Schaltern, Kontrollpunkt, Geometrie- und Maßstabshinweis, Probe auf groben Fehler (Punkt weglassen), Rahmenwarnung, Übernahme, RTF-Protokoll, „GNSS-Punkte neu rechnen“ |
 | 9 Rechenparameter | Gruppe „GNSS – Einpassung und Absteckung“ |
-| 10 Messprotokoll | GNSS-Spalten belegt, Ereignisse `GNSS_VERBINDUNG` und `EINPASSUNG`, Typen `GNSS`, `GNSS-TP`, `GNSS-KP`, `GNSS-AB` |
+| 10 Messprotokoll | GNSS-Spalten belegt, Ereignisse `GNSS_VERBINDUNG` und `EINPASSUNG`, Typen `GNSS`, `GNSS-TP`, `GNSS-KP`, `GNSS-AB`, `GNSS-EXZ` |
+| 6.2 Stabhöhe | Änderung der Stabhöhe nach einer Messung → Rückfrage „Letzte Messung korrigieren / Nur künftige Messungen“; Korrektur der Höhen (Lage bleibt), Eintrag `KORREKTUR` |
+| 6.3 Streuung | Streuung der Mittelung über den Grenzen der Messvorgaben (σ 2D / σ Höhe) → gelbe Warnung mit Ergebnis, „Wiederholen / Trotzdem übernehmen / Verwerfen“ (gilt für Neupunkte, T-Punkte, Kontrollpunkte, Höhenanschluss) |
+| 12.2 Zweite Belegung | Messung einer vorhandenen Nummer → Vergleich (ΔLage, ΔHöhe, Abstand in Minuten) mit Grenzen aus den Rechenparametern, „Mitteln / Ersetzen / Verwerfen“; Mittel gewichtet nach Belegungen, Spalte `Belegungen` |
+| 12.3 Kontrolle | nach dem Verbinden Vorschlag „Kontrollpunkt messen“ (bei aktiver Einpassung, abschaltbar); auch über Extras |
+| 12.4 Exzentrum | Fenster „Exzentrum“: Längs/Quer zu A→B, Bogenschnitt (rechts/links), Geradenschnitt; Rechnung in Plan- und UTM-Koordinaten, Punkt mit Quelle `EXZENTRUM` |
+| 12.5 Kombination | „GNSS-Punkte als Festpunkte übernehmen“ (Anschlusspunkte für die Freie Stationierung); Umschalten der Messquelle GNSS ↔ zuletzt benutztes Tachymeter, ohne die GNSS-Sitzung zu beenden |
+| 12.6 Rohdaten | Option in den Rechenparametern: UBX-Rohdaten je Sitzung in `<Projekt>\GNSS\JJJJ-MM-TT_hhmm.ubx`, Anzeige im Statusfeld |
+| 12.8 Linie | Knopf „Linie“: automatische Einfachmessung alle x m (oder alle x s), fortlaufende Nummer, Linie im Plan |
+| 12.9 Höhenbezug | erste GNSS-Messung eines Projekts: Bezug bestätigen; abweichender Bezug zu vorhandenen Punkten: Warnung „Trotzdem messen / Abbrechen“ |
+| 12.10 Höhenanschluss | Höhenfestpunkt im Plan wählen und messen → konstante Höhenverschiebung (in `Einpassung.json`), gilt ohne Höheneinpassung |
+| 12.12 GNSS-Zeit | UTC des Empfängers in jeder Messung (`GNSS_Zeit_UTC` im Messprotokoll, Spalte `Zeit_GNSS` der Punktdatei) |
+| 12.13 Vorhersage | Fenster „Satellitenvorhersage“: PDOP und GPS-Satelliten der nächsten 6 h aus den empfangenen Bahndaten (nur GPS) |
+| 12.14 Toughpad | große Knöpfe in Absteckung, Einpassung und Rückfragen, Messen mit der Leertaste, Klickton nach Abstand (schneller bei Annäherung) |
 
 ### Abweichungen vom Vorschlag
 
@@ -774,9 +787,9 @@ mit der Wiedergabe von `testdaten/gnss/demo.ubx`). **Mit Empfänger und in der O
 
 ### Noch offen
 
-- Rückfrage „Letzte Messung mit neuer Stabhöhe korrigieren?“ (6.2) und „Trotzdem übernehmen / Wiederholen“ bei zu
-  großer Streuung (6.3).
 - GNSS-Punkte in Datenmanager und KOR-/CSV-Export (6.4); im Plan erscheinen sie bereits.
-- Ideen aus Abschnitt 12 außer Fix-Wächter, Qualitätskarte (Spur) und Wiedergabe.
-- Prüfung im Feld: Verbinden, dauerhafte Konfiguration, Fix, Messen, Einpassung auf einem Festpunktfeld, Absteckung.
+- 12.2: Neuinitialisierung per UBX-Befehl (bisher Hinweis „Antenne kurz abdecken“).
+- 12.13: Vorhersage für Galileo, GLONASS und BeiDou (es werden nur GPS-Bahndaten decodiert).
+- Prüfung im Feld: Verbinden, dauerhafte Konfiguration, Fix, Messen, Einpassung auf einem Festpunktfeld, Absteckung
+  und die Ergänzungen aus Abschnitt 12.
 

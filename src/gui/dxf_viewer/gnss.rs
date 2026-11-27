@@ -1,6 +1,7 @@
 // Zweck:    GNSS-Betrieb im DXF-Viewer: Live-Position der Antenne mit Spur und Fehlerellipse, Statusanzeige,
 //           Werkzeugleiste ohne Tachymeterfunktionen, Messen (Einfachmessung oder Mittelung), GNSS-Punkte im Plan,
-//           Startprüfung der Einpassung und Plausibilitätsprüfung des Koordinatenbezugs (GNSS.md Abschnitte 5 und 6)
+//           Startprüfung der Einpassung und Plausibilitätsprüfung des Koordinatenbezugs (GNSS.md Abschnitte 5 und 6);
+//           Ergänzungen (Rückfragen, Linie, Exzentrum, Höhenanschluss, Vorhersage …) in gnss_extras.rs
 // Hardware: GNSS-Empfänger u-blox ZED-F9P (über das GNSS-Modul)
 // Autor:    Johann Gerner
 
@@ -10,6 +11,7 @@ use chrono::Local;
 use eframe::egui::{self, Align, Align2, Color32, FontId, Layout, Pos2, Rect, RichText, Stroke, Vec2};
 
 use super::zeichnen::{self, FeldArt, trenner};
+use super::gnss_extras::{ExzentrumFenster, GnssDialog, Linie, VorhersageFenster};
 use super::{DxfViewer, Dialog};
 use crate::daten::messprotokoll::{self, Eintrag, Ereignis, GnssWerte};
 use crate::daten::projekt::Projekt;
@@ -86,13 +88,28 @@ pub(super) struct Soll {
 #[derive(Clone, Debug)]
 pub(super) enum Zweck {
     Neupunkt { nr: String, code: String },
+    /// automatisch ausgelöster Punkt der Linienaufnahme
+    Linie { nr: String, code: String },
     TPunkt(Soll),
     Kontrolle(Soll),
     Absteckung,
+    /// Messung auf einem Höhenfestpunkt
+    Hoehenanschluss(Soll),
+}
+
+impl Zweck {
+    /// Punktnummer der Messung (für Protokolleinträge).
+    pub fn nummer(&self) -> String {
+        match self {
+            Self::Neupunkt { nr, .. } | Self::Linie { nr, .. } => nr.clone(),
+            Self::TPunkt(s) | Self::Kontrolle(s) | Self::Hoehenanschluss(s) => s.nr.clone(),
+            Self::Absteckung => String::new(),
+        }
+    }
 }
 
 /// Auftrag an die GNSS-Sitzung, ausgeführt nach dem Zeichnen.
-enum Auftrag {
+pub(super) enum Auftrag {
     Messen { nr: String, code: String, kriterien: Criteria },
     Abbrechen,
     Stab(f64),
@@ -127,6 +144,13 @@ pub(super) struct Messwert {
     pub pco: f64,
     pub werte: GnssWerte,
     pub quelle: String,
+    /// verworfene Epochen
+    pub verworfen: usize,
+    /// UTC-Zeit des Empfängers am Ende der Messung
+    pub zeit_gnss: String,
+    /// Grenzen der Messvorgaben für die Streuung [mm]
+    pub grenze_lage_mm: f64,
+    pub grenze_hoehe_mm: f64,
 }
 
 impl Messwert {
@@ -144,11 +168,11 @@ pub(super) struct GnssZustand {
     pub live: Option<Live>,
     pub status: LinkStatus,
     pub fortschritt: Option<ExternProgress>,
-    kriterien: Option<Criteria>,
+    pub kriterien: Option<Criteria>,
     pub stab: f64,
     pub pco: f64,
     pub hoehenbezug: String,
-    auftraege: Vec<Auftrag>,
+    pub auftraege: Vec<Auftrag>,
     pub laufend: Option<Zweck>,
     pub pos: Option<PlanPos>,
     spur: VecDeque<(f64, f64, Option<Fix>)>,
@@ -167,11 +191,33 @@ pub(super) struct GnssZustand {
     pub utm_k: Option<f64>,
     /// Bewegungsrichtung für den Pfeil an der Antenne
     pub bewegung: Bewegung,
+    /// zuletzt gespeicherter Neupunkt (Rückfrage zur Stabhöhenkorrektur)
+    pub letzte: Option<String>,
+    /// letzte gestartete Messung (für „Wiederholen“)
+    pub wiederholung: Option<(Zweck, String, String, Criteria)>,
+    pub linie: Option<Linie>,
+    /// Sitzungsbeginn erkennen (Kontrolle, Rohdaten)
+    pub war_verbunden: bool,
+    pub aufzeichnung_versucht: bool,
+    pub aufzeichnung: Option<(std::path::PathBuf, u64)>,
+    /// Höhenbezug in dieser Sitzung bestätigt
+    pub hoehenbezug_ok: bool,
+    pub exzentrum: Option<ExzentrumFenster>,
+    pub vorhersage: Option<VorhersageFenster>,
+    /// Höhenanschluss: nächster Klick wählt den Höhenfestpunkt bzw. gewählter Punkt
+    pub anschluss_wahl: bool,
+    pub anschluss_soll: Option<Soll>,
 }
 
 impl GnssZustand {
     /// Plankoordinaten aus UTM (ohne Zone) und Höhe im GNSS-Höhenbezug.
     pub fn plan(&self, bezug: GnssBezug, puffer_prozent: f64, e: f64, n: f64, hoehe: Option<f64>) -> PlanPos {
+        // Höhenanschluss gilt, solange keine Höheneinpassung aktiv ist (GNSS.md 12.10)
+        let hoeheneinpassung = bezug == GnssBezug::Einpassung && self.einpassungen.aktive().and_then(|ep| ep.ergebnis.as_ref()).is_some_and(|erg| erg.hoehe.is_some());
+        let hoehe = match &self.einpassungen.hoehen_anschluss {
+            Some(a) if !hoeheneinpassung => hoehe.map(|h| h + a.dz_m),
+            _ => hoehe,
+        };
         let utm = |zone: bool| PlanPos {
             r: if zone { e + f64::from(UTM_ZONE) * ZONEN_FAKTOR } else { e },
             h: n,
@@ -235,13 +281,15 @@ impl DxfViewer {
         }
         let Some(live) = self.gnss.live.clone() else {
             self.gnss.pos = None;
+            self.gnss_extras_vorher(app, projekt, false);
             return;
         };
         self.gnss.utm_k = Some(geo_to_utm(&Geographic { lat: live.lat, lon: live.lon, h: 0.0 }, UTM_ZONE).k);
         let g = &projekt.rechenparameter.params.gnss;
         let pos = self.gnss.plan(g.bezug, g.extrapolation_prozent, live.east, live.north, live.h);
         self.gnss.pos = Some(pos);
-        if live.itow != self.gnss.letzte_epoche {
+        let neue_epoche = live.itow != self.gnss.letzte_epoche;
+        if neue_epoche {
             self.gnss.letzte_epoche = live.itow;
             self.gnss.spur.push_back((pos.r, pos.h, Some(live.fix)));
             while self.gnss.spur.len() > SPUR_MAX {
@@ -255,6 +303,7 @@ impl DxfViewer {
         if self.gnss.folgen {
             self.mitte = [pos.r, pos.h];
         }
+        self.gnss_extras_vorher(app, projekt, neue_epoche);
         self.gnss_pruefe_plausibel(pos);
     }
 
@@ -350,6 +399,7 @@ impl DxfViewer {
                                 Eintrag::neu(Ereignis::Korrektur).aenderung("Stabhoehe_m", &f(self.gnss.stab, 3), &f(w, 3)).quelle(messprotokoll::QUELLE_HAND),
                             );
                             self.gnss.stab = w;
+                            self.gnss_stab_geaendert(w);
                         }
                     }
                     None => self.txt_zielhoehe = f(self.gnss.stab, 3),
@@ -382,6 +432,15 @@ impl DxfViewer {
                 if textknopf(ui, "Folgen", self.gnss.folgen).on_hover_text("Plan mit der Antenne mitführen").clicked() {
                     self.gnss.folgen = !self.gnss.folgen;
                 }
+                ui.add_space(4.0);
+                if textknopf(ui, "Linie", self.gnss.linie.is_some()).on_hover_text("Linienaufnahme: automatisch ein Punkt nach Weg oder Zeit (Rechenparameter → GNSS)").clicked() {
+                    self.gnss_linie_umschalten(projekt);
+                }
+                ui.add_space(4.0);
+                let extras = textknopf(ui, "Extras ▾", self.gnss.exzentrum.is_some() || self.gnss.vorhersage.is_some() || self.gnss.anschluss_wahl);
+                zeichnen::ausklappmenue(&ctx, "toolbar_gnss_extras", &extras, false, |ui| {
+                    ui.vertical(|ui| self.gnss_extras_menue(ui, projekt));
+                });
                 ui.add_space(6.0);
                 let pdf_aktiv = self.pdf_mitte.is_some();
                 let ausgabe = zeichnen::bildknopf(ui, zeichnen::knopfbild("pdf"), kachel, pdf_aktiv.then_some(true));
@@ -410,6 +469,8 @@ impl DxfViewer {
                     if self.gnss.fenster.as_ref().is_some_and(|f| f.kontrolle) { "► Kontrolle" } else { "► T-Punkt" }
                 } else if self.gnss.absteckung.as_ref().is_some_and(|a| a.ziel.is_some()) {
                     "► Prüfen"
+                } else if self.gnss.anschluss_soll.is_some() {
+                    "► Höhe"
                 } else {
                     "► Messen"
                 };
@@ -466,6 +527,10 @@ impl DxfViewer {
         let g = projekt.rechenparameter.params.gnss.clone();
         let fenster_soll = self.gnss.fenster.as_ref().and_then(|f| f.soll.clone().map(|s| (s, f.kontrolle)));
         let absteck_ziel = self.gnss.absteckung.as_ref().and_then(|a| a.ziel.clone());
+        // Höhenbezug sichtbar und erzwungen: vor jeder gespeicherten Messung (GNSS.md 12.9)
+        if absteck_ziel.is_none() && !self.gnss_hoehenbezug_frei(false) {
+            return;
+        }
         let (zweck, nr, code, kriterien) = if let Some((soll, kontrolle)) = fenster_soll {
             let k = Criteria { epochs: basis.epochs.max(g.tpunkt_epochen), min_seconds: basis.min_seconds.max(g.tpunkt_sekunden), ..basis };
             let nr = soll.nr.clone();
@@ -473,6 +538,10 @@ impl DxfViewer {
         } else if let Some(ziel) = absteck_ziel {
             let k = Criteria { epochs: g.absteck_epochen.max(1), min_seconds: 0.0, ..basis };
             (Zweck::Absteckung, ziel.nr, String::new(), k)
+        } else if let Some(soll) = self.gnss.anschluss_soll.clone() {
+            let k = Criteria { epochs: basis.epochs.max(g.tpunkt_epochen), min_seconds: basis.min_seconds.max(g.tpunkt_sekunden), ..basis };
+            let nr = soll.nr.clone();
+            (Zweck::Hoehenanschluss(soll), nr, String::new(), k)
         } else {
             let nr = self.txt_punkt_nr.trim().to_string();
             if nr.is_empty() {
@@ -490,8 +559,7 @@ impl DxfViewer {
             (Zweck::Neupunkt { nr: nr.clone(), code: code.clone() }, nr, code, k)
         };
         self.status = format!("GNSS-Messung {nr}: {} Epochen{} …", kriterien.epochs, if kriterien.min_seconds > 0.0 { format!(", mindestens {} s", f(kriterien.min_seconds, 0)) } else { String::new() });
-        self.gnss.auftraege.push(Auftrag::Messen { nr, code, kriterien });
-        self.gnss.laufend = Some(zweck);
+        self.gnss_starte(zweck, nr, code, kriterien);
     }
 
     /// Wertet ein Messergebnis aus und verteilt es nach dem Zweck der Messung.
@@ -500,11 +568,36 @@ impl DxfViewer {
             return;
         };
         let m = self.gnss_messwert(projekt, erg);
+        // Streuung über den Grenzen: „Trotzdem übernehmen / Wiederholen“ (GNSS.md 6.3)
+        let pruefen = matches!(zweck, Zweck::Neupunkt { .. } | Zweck::TPunkt(_) | Zweck::Kontrolle(_) | Zweck::Hoehenanschluss(_));
+        if pruefen && Self::gnss_streuung_zu_gross(&m) && self.dialog.is_none() {
+            ton::fehler();
+            self.status = format!("Streuung zu groß: sL {} mm, sH {} mm", f(m.s_lage_mm(), 1), f(m.s_h_mm, 1));
+            self.dialog = Some(Dialog::Gnss(Box::new(GnssDialog::Streuung { zweck, m: Box::new(m) })));
+            return;
+        }
+        self.gnss_verteile(projekt, zweck, m);
+    }
+
+    /// Verteilt ein angenommenes Messergebnis nach dem Zweck der Messung.
+    pub(super) fn gnss_verteile(&mut self, projekt: &mut Projekt, zweck: Zweck, m: Messwert) {
         match zweck {
-            Zweck::Neupunkt { nr, code } => self.gnss_neupunkt(projekt, &nr, &code, &m),
+            Zweck::Neupunkt { nr, code } => {
+                // gleiche Nummer schon gemessen: zweite Belegung, Ersetzen oder Verwerfen (GNSS.md 12.2)
+                if self.gnss.punkte.iter().any(|p| p.nr.eq_ignore_ascii_case(&nr)) && self.dialog.is_none() {
+                    self.dialog = Some(Dialog::Gnss(Box::new(GnssDialog::Zweitbelegung { nr, code, m: Box::new(m) })));
+                } else {
+                    self.gnss_neupunkt(projekt, &nr, &code, &m);
+                }
+            }
+            Zweck::Linie { nr, code } => {
+                self.gnss_neupunkt(projekt, &nr, &code, &m);
+                self.gnss_linie_gemessen(&nr, &m);
+            }
             Zweck::TPunkt(soll) => self.einpassung_tpunkt(projekt, &soll, &m),
             Zweck::Kontrolle(soll) => self.einpassung_kontrolle(projekt, &soll, &m),
             Zweck::Absteckung => self.gnss_absteckung_messung(projekt, m),
+            Zweck::Hoehenanschluss(soll) => self.gnss_hoehenanschluss(projekt, &soll, &m),
         }
     }
 
@@ -558,11 +651,15 @@ impl DxfViewer {
             pco: erg.measurement.request.antenna_offset,
             werte,
             quelle: if erg.replay { "WIEDERGABE".into() } else { "GNSS RTK".into() },
+            verworfen: r.rejected,
+            zeit_gnss: erg.protocol.iter().find(|(k, _)| *k == "GNSS_Zeit_UTC").map(|(_, v)| v.clone()).unwrap_or_default(),
+            grenze_lage_mm: erg.measurement.criteria.max_sigma_2d * MM_PRO_M,
+            grenze_hoehe_mm: erg.measurement.criteria.max_sigma_h * MM_PRO_M,
         }
     }
 
     /// Speichert einen GNSS-Neupunkt, schreibt das Messprotokoll und zählt die Nummer weiter.
-    fn gnss_neupunkt(&mut self, projekt: &mut Projekt, nr: &str, code: &str, m: &Messwert) {
+    pub(super) fn gnss_neupunkt(&mut self, projekt: &mut Projekt, nr: &str, code: &str, m: &Messwert) {
         let jetzt = messprotokoll::zeit_text(Local::now().naive_local());
         let g = &projekt.rechenparameter.params.gnss;
         let punkt = GnssPunkt {
@@ -586,6 +683,8 @@ impl DxfViewer {
             einpassung_id: if m.pos.ohne_einpassung { String::new() } else { self.gnss.einpassung_id(g.bezug) },
             zeit: jetzt,
             quelle: m.quelle.clone(),
+            zeit_gnss: m.zeit_gnss.clone(),
+            belegungen: 1,
         };
         let mut eintrag = Eintrag::neu(Ereignis::Messung).punkt(nr, TYP_GNSS, code).koordinaten(m.pos.r, m.pos.h, m.pos.hoehe.unwrap_or(f64::NAN)).mit_gnss(&m.werte);
         if m.pos.ohne_einpassung {
@@ -611,6 +710,7 @@ impl DxfViewer {
             return;
         }
         ton::bestaetigung();
+        self.gnss.letzte = Some(nr.to_string());
         let mut info = format!("GNSS {nr}: R={}  H={}", f(m.pos.r, 3), f(m.pos.h, 3));
         if let Some(hh) = m.pos.hoehe {
             info.push_str(&format!("  Höhe={}", f(hh, 3)));
@@ -636,6 +736,10 @@ impl DxfViewer {
         let nr = nr.unwrap_or_else(|| self.txt_punkt_nr.trim().to_string());
         // Höhe 0 bedeutet im Plan „ohne Höhe“
         let soll = Soll { nr, r: x, h: y, hoehe: (hoehe != 0.0).then_some(hoehe) };
+        if self.gnss.anschluss_wahl {
+            self.gnss_hoehenanschluss_punkt(soll);
+            return;
+        }
         if let Some(fenster) = self.gnss.fenster.as_mut() {
             if soll.nr.is_empty() {
                 fenster.meldung = "Der gewählte Punkt hat keine Nummer – bitte im Feld „Nr“ eintragen und erneut wählen.".into();
@@ -692,6 +796,7 @@ impl DxfViewer {
                 maler.circle_filled(a.zu_bildschirm(r, h), 1.6, fix_farbe(fix, false));
             }
         }
+        self.zeichne_gnss_extras(maler, a);
         let (Some(pos), Some(live)) = (self.gnss.pos, self.gnss.live.as_ref()) else {
             return;
         };
@@ -768,6 +873,7 @@ impl DxfViewer {
         if self.gnss.pos.is_some_and(|p| p.ausserhalb) {
             zeilen.push(("⚠ außerhalb des Bereichs der T-Punkte".into(), FARBE_FLOAT));
         }
+        zeilen.extend(self.gnss_extras_info());
         zeilen.push((format!("Stab {} + PCO {} m · H: {}", f(self.gnss.stab, 3), f(self.gnss.pco, 3), self.gnss.hoehenbezug), Color32::from_gray(200)));
         let breite = zeilen.iter().map(|(t, _)| t.chars().count()).max().unwrap_or(0) as f32 * 7.0 + 2.0 * INFO_RAND;
         let kasten = Rect::from_min_size(rect.left_top() + Vec2::splat(INFO_RAND), Vec2::new(breite, zeilen.len() as f32 * INFO_ZEILE + INFO_RAND));

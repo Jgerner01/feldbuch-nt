@@ -9,6 +9,7 @@ pub mod bewegung;
 pub mod einpassung;
 pub mod kern;
 pub mod punkte;
+pub mod vorhersage;
 
 #[cfg(test)]
 mod tests {

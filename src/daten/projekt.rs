@@ -41,6 +41,8 @@ const QUELLE_LIVE: &str = "Freie Stationierung (Live)";
 const QUELLE_MANUELL: &str = "Freie Stationierung";
 /// Quelle für übernommene Neupunkte.
 pub const QUELLE_LOKAL: &str = "Lokal";
+/// Quelle von Festpunkten, die aus GNSS-Punkten übernommen wurden.
+pub const QUELLE_GNSS: &str = "GNSS";
 /// Mindestanzahl verschiedener Anschlusspunkte für eine gültige Station.
 const MIN_ANSCHLUSSPUNKTE: usize = 2;
 /// Mindestanzahl Spalten der Anschlusspunktedatei (Nr, R, H).
@@ -448,6 +450,32 @@ impl Projekt {
                 ist_berechnung_3d: e.ist_3d,
                 datum: datum.clone(),
                 quelle: QUELLE_LOKAL.to_string(),
+            })?;
+        }
+        Ok(UebernahmeErgebnis { neu, ersetzt })
+    }
+
+    /// Übernimmt GNSS-Punkte als feste Koordinaten nach Feldbuchpunkte.json (Anschluss für die Freie Stationierung).
+    pub fn gnss_festpunkte_uebernehmen(&mut self, punkte: &[crate::gnss::punkte::GnssPunkt]) -> io::Result<UebernahmeErgebnis> {
+        let (mut neu, mut ersetzt) = (0, 0);
+        let datum = heute_text();
+        for p in punkte {
+            if self.festpunkt_existiert(&p.nr) {
+                ersetzt += 1;
+            } else {
+                neu += 1;
+            }
+            self.feldbuchpunkte.add_or_update(FeldbuchPunkt {
+                punkt_nr: p.nr.clone(),
+                typ: TYP_NEUPUNKT.to_string(),
+                r: p.r,
+                h: p.h,
+                // ohne Höhe: 0 (wie bei den übrigen Festpunkten)
+                hoehe: p.hoehe.unwrap_or(0.0),
+                orientierung_gon: 0.0,
+                ist_berechnung_3d: p.hoehe.is_some(),
+                datum: datum.clone(),
+                quelle: QUELLE_GNSS.to_string(),
             })?;
         }
         Ok(UebernahmeErgebnis { neu, ersetzt })
