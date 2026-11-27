@@ -1,4 +1,4 @@
-﻿# Zweck:   Baut Feldbuch-NT in der Release-Konfiguration und erzeugt die beiden Dateien, die der Update-Dienst erwartet:
+﻿# Zweck:   Erhöht die Buildnummer, testet und baut Feldbuch-NT in der Release-Konfiguration und erzeugt die beiden Dateien, die der Update-Dienst erwartet:
 #            Feldbuch-NT-v<Version>-win-x64.zip  und  Feldbuch-NT-v<Version>-win-x64.zip.sha256
 #          Die Version stammt aus Cargo.toml. Das Skript veröffentlicht nichts; die beiden Dateien aus dem Ordner "dist"
 #          werden von Hand an ein GitHub-Release mit dem Tag v<Version> angehängt (Jgerner01/feldbuch-nt).
@@ -8,7 +8,9 @@
 param(
     [string]$Ausgabe = "dist",
     # Zusatz für Testversionen, z. B. "Test1": erscheint in der Versionsanzeige und im Dateinamen (Tag v<Version>-<Zusatz>)
-    [string]$Zusatz = ""
+    [string]$Zusatz = "",
+    # Buildnummer nicht erhöhen (z. B. bei erneutem Packen derselben Version)
+    [switch]$GleicherBuild
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,7 +27,15 @@ if ($Zusatz) {
     Remove-Item Env:FELDBUCH_ZUSATZ -ErrorAction SilentlyContinue
 }
 
-Write-Host "Baue Feldbuch-NT $version (Release) ..."
+$build = [int](Get-Content "BUILDNUMMER" -Raw).Trim()
+if (-not $GleicherBuild) {
+    $build++
+    [System.IO.File]::WriteAllText((Resolve-Path "BUILDNUMMER"), "$build`n")
+}
+
+Write-Host "Baue Feldbuch-NT $version (Build $build) ..."
+cargo test --release
+if ($LASTEXITCODE -ne 0) { throw "Tests fehlgeschlagen." }
 cargo build --release
 if ($LASTEXITCODE -ne 0) { throw "cargo build ist fehlgeschlagen." }
 
