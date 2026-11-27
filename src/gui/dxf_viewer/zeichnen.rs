@@ -164,29 +164,46 @@ fn seitenknopf(ui: &mut egui::Ui, inhalt: Inhalt, f: KnopfFarben, tooltip: &str)
     seitenknopf_antwort(ui, inhalt, f, tooltip).clicked()
 }
 
-/// Menü, das beim Überfahren des Hauptknopfs `haupt` aufklappt und offen bleibt, solange die Maus auf Knopf
-/// oder Menü ist. `nach_links`: Menü links neben dem Knopf (Seitenleiste), sonst darunter (obere Leiste).
+/// Menü am Hauptknopf `haupt`, bedienbar mit Finger und Maus: ein Klick (Antippen) auf den Hauptknopf öffnet es,
+/// ein Klick auf einen Eintrag löst dessen Aktion aus und schließt es. Ein Klick daneben, ein erneuter Klick auf
+/// den Hauptknopf oder Esc schließen es ohne Aktion. Es ist immer nur ein Menü offen.
+/// (Früher klappte das Menü beim Überfahren auf; auf dem Touchscreen des Toughpad gibt es kein Überfahren, das
+/// Menü klappte deshalb sofort wieder zu.) `nach_links`: Menü links neben dem Knopf (Seitenleiste), sonst darunter.
 pub(super) fn ausklappmenue(ctx: &egui::Context, id: &str, haupt: &egui::Response, nach_links: bool, inhalt: impl FnOnce(&mut egui::Ui)) {
-    let rect_id = egui::Id::new(("ausklappmenue", id));
-    let letzter: Option<Rect> = ctx.data(|d| d.get_temp(rect_id));
-    let offen = haupt.hovered() || matches!((letzter, ctx.pointer_hover_pos()), (Some(r), Some(p)) if r.expand(8.0).contains(p));
-    if !offen {
-        ctx.data_mut(|d| d.insert_temp(rect_id, Rect::NOTHING));
-        return;
+    let menue_id = egui::Id::unique(("ausklappmenue", id));
+    // Id des gerade offenen Menüs (gemeinsam für alle Menüs, damit sich beim Öffnen die anderen schließen)
+    let offen_id = egui::Id::unique("ausklappmenue_offen");
+    let war_offen = ctx.data(|d| d.get_temp::<egui::Id>(offen_id)) == Some(menue_id);
+    let mut offen = if haupt.clicked() { !war_offen } else { war_offen };
+    if offen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        offen = false;
     }
-    let (pos, pivot) = if nach_links {
-        (Pos2::new(haupt.rect.left() - 2.0, haupt.rect.top()), Align2::RIGHT_TOP)
-    } else {
-        (Pos2::new(haupt.rect.left(), haupt.rect.bottom() + 2.0), Align2::LEFT_TOP)
-    };
-    let ergebnis = egui::Area::new(rect_id).order(egui::Order::Foreground).pivot(pivot).fixed_pos(pos).show(ctx, |ui| {
-        egui::Frame::popup(ui.style()).show(ui, |ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
-            ui.horizontal(inhalt);
+    if offen {
+        // offenes Menü am Hauptknopf kennzeichnen
+        haupt.ctx.layer_painter(haupt.layer_id).rect_stroke(haupt.rect.expand(1.0), 9.0, Stroke::new(2.5, Color32::from_rgb(255, 170, 40)), egui::StrokeKind::Outside);
+        let (pos, pivot) = if nach_links {
+            (Pos2::new(haupt.rect.left() - 2.0, haupt.rect.top()), Align2::RIGHT_TOP)
+        } else {
+            (Pos2::new(haupt.rect.left(), haupt.rect.bottom() + 2.0), Align2::LEFT_TOP)
+        };
+        egui::Area::new(menue_id).order(egui::Order::Foreground).pivot(pivot).fixed_pos(pos).show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(2.0, 2.0);
+                ui.horizontal(inhalt);
+            });
         });
+        // Klick auf einen Eintrag (Aktion ist ausgelöst) oder daneben: Menü schließen
+        if !haupt.clicked() && ctx.input(|i| i.pointer.any_click()) {
+            offen = false;
+        }
+    }
+    ctx.data_mut(|d| {
+        if offen {
+            d.insert_temp(offen_id, menue_id);
+        } else if war_offen || d.get_temp::<egui::Id>(offen_id) == Some(menue_id) {
+            d.remove::<egui::Id>(offen_id);
+        }
     });
-    ctx.data_mut(|d| d.insert_temp(rect_id, ergebnis.response.rect));
-    ctx.request_repaint();
 }
 
 /// Eintrag einer Ausklappgruppe der Seitenleiste.
@@ -206,7 +223,7 @@ fn symbol_inhalt(symbol: &'static str) -> Inhalt {
     bild(symbol)
 }
 
-/// Ausklappgruppe der Seitenleiste: ein Knopf; beim Überfahren erscheinen die Einträge links daneben.
+/// Ausklappgruppe der Seitenleiste: ein Knopf; ein Klick (Antippen) zeigt die Einträge links daneben.
 /// Liefert den Index des angeklickten Eintrags.
 fn gruppenknopf(ui: &mut egui::Ui, id: &str, haupt: &'static str, f: KnopfFarben, aktiv: bool, eintraege: &[Eintrag]) -> Option<usize> {
     let antwort = ui.add_enabled_ui(aktiv, |ui| seitenknopf_antwort(ui, symbol_inhalt(haupt), f, "")).inner;

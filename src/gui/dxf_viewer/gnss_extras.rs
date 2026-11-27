@@ -48,6 +48,8 @@ const VORHERSAGE_SCHRITT_MIN: f64 = 10.0;
 /// Größe der Vorhersagegrafik [px] und angezeigter PDOP-Bereich.
 const VORHERSAGE_GRAFIK: Vec2 = Vec2::new(560.0, 180.0);
 const VORHERSAGE_PDOP_MAX: f64 = 10.0;
+/// Lage der Fenster unter der Werkzeugleiste und neben der Statusanzeige [px].
+const FENSTER_VERSATZ: Vec2 = Vec2::new(20.0, 140.0);
 /// Kleinste sinnvolle Strecke für Richtungen [m].
 const MIN_STRECKE_M: f64 = 1e-6;
 /// Farben der Bewertung.
@@ -809,7 +811,7 @@ impl DxfViewer {
         let mut offen = true;
         let mut rechnen = false;
         let nummern: Vec<String> = self.gnss.punkte.iter().filter(|p| p.quelle != QUELLE_EXZENTRUM).map(|p| p.nr.clone()).collect();
-        egui::Window::new("Exzentrum (Abschattung)").open(&mut offen).default_width(420.0).show(ctx, |ui| {
+        egui::Window::new("Exzentrum (Abschattung)").open(&mut offen).default_width(420.0).default_pos(ctx.content_rect().left_top() + FENSTER_VERSATZ).show(ctx, |ui| {
             egui::ComboBox::from_id_salt("gnss_exz_methode").selected_text(fe.methode.anzeige()).show_ui(ui, |ui| {
                 for m in ExzMethode::ALLE {
                     ui.selectable_value(&mut fe.methode, m, m.anzeige());
@@ -1002,7 +1004,7 @@ impl DxfViewer {
             return;
         };
         let mut offen = true;
-        egui::Window::new("Satellitenvorhersage (GPS)").open(&mut offen).default_width(VORHERSAGE_GRAFIK.x + 20.0).show(ctx, |ui| {
+        egui::Window::new("Satellitenvorhersage (GPS)").open(&mut offen).default_width(VORHERSAGE_GRAFIK.x + 20.0).default_pos(ctx.content_rect().left_top() + FENSTER_VERSATZ).show(ctx, |ui| {
             ui.label("PDOP und sichtbare GPS-Satelliten der nächsten 6 Stunden am aktuellen Ort. Der Empfänger nutzt zusätzlich Galileo, GLONASS und BeiDou – die Vorhersage zeigt vor allem, wann die Geometrie schwach ist (enge Lagen dann meiden).");
             ui.add_space(4.0);
             let (rect, _) = ui.allocate_exact_size(VORHERSAGE_GRAFIK, Sense::hover());
