@@ -58,10 +58,23 @@ const FARBE_TPUNKT: Color32 = Color32::from_rgb(70, 110, 255);
 const INFO_HINTERGRUND: Color32 = Color32::from_rgba_premultiplied(20, 24, 32, 215);
 const INFO_RAND: f32 = 8.0;
 const INFO_ZEILE: f32 = 17.0;
-/// Breiten der Toolbar-Knöpfe.
+/// Breiten der Toolbar-Knöpfe (normal und kompakt).
 const MESSEN_BREITE: f32 = 120.0;
+const MESSEN_BREITE_KOMPAKT: f32 = 96.0;
 const TEXTKNOPF_BREITE: f32 = 86.0;
 const KNOPF_HOEHE: f32 = 34.0;
+/// Unterhalb dieser Leistenbreite [Punkte] wird die GNSS-Werkzeugleiste kompakt gezeichnet: Textknöpfe nur so
+/// breit wie ihr Text, schmalere Felder (z. B. Toughpad FZ-M1: 1280 Pixel bei 125 % Skalierung = 1024 Punkte).
+const LEISTE_VOLL_AB: f32 = 1180.0;
+/// Feldbreiten [Punkte]: (Beschriftung, Eingabe) normal und kompakt.
+const FELD_CODE: (f32, f32) = (40.0, 90.0);
+const FELD_CODE_KOMPAKT: (f32, f32) = (32.0, 64.0);
+const FELD_NR: (f32, f32) = (22.0, 80.0);
+const FELD_NR_KOMPAKT: (f32, f32) = (18.0, 56.0);
+const FELD_STAB: (f32, f32) = (34.0, 58.0);
+const FELD_STAB_KOMPAKT: (f32, f32) = (28.0, 58.0);
+/// Kantenlänge der Bildknöpfe normal und kompakt.
+const KACHEL_ZUSATZ: f32 = 6.0;
 
 /// Farbe einer Lösungsart.
 pub(super) fn fix_farbe(fix: Option<Fix>, veraltet: bool) -> Color32 {
@@ -207,6 +220,8 @@ pub(super) struct GnssZustand {
     /// Höhenanschluss: nächster Klick wählt den Höhenfestpunkt bzw. gewählter Punkt
     pub anschluss_wahl: bool,
     pub anschluss_soll: Option<Soll>,
+    /// Werkzeugleiste kompakt gezeichnet (schmaler Bildschirm)
+    pub kompakt: bool,
 }
 
 impl GnssZustand {
@@ -380,14 +395,19 @@ impl DxfViewer {
 
     /// Werkzeugleiste im GNSS-Betrieb: ohne Standpunkt, Prisma, EDM, Laser und Instrumentenhöhe.
     pub(super) fn zeichne_toolbar_gnss(&mut self, ui: &mut egui::Ui, projekt: &mut Projekt) {
-        ui.spacing_mut().item_spacing = Vec2::new(4.0, 0.0);
+        // schmaler Bildschirm (Toughpad): kompakte Leiste, damit sich linke und rechte Knöpfe nicht überdecken
+        let kompakt = ui.available_width() < LEISTE_VOLL_AB;
+        self.gnss.kompakt = kompakt;
+        let (code, nr, stab_feld) = if kompakt { (FELD_CODE_KOMPAKT, FELD_NR_KOMPAKT, FELD_STAB_KOMPAKT) } else { (FELD_CODE, FELD_NR, FELD_STAB) };
+        let abstand = if kompakt { 4.0 } else { 8.0 };
+        ui.spacing_mut().item_spacing = Vec2::new(if kompakt { 3.0 } else { 4.0 }, 0.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.add_space(8.0);
-            self.toolbar_feld(ui, "Code", 40.0, 90.0, FeldArt::Code);
-            ui.add_space(8.0);
-            self.toolbar_feld(ui, "Nr", 22.0, 80.0, FeldArt::PunktNr);
-            ui.add_space(8.0);
-            let stab = self.toolbar_feld(ui, "Stab", 34.0, 58.0, FeldArt::Zielhoehe).on_hover_text("Lotstabhöhe Boden → Antennenbezugspunkt [m]");
+            ui.add_space(abstand);
+            self.toolbar_feld(ui, "Code", code.0, code.1, FeldArt::Code);
+            ui.add_space(abstand);
+            self.toolbar_feld(ui, "Nr", nr.0, nr.1, FeldArt::PunktNr);
+            ui.add_space(abstand);
+            let stab = self.toolbar_feld(ui, "Stab", stab_feld.0, stab_feld.1, FeldArt::Zielhoehe).on_hover_text("Lotstabhöhe Boden → Antennenbezugspunkt [m]");
             if stab.lost_focus() {
                 match parse_zahl(&self.txt_zielhoehe).filter(|w| w.is_finite() && *w >= 0.0) {
                     Some(w) => {
@@ -415,9 +435,9 @@ impl DxfViewer {
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add_space(4.0);
                 let ctx = ui.ctx().clone();
-                let kachel = Vec2::splat(KNOPF_HOEHE + 6.0);
+                let kachel = Vec2::splat(KNOPF_HOEHE + if kompakt { 0.0 } else { KACHEL_ZUSATZ });
                 let einpassung_offen = self.gnss.fenster.is_some();
-                if textknopf(ui, "Einpassung", einpassung_offen).on_hover_text("Einpassung über T-Punkte: Punkt im Plan wählen und mit GNSS messen").clicked() {
+                if textknopf_breite(ui, "Einpassung", einpassung_offen, kompakt).on_hover_text("Einpassung über T-Punkte: Punkt im Plan wählen und mit GNSS messen").clicked() {
                     self.einpassung_umschalten(projekt);
                 }
                 ui.add_space(4.0);
@@ -429,15 +449,15 @@ impl DxfViewer {
                     self.gnss_absteckung_umschalten(projekt);
                 }
                 ui.add_space(4.0);
-                if textknopf(ui, "Folgen", self.gnss.folgen).on_hover_text("Plan mit der Antenne mitführen").clicked() {
+                if textknopf_breite(ui, "Folgen", self.gnss.folgen, kompakt).on_hover_text("Plan mit der Antenne mitführen").clicked() {
                     self.gnss.folgen = !self.gnss.folgen;
                 }
                 ui.add_space(4.0);
-                if textknopf(ui, "Linie", self.gnss.linie.is_some()).on_hover_text("Linienaufnahme: automatisch ein Punkt nach Weg oder Zeit (Rechenparameter → GNSS)").clicked() {
+                if textknopf_breite(ui, "Linie", self.gnss.linie.is_some(), kompakt).on_hover_text("Linienaufnahme: automatisch ein Punkt nach Weg oder Zeit (Rechenparameter → GNSS)").clicked() {
                     self.gnss_linie_umschalten(projekt);
                 }
                 ui.add_space(4.0);
-                let extras = textknopf(ui, "Extras ▾", self.gnss.exzentrum.is_some() || self.gnss.vorhersage.is_some() || self.gnss.anschluss_wahl);
+                let extras = textknopf_breite(ui, "Extras ▾", self.gnss.exzentrum.is_some() || self.gnss.vorhersage.is_some() || self.gnss.anschluss_wahl, kompakt);
                 zeichnen::ausklappmenue(&ctx, "toolbar_gnss_extras", &extras, false, |ui| {
                     ui.vertical(|ui| self.gnss_extras_menue(ui, projekt));
                 });
@@ -485,7 +505,8 @@ impl DxfViewer {
         } else {
             Color32::from_rgb(110, 110, 110)
         };
-        let knopf = egui::Button::new(RichText::new(text).strong().size(12.0).color(Color32::WHITE)).fill(farbe).min_size(Vec2::new(MESSEN_BREITE, KNOPF_HOEHE));
+        let breite = if self.gnss.kompakt { MESSEN_BREITE_KOMPAKT } else { MESSEN_BREITE };
+        let knopf = egui::Button::new(RichText::new(text).strong().size(12.0).color(Color32::WHITE)).fill(farbe).min_size(Vec2::new(breite, KNOPF_HOEHE));
         if ui.add(knopf).on_hover_text(tip).clicked() {
             self.gnss_messen_geklickt(projekt);
         }
@@ -497,7 +518,7 @@ impl DxfViewer {
             antwort.on_hover_text("Anzahl Epochen der Mittelung");
         }
         let (text, tip) = if self.gnss.mittel { ("Mittel", "Mittelung über die eingestellten Epochen (Klick: Einfachmessung)") } else { ("Einfach", "Einfachmessung: eine gültige Epoche (Klick: Mittelung)") };
-        if textknopf(ui, text, self.gnss.mittel).on_hover_text(tip).clicked() {
+        if textknopf_breite(ui, text, self.gnss.mittel, self.gnss.kompakt).on_hover_text(tip).clicked() {
             self.gnss.mittel = !self.gnss.mittel;
         }
     }
@@ -935,10 +956,19 @@ pub(super) const TYP_GNSS_TPUNKT: &str = "GNSS-TP";
 pub(super) const TYP_GNSS_KONTROLLE: &str = "GNSS-KP";
 pub(super) const TYP_GNSS_ABSTECKUNG: &str = "GNSS-AB";
 
+/// Textknopf der Werkzeugleiste; `kompakt`: nur so breit wie der Text (schmale Bildschirme).
+fn textknopf_breite(ui: &mut egui::Ui, text: &str, an: bool, kompakt: bool) -> egui::Response {
+    if kompakt { textknopf_mit(ui, text, an, 0.0) } else { textknopf(ui, text, an) }
+}
+
 /// Textknopf der Werkzeugleiste, hervorgehoben wenn aktiv.
 pub(super) fn textknopf(ui: &mut egui::Ui, text: &str, an: bool) -> egui::Response {
+    textknopf_mit(ui, text, an, TEXTKNOPF_BREITE)
+}
+
+fn textknopf_mit(ui: &mut egui::Ui, text: &str, an: bool, breite: f32) -> egui::Response {
     let (fill, rand) = if an { (Color32::from_rgb(210, 120, 20), Color32::from_rgb(255, 170, 40)) } else { (Color32::from_rgb(55, 65, 80), Color32::from_rgb(90, 100, 120)) };
-    ui.add(egui::Button::new(RichText::new(text).strong().size(11.0).color(Color32::WHITE)).fill(fill).stroke(Stroke::new(1.0, rand)).min_size(Vec2::new(TEXTKNOPF_BREITE, KNOPF_HOEHE)))
+    ui.add(egui::Button::new(RichText::new(text).strong().size(11.0).color(Color32::WHITE)).fill(fill).stroke(Stroke::new(1.0, rand)).min_size(Vec2::new(breite, KNOPF_HOEHE)))
 }
 
 /// Dauer als „12 s“, „3 min“ oder „1 h 5 min“.
